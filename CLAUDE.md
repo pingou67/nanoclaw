@@ -226,6 +226,22 @@ cd container/agent-runner && bun install   # After editing agent-runner deps
 cd container/agent-runner && bun test      # Container tests (bun:test)
 ```
 
+> **Host pnpm is not on the default PATH** — installed at `~/.local/share/pnpm/pnpm` (corepack is EACCES on this host, do **not** `corepack enable`; it pretends to fix pnpm and breaks nothing). Add to your shell env before running tests:
+>
+> ```bash
+> export PNPM_HOME="$HOME/.local/share/pnpm" && export PATH="$PNPM_HOME:$PATH"
+> ```
+>
+> Without it, `pnpm test` works (it falls back to `node_modules/.bin/vitest` from the script), but **`scripts/q.test.ts` fails 7/7** because the tests spawn a sub-`pnpm exec tsx` that can't find the binary.
+>
+> **Container `bun` is not on the host** — it only lives inside the agent image. Run container tests via:
+>
+> ```bash
+> docker run --rm --entrypoint sh \
+>   -v $PWD/container/agent-runner:/ar -w /ar \
+>   nanoclaw-agent-v2-c761ecdc:latest -c 'bun test'
+> ```
+
 Container typecheck is a separate tsconfig — if you edit `container/agent-runner/src/`, run `pnpm exec tsc -p container/agent-runner/tsconfig.json --noEmit` from root (or `bun run typecheck` from `container/agent-runner/`).
 
 Service management:
