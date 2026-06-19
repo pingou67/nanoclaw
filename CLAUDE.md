@@ -132,6 +132,32 @@ A second tier (direct source-level self-edits via a draft/activate flow) is plan
 
 Per-agent-group container runtime config (provider, model, packages, MCP servers, mounts, etc.) lives in the `container_configs` table in the central DB. Materialized to `groups/<folder>/container.json` at spawn time so the container runner can read it. Managed via `ncl groups config get/update` and the self-mod MCP tools.
 
+**Scalar fields** — set in one shot via `ncl groups config update --id <gid> [--flag value]…`:
+
+| Flag | Column | Notes |
+|------|--------|-------|
+| `--provider` | `provider` | `claude` \| `opencode` \| `mock` |
+| `--model` | `model` | Alias (`sonnet`) or full ID (`claude-sonnet-4-6`, `mistral/mistral-medium-latest`, `openrouter/google/gemma-4-26b-a4b-it`) |
+| `--effort` | `effort` | `low` \| `medium` \| `high` \| `xhigh` \| `max` |
+| `--thinking` | `thinking` | `adaptive` (Claude decides), `enabled` (pair with `--thinking-budget-tokens N`), `disabled`, or `none` to clear |
+| `--image-tag` | `image_tag` | Override the default agent image for this group |
+| `--assistant-name` | `assistant_name` | Display name used in destinations / system prompt |
+| `--max-messages-per-prompt` | `max_messages_per_prompt` | Batch cap on inbound messages per agent turn |
+| `--cli-scope` | `cli_scope` | See table below |
+
+**JSON-typed fields** — dedicated sub-verbs (one entry at a time, mirrors the `mcp-server` / `package` pattern):
+
+| Verb | What it sets |
+|------|--------------|
+| `config add-mcp-server` / `config remove-mcp-server` | Entries in `mcp_servers` |
+| `config add-package` / `config remove-package` | Entries in `packages_apt` / `packages_npm` (requires `--rebuild`) |
+| `config env-set --key K --value V` | Per-group env var in `env` (overrides host env at spawn) |
+| `config env-unset --key K` | Remove a per-group env var (use `--key __all__` to clear all) |
+
+The `env` column is the canonical place for per-group provider config — OpenCode/OpenRouter/Mistral groups put their `OPENCODE_PROVIDER`, `OPENCODE_MODEL`, `ANTHROPIC_BASE_URL`, `OPENCODE_API_KEY`, `OPENCODE_REASONING_EFFORT`, `OPENROUTER_PROVIDERS` (CSV → `extraBody.provider.order`) here. Opencode-go groups that want plugins (e.g. `opencode-claude-memory` for `memory_*` tools) set `NANOCLAW_OPENCODE_PLUGINS` to a JSON array of npm package names; the agent-runner's `buildOpenCodeConfig` reads it and adds the `plugin` field to the opencode config it ships via `OPENCODE_CONFIG_CONTENT`. The host's `.env` is fallback only.
+
+**Changes never take effect mid-session.** All `config update` / `env-set` / `add-mcp-server` writes are saved to the DB, but the running container has its env/config frozen at spawn. Run `ncl groups restart --id <gid>` (or `--rebuild` for package/image changes) to materialize.
+
 **`cli_scope`** — controls what the agent can do with `ncl` from inside the container:
 
 | Value | Behavior |
@@ -140,7 +166,65 @@ Per-agent-group container runtime config (provider, model, packages, MCP servers
 | `group` (default) | Agent can access `groups`, `sessions`, `destinations`, `members` only, scoped to its own agent group. `--id` and group args are auto-filled. Cross-group access rejected. `cli_scope` changes blocked. |
 | `global` | Unrestricted. Set automatically for owner agent groups via `init-first-agent`. |
 
-Key files: `src/db/container-configs.ts`, `src/container-config.ts`, `src/cli/dispatch.ts` (scope enforcement), `src/claude-md-compose.ts` (instructions exclusion).
+Key files: `src/db/container-configs.ts`, `src/container-config.ts`, `src/cli/resources/groups.ts` (CLI verbs), `src/providers/opencode.ts` (per-group env merge), `src/cli/dispatch.ts` (scope enforcement), `src/claude-md-compose.ts` (instructions exclusion).
+
+## Background tasks (`/background`)
+
+A foreground query can be demoted to background so the user keeps interacting with the agent while the long task continues. Two triggers:
+
+- **Manual** — user sends `/background` (or `/bg`) as a standalone message while a turn is in flight. The current query becomes `bg-N`, the foreground slot is freed, the next user message starts a fresh foreground.
+- **Auto** — when a foreground query has been running > `NANOCLAW_AUTO_BG_THRESHOLD_MS` (default 30 000 ms) **and** a new user-visible message arrives. The smart trigger only fires when the user is actively waiting — silence means "let it finish, no rush". Set to `0` to disable auto-bg entirely.
+
+When a bg query completes, its final assistant text is:
+1. Posted to the channel with a `` `bg-N` `` prefix on each `<message to="…">` block
+2. Queued as `<background-result job-id="bg-N" …>…</background-result>` and injected as preamble into the **next foreground turn's prompt** so the agent has the result in context (can act on it: "ok réponds au 2e mail que tu as trouvé").
+
+### Stopping everything (`!stop`)
+
+`!stop` (standalone message) aborts **all** in-flight activity for the session — the foreground query and every background job — via `stopAllActivity()`. It finalizes each live-status post into a `⏹ Arrêté` marker, clears the fg slot + bg map + pending bg results, and acknowledges with `⏹ Arrêté — N tâche(s) interrompue(s)`. Detected in two places: the follow-up poller inside `processQuery` (when a foreground query is mid-flight — checked before `!background` and the generic runner-command bail) and the outer-loop command path (when only bg jobs are running). It does **not** wipe the SDK continuation — the conversation resumes normally on the next message (use `!clear` for that). Abort semantics match `!background`: the slot frees and the display cleans immediately; the underlying SDK turn unwinds on its next event with its output discarded.
+
+The bg query uses its own SDK subprocess + session id; its continuation is NOT persisted (deliberate — keeps the foreground session clean). Tradeoff: tool-call history from the bg turn is lost, only the final assistant text survives via injection.
+
+### Runner commands — all `!`-prefixed (no `/`-form)
+
+Mattermost intercepts every `/`-command before it reaches the bot ("command not found" in the UI, never posted), so the runner's command detectors only accept the `!`-form. The runner's 6 commands:
+
+- **`!help`** (alias `!aide`) — list every `!`-command with description and usage example. Posted directly by the outer loop when the user sends the command, no SDK call involved.
+- **`!background`** (alias `!bg`) — demote the current foreground query to background, free the slot for new messages. The bg's eventual result is posted with a `[bg-N]` tag and injected into the next foreground turn's prompt.
+- **`!stop`** — abort all in-flight activity (fg + every bg). See section above.
+- **`!live`** — toggle the live-status-post feature (default ON). When OFF, the agent works silently in the channel.
+- **`!clear`** — wipe the conversation continuation. The next message starts with a fresh SDK session (no memory of prior turns).
+- **`!bg-list`** / **`!bg-cancel [N]`** — fine-grained bg control. See [Per-bg control](#per-bg-control-bg-list--bg-cancel) below.
+
+All commands are detected on **standalone** messages only (no extra text, no mid-text). The `categorizeMessage` upstream router also accepts both `/` and `!` prefixes for the admin-routing path (e.g. `/compact` / `!compact`), but the runner's own detectors only fire on the `!`-form.
+
+### Per-bg control (`!bg-list` / `!bg-cancel`)
+
+When several bg jobs are running (e.g. user re-asked during a long one, and the demoted fg spawned a 2nd bg), the user needs finer control than "abort everything". Two commands, all `!`-prefixed because Mattermost intercepts every `/`-command before it reaches the bot:
+
+- **`!bg-list`** — lists every running bg with its id, elapsed seconds, last live-status action, and platform id. Returns "Aucune tâche en background." if the map is empty.
+
+- **`!bg-list`** — lists every running bg with its id, elapsed seconds, last live-status action, and platform id. Returns "Aucune tâche en background." if the map is empty.
+- **`!bg-cancel [N …]`** — with no N, cancels every bg (the fg is untouched — use `!stop` for that). With one or more N (e.g. `!bg-cancel 2`), cancels only those bgs; reports not-found ids if the bg already completed. Each cancel finalizes the live status with a `cancelled` marker and the next iteration of the poll heartbeat reaps any newly-stale ones.
+
+**Max bg duration auto-kill** — any bg older than `NANOCLAW_BG_MAX_DURATION_MS` (default 600 000 = 10 min) is auto-cancelled with a `⏹ bg-N arrêté (max duration Xs atteinte)` notice. Prevents a stuck model (e.g. looping on a 69s IMAP timeout) from spinning actions forever — symptom in `#mattermost_dm` 2026-06-19: bg-1 reached 141 actions / 429s on a hung IMAP call before the user got any signal. Set to `0` to disable the auto-kill (e.g. for a long-running batch analysis).
+
+Key files: `container/agent-runner/src/poll-loop.ts` (module-level `activeForegroundQuery` / `activeBackgroundQueries` state, `transitionToBackground`, `consumePendingBgResults`, `cancelBackgroundJob` / `cancelAllBackgroundJobs` / `listBackgroundJobs` / `reapStaleBackgroundJobs`), `container/agent-runner/src/formatter.ts` (`isBackgroundCommand` / `isBgListCommand` / `isBgCancelCommand` / `parseBgCancelIds`).
+
+### Live status post (`/live`)
+
+While a query is in flight, the agent maintains a **single status post** in the channel that updates in place with the latest tool call — e.g. `🔧 imap_search_emails(folder=Archives) — 12 actions • 28s`. Throttled to 2.5s between edits. Created on the first SDK `progress` event of a turn, finalized on the `result` event.
+
+- **Toggle**: `/live` standalone message flips the per-session setting (persisted in outbound.db `session_state.live_enabled`). Default ON.
+- **Interactive turns only**: live status is suppressed for scheduled-task turns (cron weekly summary, daily reminder, news digest…). A turn is "interactive" iff its initial batch contains a `chat`/`chat-sdk` message; pure `task` turns run silently (`ActiveQuery.interactive` gates `updateLiveStatus`).
+- **Tool calls feed the status**: the Claude provider's `translateEvents` emits a progress event for each assistant `tool_use` block, and the opencode provider's `message.part.updated` switch yields one per `ToolPart` in `pending`/`running` state (dedupe by `callID` so a single call → one progress). Both routes go through the shared `summarizeToolUse` helper (`providers/summarize.ts`) to format the one-liner — so the status text looks the same regardless of which agent is driving.
+- **Periodic refresh**: a 3s ticker (`liveStatusRefresh`) re-renders the post with the last known text even when no new tool event arrives, so the `Xs` counter keeps advancing during a long single tool call (e.g. a heavy IMAP search) instead of looking frozen.
+- **Finalization**: on `result`/error the post is **edited** into a discreet `✅ Terminé en Xs, N actions` marker rather than deleted — deleting leaves an ugly Mattermost `(message deleted)` placeholder for ~30s. `finalizeLiveStatus` retries resolving the platform post id for a few seconds (short-turn race: the create may not have round-tripped through the host delivery poll yet).
+- **Orphan cleanup**: the active post ref (`outboundId` + `platformMsgId`) is persisted to `session_state.live_status_post` on create/resolution. If the container dies mid-turn (crash, absolute-ceiling kill, manual restart) the `🔧` post would otherwise hang forever — so on startup `cleanupOrphanLiveStatus` finalizes any leftover ref into `✅ Terminé (session précédente interrompue)`.
+- **Edit primitive**: reuses the existing Mattermost adapter `operation: 'edit'`/`'delete'` ops (also used by /background).
+- **Global kill switch**: `NANOCLAW_LIVE_STATUS_DISABLED=1` env var disables the feature entirely (used by the E2E test harness to keep assertions deterministic — the test waits on the FIRST reply matching a string, and live-status intermediate posts would race with the actual answer).
+
+Bg queries also get their own live status post tagged with `` `bg-N` `` so the user can tell which job is doing what.
 
 ## Container Restart
 
