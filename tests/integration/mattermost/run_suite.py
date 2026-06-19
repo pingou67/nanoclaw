@@ -184,7 +184,30 @@ def restore_live_config_and_restart() -> None:
     """Stop service, swap config back to production, restart."""
     systemctl("stop")
     if BACKUP_CONFIG.exists():
+        # Verify the backup looks like a real config (has a non-mock URL) before
+        # trusting it. If the test was killed mid-restore in a previous run, the
+        # backup may itself be the mock URL — restore would then leave prod
+        # pointed at a dead local mock. Detect that and refuse, so a missing
+        # live config surfaces as a clear error instead of silent breakage.
+        try:
+            backup_data = json.loads(BACKUP_CONFIG.read_text())
+            if "127.0.0.1:8888" in backup_data.get("url", ""):
+                raise RuntimeError(
+                    f"Refusing to restore {BACKUP_CONFIG}: URL still points at the mock "
+                    f"({backup_data.get('url')}). The live config was lost — the operator "
+                    f"must reconstruct data/mattermost.json manually with the real bot token."
+                )
+        except json.JSONDecodeError as err:
+            raise RuntimeError(f"Refusing to restore {BACKUP_CONFIG}: not valid JSON ({err})") from err
         BACKUP_CONFIG.replace(LIVE_CONFIG)
+    elif not LIVE_CONFIG.exists() or "127.0.0.1:8888" in LIVE_CONFIG.read_text():
+        # No backup AND live is currently the mock config (or missing entirely) —
+        # the test left things in a broken state. Refuse to silently no-op.
+        raise RuntimeError(
+            f"No {BACKUP_CONFIG.name} and {LIVE_CONFIG} is the mock config. The live "
+            f"config was lost in a prior failed test run — reconstruct "
+            f"data/mattermost.json manually with the real bot token before re-running."
+        )
     # Clear the test-only env overrides so production runs with live-status
     # ON and the default 30s auto-bg threshold.
     subprocess.run(["systemctl", "--user", "unset-environment", "NANOCLAW_LIVE_STATUS_DISABLED"], check=True, capture_output=True)
