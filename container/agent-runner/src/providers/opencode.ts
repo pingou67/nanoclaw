@@ -313,11 +313,15 @@ export function checkIdleTimeout(
   lastEventAt: number,
   eventTimedOut: boolean,
   idleTimeoutMs: number,
-  stream: { return?: (value?: unknown) => Promise<unknown> | void } | undefined,
+  // `(...args: never[]) => unknown` is bivariant-safe: it accepts both an
+  // AsyncGenerator's `.return(value)` (whose arg is `void | PromiseLike<void>`)
+  // and a test mock's `() => void`, without the strict-mode contravariance
+  // mismatch a concrete `(value?: unknown) => …` signature would trigger.
+  stream: { return?: (...args: never[]) => unknown } | undefined,
 ): { eventTimedOut: boolean; timedOut: boolean } {
   if (eventTimedOut) return { eventTimedOut, timedOut: false };
   if (Date.now() - lastEventAt > idleTimeoutMs) {
-    void stream?.return?.(undefined);
+    void stream?.return?.();
     return { eventTimedOut: true, timedOut: true };
   }
   return { eventTimedOut, timedOut: false };

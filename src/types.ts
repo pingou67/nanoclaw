@@ -16,6 +16,7 @@ export interface ContainerConfigRow {
   provider: string | null;
   model: string | null;
   effort: string | null;
+  thinking: string | null; // JSON: { type: 'adaptive' | 'enabled' | 'disabled'; budgetTokens?: number }
   image_tag: string | null;
   assistant_name: string | null;
   max_messages_per_prompt: number | null;

@@ -28,6 +28,7 @@ function presentConfig(row: ContainerConfigRow): Record<string, unknown> {
     packages_npm: JSON.parse(row.packages_npm),
     additional_mounts: JSON.parse(row.additional_mounts),
     cli_scope: row.cli_scope,
+    thinking: row.thinking ? JSON.parse(row.thinking) : null,
     env: JSON.parse(row.env || '{}'),
     updated_at: row.updated_at,
   };
@@ -213,8 +214,11 @@ registerResource({
     'config update': {
       access: 'approval',
       description:
-        'Update container config scalar fields. Changes are saved but do NOT take effect until you run `ncl groups restart`. ' +
-        'Use --id <group-id> and any of: --provider, --model, --effort, --image-tag, --assistant-name, --max-messages-per-prompt, --cli-scope.',
+        'Update container config fields. Changes are saved but do NOT take effect until you run `ncl groups restart`. ' +
+        'Use --id <group-id> and any of: --provider, --model, --effort, --image-tag, --assistant-name, ' +
+        '--max-messages-per-prompt, --cli-scope, --thinking, --thinking-budget-tokens. ' +
+        'Thinking values: adaptive (Claude decides), enabled (fixed budget — pair with --thinking-budget-tokens N), ' +
+        'disabled (no extended thinking), none (clear field, falls back to provider default).',
       handler: async (args) => {
         const id = args.id as string;
         if (!id) throw new Error('--id is required');
@@ -242,13 +246,34 @@ registerResource({
           updates.cli_scope = scope;
         }
 
-        if (Object.keys(updates).length === 0) {
+        // Thinking is JSON-typed but always a single value, so we accept it
+        // here alongside the scalars rather than via a dedicated verb.
+        let thinkingUpdate: { type: 'adaptive' | 'enabled' | 'disabled'; budgetTokens?: number } | null | undefined;
+        if (args.thinking !== undefined) {
+          const t = String(args.thinking);
+          if (t === 'none') {
+            thinkingUpdate = null;
+          } else if (t === 'adaptive' || t === 'disabled') {
+            thinkingUpdate = { type: t };
+          } else if (t === 'enabled') {
+            const budget = args['thinking-budget-tokens'] ?? args.thinking_budget_tokens;
+            if (budget === undefined) {
+              throw new Error('--thinking enabled requires --thinking-budget-tokens <N>');
+            }
+            thinkingUpdate = { type: 'enabled', budgetTokens: Number(budget) };
+          } else {
+            throw new Error('--thinking must be one of: adaptive, enabled, disabled, none');
+          }
+        }
+
+        if (Object.keys(updates).length === 0 && thinkingUpdate === undefined) {
           throw new Error(
-            'Nothing to update — provide at least one of: --provider, --model, --effort, --image-tag, --assistant-name, --max-messages-per-prompt, --cli-scope',
+            'Nothing to update — provide at least one of: --provider, --model, --effort, --image-tag, --assistant-name, --max-messages-per-prompt, --cli-scope, --thinking',
           );
         }
 
-        updateContainerConfigScalars(id, updates);
+        if (Object.keys(updates).length > 0) updateContainerConfigScalars(id, updates);
+        if (thinkingUpdate !== undefined) updateContainerConfigJson(id, 'thinking', thinkingUpdate);
 
         const updated = getContainerConfig(id)!;
         return presentConfig(updated);

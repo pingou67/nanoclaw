@@ -56,6 +56,7 @@ export function backfillContainerConfigs(): void {
       provider,
       model: null,
       effort: null,
+      thinking: null,
       image_tag: legacy.imageTag ?? null,
       assistant_name: legacy.assistantName ?? null,
       max_messages_per_prompt: legacy.maxMessagesPerPrompt ?? null,

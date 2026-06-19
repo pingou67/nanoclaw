@@ -177,11 +177,12 @@ export function migrateGroupsToClaudeLocal(): void {
     }
   }
 
-  const globalDir = path.join(GROUPS_DIR, 'global');
-  if (fs.existsSync(globalDir)) {
-    fs.rmSync(globalDir, { recursive: true, force: true });
-    actions.push('groups/global/ removed');
-  }
+  // Local patch: don't delete groups/global/. v2 trunk wipes it on every
+  // startup ("groups/global/ removed" action) on the assumption that the
+  // shared base now lives in container/CLAUDE.md. We keep the directory
+  // around as a safety net for any future agent group that wants its own
+  // shared mount, and to avoid losing a customized groups/global/CLAUDE.md
+  // file silently across restarts.
 
   if (actions.length > 0) {
     log.info('Migrated groups to CLAUDE.local.md model', { actions });

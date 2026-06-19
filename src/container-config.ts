@@ -43,6 +43,7 @@ export interface ContainerConfig {
   maxMessagesPerPrompt?: number;
   model?: string;
   effort?: string;
+  thinking?: { type: 'adaptive' | 'enabled' | 'disabled'; budgetTokens?: number };
   /**
    * Per-group env overrides. Read from the `env` column in
    * container_configs; injected into the container at spawn time so
@@ -70,6 +71,7 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     maxMessagesPerPrompt: row.max_messages_per_prompt ?? undefined,
     model: row.model ?? undefined,
     effort: row.effort ?? undefined,
+    thinking: row.thinking ? (JSON.parse(row.thinking) as ContainerConfig['thinking']) : undefined,
     env: row.env ? (JSON.parse(row.env) as Record<string, string>) : undefined,
   };
 }

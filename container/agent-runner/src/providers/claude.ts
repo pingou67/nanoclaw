@@ -5,6 +5,7 @@ import path from 'path';
 import { query as sdkQuery, type HookCallback, type PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 
 import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/connection.js';
+import { writeMessageOut } from '../db/messages-out.js';
 import { registerProvider } from './provider-registry.js';
 import { summarizeToolUse } from './summarize.js';
 import type { AgentProvider, AgentQuery, McpServerConfig, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
@@ -60,6 +61,18 @@ const TOOL_ALLOWLIST = [
   'ToolSearch',
   'Skill',
   'NotebookEdit',
+  // claude.ai connectors — Google Calendar. Authorized per-group via
+  // container/CLAUDE.md directive; non-permitted groups must refuse at the
+  // prompt level.
+  'mcp__claude_ai_Google_Calendar__list_calendars',
+  'mcp__claude_ai_Google_Calendar__list_events',
+  'mcp__claude_ai_Google_Calendar__get_event',
+  'mcp__claude_ai_Google_Calendar__suggest_time',
+  // Write tools — famille group only (see container/CLAUDE.md)
+  'mcp__claude_ai_Google_Calendar__create_event',
+  'mcp__claude_ai_Google_Calendar__update_event',
+  'mcp__claude_ai_Google_Calendar__delete_event',
+  'mcp__claude_ai_Google_Calendar__respond_to_event',
 ];
 
 // MCP server names are sanitized by the SDK when forming tool prefixes:
@@ -237,6 +250,18 @@ function archiveTranscriptFile(transcriptPath: string | undefined, sessionId: st
 function createPreCompactHook(assistantName?: string): HookCallback {
   return async (input) => {
     const preCompact = input as PreCompactHookInput;
+    // Notify the chat that a compaction is starting — keeps the user from
+    // wondering why their last message went unanswered for ~30s. Best-effort:
+    // never let a notification failure abort the actual archive/compaction.
+    try {
+      writeMessageOut({
+        id: `compact-notice-${Date.now()}`,
+        kind: 'chat',
+        content: JSON.stringify({ text: '⏳ Compaction de la conversation en cours, un instant…' }),
+      });
+    } catch (err) {
+      log(`Failed to emit compact notice: ${err instanceof Error ? err.message : String(err)}`);
+    }
     archiveTranscriptFile(preCompact.transcript_path, preCompact.session_id, assistantName);
     return {};
   };
@@ -320,7 +345,8 @@ function transcriptStartMs(transcriptPath: string): number | null {
  * raise or lower the threshold without editing source — useful when running
  * with a 1M-context model variant or when emergency-tuning a deployment.
  */
-const CLAUDE_CODE_AUTO_COMPACT_WINDOW = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || '165000';
+// Raised from 165k (Sonnet 200k default) to 800k for 1M context window.
+const CLAUDE_CODE_AUTO_COMPACT_WINDOW = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || '800000';
 
 /**
  * Stale-session detection. Matches Claude Code's error text when a
@@ -338,6 +364,7 @@ export class ClaudeProvider implements AgentProvider {
   private additionalDirectories?: string[];
   private model?: string;
   private effort?: string;
+  private thinking?: { type: 'adaptive' | 'enabled' | 'disabled'; budgetTokens?: number };
 
   constructor(options: ProviderOptions = {}) {
     this.assistantName = options.assistantName;
@@ -345,6 +372,7 @@ export class ClaudeProvider implements AgentProvider {
     this.additionalDirectories = options.additionalDirectories;
     this.model = options.model;
     this.effort = options.effort;
+    this.thinking = options.thinking;
     this.env = {
       ...(options.env ?? {}),
       CLAUDE_CODE_AUTO_COMPACT_WINDOW,
@@ -404,6 +432,10 @@ export class ClaudeProvider implements AgentProvider {
         additionalDirectories: this.additionalDirectories,
         resume: input.continuation,
         pathToClaudeCodeExecutable: '/pnpm/claude',
+        ...(this.model ? { model: this.model } : {}),
+        ...(this.effort ? { effort: this.effort } : {}),
+        ...(this.thinking ? { thinking: this.thinking } : {}),
+        betas: ['context-1m-2025-08-07'],
         systemPrompt: instructions ? { type: 'preset' as const, preset: 'claude_code' as const, append: instructions } : undefined,
         allowedTools: [
           ...TOOL_ALLOWLIST,
@@ -414,6 +446,8 @@ export class ClaudeProvider implements AgentProvider {
         model: this.model,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         effort: this.effort as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ...(this.thinking ? { thinking: this.thinking as any } : {}),
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         settingSources: ['project', 'user', 'local'],
@@ -459,6 +493,18 @@ export class ClaudeProvider implements AgentProvider {
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
           const tn = message as { summary?: string };
           yield { type: 'progress', message: tn.summary || 'Task notification' };
+        } else if (message.type === 'assistant') {
+          // Surface tool calls as progress events so the poll-loop can update
+          // a live status post in the channel (gated by /live toggle, default
+          // ON). Each tool_use block emits one progress event with a brief
+          // human-readable summary (tool name + first 1-2 noteworthy args).
+          const msg = message as { message?: { content?: Array<{ type: string; name?: string; input?: Record<string, unknown> }> } };
+          const blocks = msg.message?.content ?? [];
+          for (const block of blocks) {
+            if (block.type === 'tool_use' && typeof block.name === 'string') {
+              yield { type: 'progress', message: summarizeToolUse(block.name, block.input ?? {}) };
+            }
+          }
         }
       }
       log(`Query completed after ${messageCount} SDK messages`);

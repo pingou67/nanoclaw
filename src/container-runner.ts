@@ -448,6 +448,17 @@ async function buildContainerArgs(
   // Everything NanoClaw-specific is in container.json (read by runner at startup).
   args.push('-e', `TZ=${TIMEZONE}`);
 
+  // Passthrough for runner-level tunables that the user might set on the host
+  // (e.g. to disable auto-background or live-status during E2E tests). The
+  // container poll-loop reads these from process.env; without the explicit
+  // passthrough the host-side value never reaches the container.
+  if (process.env.NANOCLAW_AUTO_BG_THRESHOLD_MS !== undefined) {
+    args.push('-e', `NANOCLAW_AUTO_BG_THRESHOLD_MS=${process.env.NANOCLAW_AUTO_BG_THRESHOLD_MS}`);
+  }
+  if (process.env.NANOCLAW_LIVE_STATUS_DISABLED !== undefined) {
+    args.push('-e', `NANOCLAW_LIVE_STATUS_DISABLED=${process.env.NANOCLAW_LIVE_STATUS_DISABLED}`);
+  }
+
   // Provider-contributed env vars (e.g. XDG_DATA_HOME, OPENCODE_*, NO_PROXY).
   if (providerContribution.env) {
     for (const [key, value] of Object.entries(providerContribution.env)) {
@@ -501,6 +512,24 @@ async function buildContainerArgs(
 
   // Override entrypoint: run v2 entry point directly via Bun (no tsc, no stdin).
   args.push('--entrypoint', 'bash');
+
+  // Mount Claude OAuth credentials (Pro/Max subscription) if present.
+  // Allows the agent to authenticate using the host's subscription without
+  // exposing tokens as environment variables.
+  // When credentials.json is available, override OneCLI's placeholder API key
+  // and proxy so the Claude SDK reads OAuth tokens directly from the file.
+  // Skipped for non-claude providers (e.g. opencode): they need OneCLI's
+  // HTTPS_PROXY active so the gateway injects the upstream provider key
+  // (OpenRouter, DeepSeek, etc.) — clearing it would strip the auth header
+  // and the upstream returns 401 / "Missing Authentication header".
+  const homeDir = process.env.HOME || `/home/${process.env.USER || 'node'}`;
+  const claudeCredentials = path.join(homeDir, '.claude', '.credentials.json');
+  if (fs.existsSync(claudeCredentials) && _provider === 'claude') {
+    args.push(...readonlyMountArgs(claudeCredentials, '/home/node/.claude/.credentials.json'));
+    args.push('-e', 'ANTHROPIC_API_KEY=');
+    args.push('-e', 'HTTPS_PROXY=');
+    args.push('-e', 'HTTP_PROXY=');
+  }
 
   // Use per-agent-group image if one has been built, otherwise base image
   const imageTag = containerConfig.imageTag || CONTAINER_IMAGE;

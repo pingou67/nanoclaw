@@ -78,6 +78,15 @@ registerProviderContainerConfig('opencode', (ctx) => {
     if (value) env[key] = value;
   }
 
+  // Fallback: map the `effort` scalar column (set via `ncl groups config
+  // update --effort high`) to OPENCODE_REASONING_EFFORT when not already
+  // provided via the per-group/host env. Without this, a group that pinned
+  // its reasoning effort through the scalar field (rather than env-set)
+  // silently sends no effort to opencode.
+  if (!env.OPENCODE_REASONING_EFFORT && ctx.containerConfig?.effort) {
+    env.OPENCODE_REASONING_EFFORT = ctx.containerConfig.effort;
+  }
+
   // Per-group opt-in for opencode npm plugins (e.g. `opencode-claude-memory`
   // for shared persistent memory). The host passes this through the group's
   // `env` map (set via `ncl groups config env-set`). Empty by default so
