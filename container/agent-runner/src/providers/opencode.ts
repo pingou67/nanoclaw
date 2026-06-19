@@ -468,6 +468,13 @@ export class OpenCodeProvider implements AgentProvider {
         // pending → running → completed, but the live status should only
         // show one update per callID. Emit on the first non-terminal state.
         const emittedToolCallIds = new Set<string>();
+        // Track the latest assistant message id (set on every
+        // message.updated with role=assistant). We use this as the
+        // "result text" pointer when we yield the result — the opencode
+        // binary can produce multiple messages in a single turn
+        // (e.g. the model emits a draft, then refines it, then adds an
+        // acknowledgement), and we want the LAST one the user should see.
+        let latestAssistantMsgId: string | undefined;
         let lastEventAt = Date.now();
         let eventTimedOut = false;
         const timeoutCheck = setInterval(() => {
@@ -502,6 +509,9 @@ export class OpenCodeProvider implements AgentProvider {
                 const info = ev.properties.info as { id?: string; role?: string } | undefined;
                 if (info?.id && info?.role) {
                   roleByMessageId.set(info.id, info.role);
+                  if (info.role === 'assistant') {
+                    latestAssistantMsgId = info.id;
+                  }
                 }
                 break;
               }
@@ -560,6 +570,15 @@ export class OpenCodeProvider implements AgentProvider {
                 break;
               }
               case 'session.idle': {
+                // session.idle is the opencode binary's "model is done with
+                // this segment" signal. Emitted after every model segment
+                // (between text chunks, after tool calls) AND at the end of
+                // a turn. Treating it as a hard turn-end was racy for
+                // multi-message turns (the model would produce N+1, N+2
+                // after the first idle and we'd discard them). Now we break
+                // here — but we yield the LATEST assistant message id
+                // (tracked above), not the iteration-order tail, so any
+                // messages produced BEFORE this idle are picked up too.
                 const sid = (ev.properties as { sessionID?: string }).sessionID;
                 if (sid === sessionId) {
                   break turn;
@@ -574,11 +593,13 @@ export class OpenCodeProvider implements AgentProvider {
           clearInterval(timeoutCheck);
         }
 
+        // Yield the latest assistant message. If the model produced
+        // multiple messages in this turn, this is the LAST one — the
+        // earlier ones were either superseded or part of the model's
+        // thinking that the user doesn't need to see.
         let resultText = '';
-        for (const [msgId, role] of roleByMessageId) {
-          if (role === 'assistant') {
-            resultText = partTextByMessageId.get(msgId) ?? resultText;
-          }
+        if (latestAssistantMsgId) {
+          resultText = partTextByMessageId.get(latestAssistantMsgId) ?? '';
         }
         yield { type: 'result', text: resultText || null };
       }
