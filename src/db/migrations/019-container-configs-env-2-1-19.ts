@@ -1,0 +1,29 @@
+import type Database from 'better-sqlite3';
+import type { Migration } from './index.js';
+
+/**
+ * Add a per-group `env` column to container_configs so providers can opt into
+ * features that need per-group env vars (e.g. NANOCLAW_OPENCODE_PLUGINS for
+ * opencode-claude-memory) without touching the host's `.env`. JSON-encoded
+ * Record<string,string>, empty for groups with no overrides. Defaults to '{}'
+ * (NOT NULL) so existing rows continue to work without a separate backfill.
+ *
+ * Name `container-configs-env-2-1-19` (rather than a plain "container-configs-env")
+ * so DBs already carrying the column from a prior pre-2.1.19 local migration
+ * of the same name don't get a "duplicate column" error on upgrade — the runner
+ * keys pending by name, and a fresh install will run this fresh and the column
+ * will be added then.
+ */
+export const migration019: Migration = {
+  version: 19,
+  name: 'container-configs-env-2-1-19',
+  up(db: Database.Database) {
+    // Defensive: skip if the column already exists (covers installs that
+    // pre-date 2.1.19 and had a local migration of the same logical effect).
+    const cols = new Set(
+      (db.prepare("PRAGMA table_info('container_configs')").all() as Array<{ name: string }>).map((c) => c.name),
+    );
+    if (cols.has('env')) return;
+    db.prepare("ALTER TABLE container_configs ADD COLUMN env TEXT NOT NULL DEFAULT '{}'").run();
+  },
+};
