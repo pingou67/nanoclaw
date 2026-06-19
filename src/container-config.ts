@@ -43,6 +43,13 @@ export interface ContainerConfig {
   maxMessagesPerPrompt?: number;
   model?: string;
   effort?: string;
+  /**
+   * Per-group env overrides. Read from the `env` column in
+   * container_configs; injected into the container at spawn time so
+   * providers that need per-group env (e.g. opencode plugins) get them
+   * without changing the host `.env`.
+   */
+  env?: Record<string, string>;
 }
 
 /** Build a `ContainerConfig` from a DB row + agent group identity. */
@@ -63,6 +70,7 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     maxMessagesPerPrompt: row.max_messages_per_prompt ?? undefined,
     model: row.model ?? undefined,
     effort: row.effort ?? undefined,
+    env: row.env ? (JSON.parse(row.env) as Record<string, string>) : undefined,
   };
 }
 

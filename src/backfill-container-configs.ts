@@ -62,6 +62,7 @@ export function backfillContainerConfigs(): void {
       skills: JSON.stringify(legacy.skills ?? 'all'),
       mcp_servers: JSON.stringify(legacy.mcpServers ?? {}),
       packages_apt: JSON.stringify(legacy.packages?.apt ?? []),
+      env: '{}',
       packages_npm: JSON.stringify(legacy.packages?.npm ?? []),
       additional_mounts: JSON.stringify(legacy.additionalMounts ?? []),
       cli_scope: 'group',

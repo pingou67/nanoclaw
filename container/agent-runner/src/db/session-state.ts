@@ -77,3 +77,59 @@ export function setContinuation(providerName: string, id: string): void {
 export function clearContinuation(providerName: string): void {
   deleteValue(continuationKey(providerName));
 }
+
+const LIVE_ENABLED_KEY = 'live_enabled';
+
+/**
+ * Read the live-status toggle for this session. Default true — when the
+ * value has never been set, treat as enabled. Persisted in outbound.db's
+ * session_state so toggling survives container restarts.
+ */
+export function getLiveEnabled(): boolean {
+  const v = getValue(LIVE_ENABLED_KEY);
+  return v === undefined ? true : v === 'true';
+}
+
+export function setLiveEnabled(enabled: boolean): void {
+  setValue(LIVE_ENABLED_KEY, enabled ? 'true' : 'false');
+}
+
+const LIVE_POST_KEY = 'live_status_post';
+
+/**
+ * Reference to the live-status post currently being maintained, persisted so
+ * that if the container dies mid-turn (crash, absolute-ceiling kill, manual
+ * restart) the NEXT container can find the orphaned "🔧 …" post and finalize
+ * it (edit to a done marker) instead of leaving it dangling forever.
+ *
+ * `outboundId` is our generated message id (always known at create time);
+ * `platformMsgId` is the channel post id, known only once the host has
+ * delivered the create. Startup cleanup resolves the latter from the
+ * `delivered` table if it's still null here.
+ */
+export interface LiveStatusPostRef {
+  outboundId: string;
+  platformMsgId: string | null;
+  /** platform_id + channel_type + thread_id needed to address the edit. */
+  platformId: string;
+  channelType: string;
+  threadId: string | null;
+}
+
+export function setLiveStatusPost(ref: LiveStatusPostRef): void {
+  setValue(LIVE_POST_KEY, JSON.stringify(ref));
+}
+
+export function getLiveStatusPost(): LiveStatusPostRef | undefined {
+  const v = getValue(LIVE_POST_KEY);
+  if (!v) return undefined;
+  try {
+    return JSON.parse(v) as LiveStatusPostRef;
+  } catch {
+    return undefined;
+  }
+}
+
+export function clearLiveStatusPost(): void {
+  deleteValue(LIVE_POST_KEY);
+}

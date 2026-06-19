@@ -4,7 +4,7 @@ import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from '
 import { getPendingMessages, markCompleted } from './db/messages-in.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
 import { formatMessages, extractRouting } from './formatter.js';
-import { isCorruptionError, processQuery } from './poll-loop.js';
+import { isCorruptionError, processQuery, type ActiveQuery } from './poll-loop.js';
 import { MockProvider } from './providers/mock.js';
 import type { AgentQuery, ProviderEvent } from './providers/types.js';
 
@@ -411,12 +411,28 @@ const ERR_ROUTING = {
   inReplyTo: 'm1',
 };
 
+function makeActiveQuery(q: AgentQuery): ActiveQuery {
+  return {
+    jobId: 'fg',
+    kind: 'foreground',
+    query: q,
+    originalPrompt: 'prompt',
+    startedAt: Date.now(),
+    turnStartedAt: Date.now(),
+    activelyProcessing: true,
+    interactive: true,
+    routing: ERR_ROUTING,
+    initialBatchIds: ['m1'],
+    live: { outboundId: null, platformMsgId: null, lastUpdateAt: 0, latestText: '', eventCount: 0 },
+  };
+}
+
 describe('error result with no <message> envelope', () => {
   it('delivers a budget/billing error to the triggering channel and does not nudge', async () => {
     const budgetText = 'Spending limit reached. Add your own key at https://example.com/keys';
     const { query, pushes } = makeResultQuery({ type: 'result', text: budgetText, isError: true });
 
-    await processQuery(query, ERR_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    await processQuery(makeActiveQuery(query), 'claude', undefined);
 
     const out = getUndeliveredMessages();
     expect(out).toHaveLength(1);
@@ -430,7 +446,7 @@ describe('error result with no <message> envelope', () => {
   it('still nudges (and does not deliver) a normal unwrapped result', async () => {
     const { query, pushes } = makeResultQuery({ type: 'result', text: 'bare text, no envelope' });
 
-    await processQuery(query, ERR_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    await processQuery(makeActiveQuery(query), 'claude', undefined);
 
     expect(getUndeliveredMessages()).toHaveLength(0);
     expect(pushes).toHaveLength(1);

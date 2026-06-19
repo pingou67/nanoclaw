@@ -469,7 +469,7 @@ describe('poll loop — /clear command', () => {
         `INSERT INTO messages_in (id, kind, timestamp, status, platform_id, channel_type, content)
          VALUES ('m-clear', 'chat', datetime('now'), 'pending', 'chan-1', 'discord', ?)`,
       )
-      .run(JSON.stringify({ text: '/clear' }));
+      .run(JSON.stringify({ text: '!clear' }));
 
     const provider = new MockProvider({}, () => '<message to="discord-test">should not run</message>');
     const controller = new AbortController();
@@ -554,7 +554,7 @@ describe('poll loop — slash command during active query', () => {
     const loopPromise = runPollLoopWithTimeout(provider as unknown as MockProvider, controller.signal, 3000);
 
     await waitFor(() => provider.queries === 1, 2000);
-    insertMessage('m-clear-active', { sender: 'Alice', text: '/clear' }, { platformId: 'chan-1', channelType: 'discord' });
+    insertMessage('m-clear-active', { sender: 'Alice', text: '!clear' }, { platformId: 'chan-1', channelType: 'discord' });
 
     await waitFor(() => provider.aborts === 1, 2000);
     await waitFor(

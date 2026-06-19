@@ -28,6 +28,7 @@ function presentConfig(row: ContainerConfigRow): Record<string, unknown> {
     packages_npm: JSON.parse(row.packages_npm),
     additional_mounts: JSON.parse(row.additional_mounts),
     cli_scope: row.cli_scope,
+    env: JSON.parse(row.env || '{}'),
     updated_at: row.updated_at,
   };
 }
@@ -367,6 +368,64 @@ registerResource({
           removed: { apt: apt || null, npm: npm || null },
           note: 'Image rebuild required for package changes to take effect.',
         };
+      },
+    },
+    'config env-set': {
+      access: 'approval',
+      description:
+        'Set a per-group env var (overrides the host env at spawn time). Useful for opt-in features that need per-group env ' +
+        '(e.g. NANOCLAW_OPENCODE_PLUGINS to enable a memory plugin). Requires `ncl groups restart` to take effect. ' +
+        "Use --id <group-id> --key <KEY> --value <VALUE>. Pass --key __all__ --value '<json-object>' to replace the whole map.",
+      handler: async (args) => {
+        const id = args.id as string;
+        if (!id) throw new Error('--id is required');
+        const key = args.key as string;
+        const value = args.value as string;
+        if (!key) throw new Error('--key is required');
+        if (value === undefined) throw new Error('--value is required');
+
+        const row = getContainerConfig(id);
+        if (!row) throw new Error(`No container config for group: ${id}`);
+        const env = JSON.parse(row.env || '{}') as Record<string, string>;
+
+        if (key === '__all__') {
+          const next = JSON.parse(value) as Record<string, string>;
+          if (typeof next !== 'object' || Array.isArray(next) || next === null) {
+            throw new Error('--value must be a JSON object when --key is __all__');
+          }
+          for (const [k, v] of Object.entries(next)) {
+            if (typeof v !== 'string') throw new Error(`env value for "${k}" must be a string`);
+          }
+          updateContainerConfigJson(id, 'env', next);
+          return { env: next, note: 'Run `ncl groups restart` to apply' };
+        }
+
+        env[key] = value;
+        updateContainerConfigJson(id, 'env', env);
+        return { env, note: 'Run `ncl groups restart` to apply' };
+      },
+    },
+    'config env-unset': {
+      access: 'approval',
+      description:
+        'Remove a per-group env var (or all of them). Use --id <group-id> --key <KEY>, or --key __all__ to clear the entire map.',
+      handler: async (args) => {
+        const id = args.id as string;
+        if (!id) throw new Error('--id is required');
+        const key = args.key as string;
+        if (!key) throw new Error('--key is required');
+
+        const row = getContainerConfig(id);
+        if (!row) throw new Error(`No container config for group: ${id}`);
+        const env = JSON.parse(row.env || '{}') as Record<string, string>;
+
+        if (key === '__all__') {
+          updateContainerConfigJson(id, 'env', {});
+          return { env: {}, note: 'Run `ncl groups restart` to apply' };
+        }
+        delete env[key];
+        updateContainerConfigJson(id, 'env', env);
+        return { env, note: 'Run `ncl groups restart` to apply' };
       },
     },
   },

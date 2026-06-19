@@ -120,6 +120,22 @@ export function markCompleted(ids: string[]): void {
   })();
 }
 
+/**
+ * Release messages back from 'processing' to a 'pending' visibility for the
+ * next getPendingMessages() call. Used when the runner decides not to consume
+ * a message it had already markProcessing'd (e.g. on auto-bg trigger: new
+ * follow-up messages get released so the next fresh foreground query picks
+ * them up instead of being pushed into the now-backgrounded query).
+ */
+export function releaseProcessing(ids: string[]): void {
+  if (ids.length === 0) return;
+  const db = getOutboundDb();
+  const stmt = db.prepare('DELETE FROM processing_ack WHERE message_id = ?');
+  db.transaction(() => {
+    for (const id of ids) stmt.run(id);
+  })();
+}
+
 /** Mark a single message as failed — writes to processing_ack in outbound.db. */
 export function markFailed(id: string): void {
   getOutboundDb()

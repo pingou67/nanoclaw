@@ -82,10 +82,12 @@ export function updateContainerConfigScalars(
 /** Overwrite a JSON column wholesale. Used for skills, mcp_servers, packages_*, additional_mounts. */
 export function updateContainerConfigJson(
   agentGroupId: string,
-  column: 'skills' | 'mcp_servers' | 'packages_apt' | 'packages_npm' | 'additional_mounts',
+  column: 'skills' | 'mcp_servers' | 'packages_apt' | 'packages_npm' | 'additional_mounts' | 'env',
   value: unknown,
 ): void {
-  if (!JSON_COLUMNS.has(column)) throw new Error(`Invalid JSON column: ${column}`);
+  // `env` is JSON but not in JSON_COLUMNS (the scalar-only callers iterate
+  // that set to validate). Allow it explicitly here.
+  if (!JSON_COLUMNS.has(column) && column !== 'env') throw new Error(`Invalid JSON column: ${column}`);
   const now = new Date().toISOString();
   getDb()
     .prepare(`UPDATE container_configs SET ${column} = ?, updated_at = ? WHERE agent_group_id = ?`)

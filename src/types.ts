@@ -25,6 +25,13 @@ export interface ContainerConfigRow {
   packages_npm: string; // JSON: string[]
   additional_mounts: string; // JSON: AdditionalMountConfig[]
   cli_scope: string; // 'disabled' | 'group' | 'global'
+  /**
+   * Per-group env overrides (JSON: Record<string, string>). Injected into
+   * the container at spawn time so providers that need per-group env
+   * (e.g. opencode plugins) get them without changing the host `.env`.
+   * Empty `{}` for groups with no overrides.
+   */
+  env: string;
   updated_at: string;
 }
 

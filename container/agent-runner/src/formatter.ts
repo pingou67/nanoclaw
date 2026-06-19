@@ -3,20 +3,32 @@ import type { MessageInRow } from './db/messages-in.js';
 import { TIMEZONE, formatLocalTime } from './timezone.js';
 
 /**
- * Command categories for messages starting with '/'.
+ * Command categories for messages starting with '/' or '!'.
  * - admin: sender must be in NANOCLAW_ADMIN_USER_IDS
  * - filtered: silently drop (mark completed without processing)
  * - passthrough: pass raw to the agent (no XML wrapping)
  * - none: not a command — format normally
+ *
+ * Note: in Mattermost, any message starting with `/` is a candidate for
+ * Mattermost's own slash-command parser and is often dropped before the bot
+ * ever sees it ("command not found" in the UI, never posted). The `!`-form
+ * is the only form that's actually reachable in practice. We accept both
+ * for the categorization because (a) some channels reach the bot via
+ * non-Mattermost adapters (chat-sdk, webhooks) that DO pass `/`-prefixed
+ * text through, and (b) the integration test suite relies on the `/`-form
+ * for `isRunnerCommand` to detect mid-stream follow-ups.
  */
 export type CommandCategory = 'admin' | 'filtered' | 'passthrough' | 'none';
 
-const ADMIN_COMMANDS = new Set(['/remote-control', '/clear', '/compact', '/context', '/cost', '/files', '/upload-trace']);
-const FILTERED_COMMANDS = new Set(['/help', '/login', '/logout', '/doctor', '/config', '/start']);
+// Stored WITHOUT the prefix so a single set covers both `/` and `!` forms.
+// The `command` field returned by categorizeMessage is the prefix-restored
+// form (e.g. '/clear' or '!clear') for downstream logging.
+const ADMIN_COMMANDS = new Set(['remote-control', 'clear', 'compact', 'context', 'cost', 'files', 'upload-trace']);
+const FILTERED_COMMANDS = new Set(['login', 'logout', 'doctor', 'config', 'start']);
 
 export interface CommandInfo {
   category: CommandCategory;
-  command: string; // the command name (e.g., '/clear')
+  command: string; // the command name (e.g., '/clear' or '!clear')
   text: string; // full original text
   senderId: string | null;
 }
@@ -37,18 +49,23 @@ export function categorizeMessage(msg: MessageInRow): CommandInfo {
   const text = (content.text || '').trim();
   const senderId = extractSenderId(msg, content);
 
-  if (!text.startsWith('/')) {
+  if (!text.startsWith('/') && !text.startsWith('!')) {
     return { category: 'none', command: '', text, senderId };
   }
 
-  // Extract the command name (e.g., '/clear' from '/clear some args')
-  const command = text.split(/\s/)[0].toLowerCase();
+  // Extract the command name (e.g., '/clear' from '/clear some args').
+  // Strip the leading `/` or `!` prefix for the lookup; re-attach it in
+  // the returned `command` field for logging consistency.
+  const raw = text.split(/\s/)[0];
+  const prefix = raw[0] as '/' | '!';
+  const name = raw.slice(1).toLowerCase();
+  const command = `${prefix}${name}`;
 
-  if (ADMIN_COMMANDS.has(command)) {
+  if (ADMIN_COMMANDS.has(name)) {
     return { category: 'admin', command, text, senderId };
   }
 
-  if (FILTERED_COMMANDS.has(command)) {
+  if (FILTERED_COMMANDS.has(name)) {
     return { category: 'filtered', command, text, senderId };
   }
 
@@ -59,11 +76,154 @@ export function categorizeMessage(msg: MessageInRow): CommandInfo {
  * Narrow check for /clear — the only command the runner handles directly.
  * All other command gating (filtered, admin) is done by the host router
  * before messages reach the container.
+ *
+ * All runner commands also accept a `!` prefix (`!clear`, `!stop`, …):
+ * Mattermost swallows any message starting with `/` as one of its own slash
+ * commands ("command not found", never posted), so the `/` forms are
+ * untypeable there. The `!` forms pass through as regular posts.
  */
 export function isClearCommand(msg: MessageInRow): boolean {
   const content = parseContent(msg.content);
-  const text = (content.text || '').trim();
-  return text.toLowerCase().startsWith('/clear');
+  const text = (content.text || '').trim().toLowerCase();
+  // `!`-prefix only — Mattermost intercepts every `/`-command before the bot
+  // can see it, so the `/clear` form was always unreachable in practice.
+  return text.startsWith('!clear');
+}
+
+/**
+ * Check for `!background` — runner-handled command that demotes the currently
+ * active foreground query to a background job, freeing the foreground slot
+ * for new user messages. The bg job's eventual result is posted with a
+ * `[bg-N]` tag AND injected as context into the next foreground turn.
+ *
+ * Form: a standalone `!background` (or `!bg`) message that arrives while a
+ * foreground query is in flight. Sending `!background` with no active query
+ * is a no-op (a friendly notice is posted).
+ */
+export function isBackgroundCommand(msg: MessageInRow): boolean {
+  if (msg.kind !== 'chat' && msg.kind !== 'chat-sdk') return false;
+  const content = parseContent(msg.content);
+  const text = (content.text || '').trim().toLowerCase();
+  return text === '!background' || text === '!bg';
+}
+
+/**
+ * Check for `!live` — runner-handled command that toggles the live-status-post
+ * feature on/off for this session. When ON, the agent maintains a single
+ * status post in the channel (created on first tool/progress event of a turn,
+ * edited as the agent works, deleted on turn completion). Default ON.
+ */
+export function isLiveCommand(msg: MessageInRow): boolean {
+  if (msg.kind !== 'chat' && msg.kind !== 'chat-sdk') return false;
+  const content = parseContent(msg.content);
+  const text = (content.text || '').trim().toLowerCase();
+  return text === '!live';
+}
+
+/**
+ * Check for `!stop` — runner-handled command that aborts ALL in-flight Claude
+ * activity for this session (the foreground query AND every background job),
+ * finalizes their live-status posts, and clears pending bg results. Unlike
+ * `!clear` it does NOT wipe the conversation continuation — the next message
+ * resumes normally. Standalone message only.
+ */
+export function isStopCommand(msg: MessageInRow): boolean {
+  if (msg.kind !== 'chat' && msg.kind !== 'chat-sdk') return false;
+  const content = parseContent(msg.content);
+  const text = (content.text || '').trim().toLowerCase();
+  return text === '!stop';
+}
+
+/**
+ * Check for `!bg-list` — runner-handled command that lists the running
+ * background jobs with their id, elapsed time, and last tool action. Useful
+ * before deciding which one to cancel. Standalone message only.
+ *
+ * Note: `!`-prefix to avoid Mattermost intercepting `/` (every slash command
+ * starting a line is a Mattermost built-in candidate).
+ */
+export function isBgListCommand(msg: MessageInRow): boolean {
+  if (msg.kind !== 'chat' && msg.kind !== 'chat-sdk') return false;
+  const content = parseContent(msg.content);
+  const text = (content.text || '').trim().toLowerCase();
+  return text === '!bg-list' || text === '!bglist' || text === '!bg list';
+}
+
+/**
+ * Check for `!help` — runner-handled command that lists every available
+ * `!`-command with a one-line description and an example. Useful as a
+ * reminder of what's possible, especially after Mattermost intercepts the
+ * `/`-form of every command.
+ */
+export function isHelpCommand(msg: MessageInRow): boolean {
+  if (msg.kind !== 'chat' && msg.kind !== 'chat-sdk') return false;
+  const content = parseContent(msg.content);
+  const text = (content.text || '').trim().toLowerCase();
+  return text === '!help' || text === '!aide';
+}
+
+/**
+ * Build the help message posted in response to `!help`. Markdown formatted
+ * for Mattermost. Kept in one place so adding a new command only touches
+ * this string (and the detection fn), not the poll-loop handler.
+ */
+export function buildHelpText(): string {
+  return [
+    '🤖 **Commandes Hal** (toutes préfixées par `!` — Mattermost intercepte les `/`)',
+    '',
+    '**Contrôle de l\'agent**',
+    '• `!help` (alias `!aide`) — afficher cette aide',
+    '• `!background` (alias `!bg`) — basculer la tâche foreground en background (continue à tourner, libère la main)',
+    '• `!stop` — arrêter **toutes** les tâches (foreground + background)',
+    '• `!live` — toggle l\'affichage du statut en direct dans le channel',
+    '',
+    '**Gestion des background jobs**',
+    '• `!bg-list` — lister les bg en cours (id, durée, dernière action)',
+    '• `!bg-cancel N` — annuler le bg-N spécifiquement (ex. `!bg-cancel 1`)',
+    '• `!bg-cancel` (sans N) — annuler **tous** les bg (fg intouché)',
+    '',
+    '**Contexte**',
+    '• `!clear` — effacer la mémoire de conversation (la prochaine msg repart de zéro)',
+    '',
+    '**Exemples rapides**',
+    '• Tu attends un bg depuis 5 min et tu ne sais pas ce qu\'il fait : `!bg-list`',
+    '• Un bg est stuck (boucle sur un timeout) : `!bg-cancel 1` puis relance la demande',
+    '• Tu veux tout couper et reprendre fresh : `!stop`',
+    '• Le status en direct te saoule : `!live` (toggle, re-toggle pour réactiver)',
+    '',
+    '_Note : les commandes sont détectées uniquement sur messages standalone (pas mid-texte). Pour les commandes admin Claude Code natives (`/compact`, `/cost`, etc.) : `!clear` couvre le cas le plus courant._',
+  ].join('\n');
+}
+
+/**
+ * Check for `!bg-cancel [N]` — runner-handled command that aborts one or all
+ * background jobs. With no N, cancels every bg (the fg is untouched). With
+ * N (e.g. `!bg-cancel 2`), cancels only that bg job. Does not affect the
+ * foreground query. Standalone message only.
+ */
+export function isBgCancelCommand(msg: MessageInRow): boolean {
+  if (msg.kind !== 'chat' && msg.kind !== 'chat-sdk') return false;
+  const content = parseContent(msg.content);
+  const text = (content.text || '').trim().toLowerCase();
+  return text === '!bg-cancel' || text === '!bgcancel' || text === '!bg cancel'
+      || /^!bg[- ]?cancel\s+\d+(\s+\d+)*$/.test(text);
+}
+
+/**
+ * Parse the bg job ids from a `!bg-cancel N [M ...]` message. Returns an
+ * empty array for `!bg-cancel` alone (meaning "cancel all"). Filters out
+ * non-numeric tokens defensively even though the regex guards the entry.
+ */
+export function parseBgCancelIds(msg: MessageInRow): string[] {
+  if (!isBgCancelCommand(msg)) return [];
+  const content = parseContent(msg.content);
+  const text = (content.text || '').trim().toLowerCase();
+  const tokens = text.split(/\s+/);
+  const ids: string[] = [];
+  for (const t of tokens) {
+    if (/^\d+$/.test(t)) ids.push(`bg-${t}`);
+  }
+  return ids;
 }
 
 /**

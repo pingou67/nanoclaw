@@ -141,3 +141,17 @@ export function getUndeliveredMessages(): MessageOutRow[] {
     )
     .all() as MessageOutRow[];
 }
+
+/**
+ * Look up the platform message id (e.g. Mattermost post id) for an outbound
+ * msg we wrote, once the host has delivered it. Returns null if not yet
+ * delivered. Used by the live-status mechanism to switch from "create" to
+ * "edit" mode for the running status post.
+ */
+export function getDeliveredPlatformId(outboundMsgId: string): string | null {
+  const inbound = getInboundDb();
+  const row = inbound
+    .prepare('SELECT platform_message_id FROM delivered WHERE message_out_id = ?')
+    .get(outboundMsgId) as { platform_message_id: string | null } | undefined;
+  return row?.platform_message_id ?? null;
+}

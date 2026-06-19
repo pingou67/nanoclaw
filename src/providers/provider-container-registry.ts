@@ -42,6 +42,13 @@ export interface ProviderContainerContext {
   selectedSkills: string[];
   /** `process.env` at spawn time — pull passthrough values from here. */
   hostEnv: NodeJS.ProcessEnv;
+  /**
+   * Per-group env overrides from the `env` column in container_configs.
+   * Lets the operator inject things like `NANOCLAW_OPENCODE_PLUGINS` for one
+   * specific group without setting them globally on the host. Empty for
+   * groups with no overrides.
+   */
+  groupEnv: Record<string, string>;
 }
 
 export interface ProviderContainerContribution {
