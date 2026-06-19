@@ -49,6 +49,13 @@ export interface ProviderContainerContext {
    * groups with no overrides.
    */
   groupEnv: Record<string, string>;
+  /**
+   * The materialized ContainerConfig for the group. Useful for providers
+   * that need to derive per-spawn settings from fields the operator set on
+   * the group (e.g. `model: "opencode-go/minimax-m3"` → split into
+   * OPENCODE_PROVIDER + OPENCODE_MODEL env vars at spawn time).
+   */
+  containerConfig: import('../container-config.js').ContainerConfig;
 }
 
 export interface ProviderContainerContribution {

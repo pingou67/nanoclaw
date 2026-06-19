@@ -142,9 +142,17 @@ async function spawnContainer(session: Session): Promise<void> {
 
   const mounts = buildMounts(agentGroup, session, containerConfig, provider, contribution);
   const containerName = `nanoclaw-v2-${agentGroup.folder}-${Date.now()}`;
-  // OneCLI agent identifier is always the agent group id — stable across
-  // sessions and reversible via getAgentGroup() for approval routing.
-  const agentIdentifier = agentGroup.id;
+  // OneCLI agent identifier is the agent group id — stable across sessions
+  // and reversible via getAgentGroup() for approval routing.
+  //
+  // OneCLI v1 server (gateway ≥ some recent build) validates identifiers
+  // strictly: lowercase letters, numbers, and hyphens only — no underscores.
+  // Our internal agent_group.id uses underscores (e.g. `ag-mattermost_main`).
+  // To match the existing OneCLI records (created under the old API and
+  // already stored with hyphens, e.g. `ag-mattermost-main`), translate the
+  // id to hyphens at the call site. nanoclaw's internal id is unchanged,
+  // so all DB FKs and filesystem paths keep working.
+  const agentIdentifier = agentGroup.id.replace(/_/g, '-');
   const args = await buildContainerArgs(
     mounts,
     containerName,
@@ -257,6 +265,7 @@ function resolveProviderContribution(
         selectedSkills: selectedSkillNames(containerConfig),
         hostEnv: process.env,
         groupEnv: containerConfig.env ?? {},
+        containerConfig,
       })
     : {};
   return { provider, contribution };
