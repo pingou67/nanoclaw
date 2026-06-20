@@ -29,9 +29,11 @@ the nanoclaw-agent-v2-* image already built, and ~/.claude/.credentials.json.
 """
 
 import argparse
+import atexit
 import base64
 import json
 import os
+import signal
 import struct
 import subprocess
 import sys
@@ -180,8 +182,41 @@ def restart_nanoclaw_with_mock_config() -> None:
         time.sleep(0.5)
     raise RuntimeError("WS reported ready but mock has no client connected after 10s")
 
+# Test-only systemd --user env overrides set by restart_nanoclaw_with_mock_config().
+# They MUST be dropped before any production service start, or live-status stays
+# off and auto-bg stays disabled in prod (the symptom that motivated this guard).
+TEST_ENV_OVERRIDES = ("NANOCLAW_LIVE_STATUS_DISABLED", "NANOCLAW_AUTO_BG_THRESHOLD_MS")
+
+
+def clear_test_env_overrides() -> None:
+    """Drop the test-only `systemctl --user` env overrides.
+
+    Best-effort and idempotent: `unset-environment` of an unset var is a no-op,
+    and this never raises — cleanup must never mask a test result nor abort
+    ahead of the rest of teardown. Wired through atexit + signal handlers +
+    main()'s finally so it runs no matter how the run ends (test failure,
+    exception, config-restore error, Ctrl-C / SIGTERM, or --keep-mock).
+    """
+    for var in TEST_ENV_OVERRIDES:
+        try:
+            subprocess.run(["systemctl", "--user", "unset-environment", var], check=False, capture_output=True)
+        except Exception:
+            pass
+
+
+def _on_signal(signum, _frame):
+    # Turn a kill/stop into an orderly shutdown: SystemExit unwinds through
+    # main()'s finally (config restore) and fires the atexit handler (env
+    # cleanup), so an interrupted run cleans up exactly like a normal one.
+    raise SystemExit(128 + signum)
+
+
 def restore_live_config_and_restart() -> None:
     """Stop service, swap config back to production, restart."""
+    # Drop the env overrides FIRST — before the config-restore safety checks
+    # below (which can raise) and before the service start at the end — so the
+    # restarted service always comes up clean even if the config restore fails.
+    clear_test_env_overrides()
     systemctl("stop")
     if BACKUP_CONFIG.exists():
         # Verify the backup looks like a real config (has a non-mock URL) before
@@ -208,10 +243,7 @@ def restore_live_config_and_restart() -> None:
             f"config was lost in a prior failed test run — reconstruct "
             f"data/mattermost.json manually with the real bot token before re-running."
         )
-    # Clear the test-only env overrides so production runs with live-status
-    # ON and the default 30s auto-bg threshold.
-    subprocess.run(["systemctl", "--user", "unset-environment", "NANOCLAW_LIVE_STATUS_DISABLED"], check=True, capture_output=True)
-    subprocess.run(["systemctl", "--user", "unset-environment", "NANOCLAW_AUTO_BG_THRESHOLD_MS"], check=True, capture_output=True)
+    # (Env overrides were already cleared at the top of this function.)
     systemctl("start")
     wait_for_ws_ready(NANOCLAW_BOOT_SEC)
 
@@ -560,6 +592,14 @@ def main() -> int:
         print(f"ERROR: neither {LIVE_CONFIG} nor {BACKUP_CONFIG} exists — nothing to back up.", file=sys.stderr)
         return 2
 
+    # Arm env cleanup as a last resort before anything can set the overrides:
+    # atexit covers normal/exception/Ctrl-C exit (after finally); the signal
+    # handlers turn SIGTERM/SIGINT into an orderly SystemExit so kill/stop also
+    # unwinds through the finally and clears the overrides. No-op if never set.
+    atexit.register(clear_test_env_overrides)
+    signal.signal(signal.SIGINT, _on_signal)
+    signal.signal(signal.SIGTERM, _on_signal)
+
     print("\n[1/5] Starting mock_mm.py …")
     mock_proc = start_mock()
     try:
@@ -591,6 +631,11 @@ def main() -> int:
         print(f"\n{passed}/{len(results)} passed")
         exit_code = 0 if passed == len(results) else 1
     finally:
+        # Guaranteed first: drop the test-only env overrides, decoupled from the
+        # config restore below (which can raise on its safety checks) and run
+        # even under --keep-mock. atexit/signal handlers are the last resort if
+        # we never reach here at all.
+        clear_test_env_overrides()
         if not args.keep_mock:
             print("\n[5/5] Restoring live config + restarting nanoclaw …")
             try:
@@ -601,6 +646,8 @@ def main() -> int:
             stop_mock(mock_proc)
         else:
             print("\n[5/5] --keep-mock set: live config NOT restored, mock left running")
+            print("  (test-only env overrides cleared; the running mock service keeps")
+            print("   them frozen until its next restart)")
             print(f"  to undo manually:")
             print(f"    pkill -f mock_mm.py")
             print(f"    mv {BACKUP_CONFIG} {LIVE_CONFIG}")
