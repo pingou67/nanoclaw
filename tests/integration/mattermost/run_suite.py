@@ -136,51 +136,80 @@ def wait_for_ws_ready(timeout: int) -> bool:
     return False
 
 def restart_nanoclaw_with_mock_config() -> None:
-    """Stop service, swap config to mock, restart, wait for WS ready."""
+    """Stop service, back up the REAL config (once), swap to a mock-pointing
+    config, restart, and wait for the adapter to connect to the mock.
+
+    Live-status is disabled here for deterministic first-reply assertions; the
+    dedicated live-status phase uses restart_for_live_status() instead (which
+    never touches the config files).
+    """
     systemctl("stop")
-    if LIVE_CONFIG.exists():
+    # Back up the real config EXACTLY ONCE. A repeat call must NEVER overwrite an
+    # existing backup — that would clobber it with the mock, and the real bot
+    # token is then lost for good (this actually happened once). Also refuse to
+    # back up a config that already points at the mock (means the real one was
+    # already lost — fail loudly instead of making it worse).
+    if not BACKUP_CONFIG.exists():
+        if not LIVE_CONFIG.exists():
+            raise RuntimeError(f"No {LIVE_CONFIG} and no backup — nothing to swap from.")
+        live_data = json.loads(LIVE_CONFIG.read_text())
+        if "127.0.0.1:8888" in live_data.get("url", ""):
+            raise RuntimeError(
+                f"Refusing to back up {LIVE_CONFIG}: it already points at the mock "
+                f"({live_data.get('url')}). The real config/token was lost — reconstruct "
+                f"data/mattermost.json (real url + bot token) before re-running.")
         LIVE_CONFIG.replace(BACKUP_CONFIG)
     real = json.loads(BACKUP_CONFIG.read_text())
     mock_config = dict(real)
     mock_config["url"] = MOCK_BASE
     mock_config["token"] = "dummy"  # mock doesn't validate
+    # Append the throwaway provider-switch test channel so the adapter registers
+    # ag-e2e_switch on startup. Test-only — gone when prod is restored.
+    channels = list(mock_config.get("channels", []))
+    if not any(c.get("folder") == "e2e_switch" for c in channels):
+        channels.append({"channel": "e2e-switch", "folder": "e2e_switch", "requireMention": False})
+    mock_config["channels"] = channels
     LIVE_CONFIG.write_text(json.dumps(mock_config, indent=2))
     LIVE_CONFIG.chmod(0o600)
-    # Disable the live-status mechanism for tests — its intermediate "🔧
-    # tool_name" status posts would race with the actual answer and break
-    # wait_for_reply assertions which check the FIRST reply.
+    # Live-status disabled (deterministic first-reply) + auto-bg disabled (the
+    # office-attachment scenario's ~45s docx→PDF would otherwise trip the 30s
+    # default and the next inject would get the bg notice as its first reply).
     subprocess.run(["systemctl", "--user", "set-environment", "NANOCLAW_LIVE_STATUS_DISABLED=1"], check=True, capture_output=True)
-    # Disable auto-background for tests — the office-attachment scenario takes
-    # ~45s for libreoffice docx→PDF conversion, well over the 30s default
-    # auto-bg threshold. Without this override the next-scenario inject would
-    # trip auto-bg and the test would get the bg notice as its first reply.
     subprocess.run(["systemctl", "--user", "set-environment", "NANOCLAW_AUTO_BG_THRESHOLD_MS=0"], check=True, capture_output=True)
     systemctl("start")
+    _await_adapter_connected()
+
+
+def restart_for_live_status() -> None:
+    """Restart the (already mock-configured) service with live-status ENABLED.
+    Only flips the env — it NEVER touches the config files, so it can't
+    interact with (let alone clobber) the real-config backup."""
+    systemctl("stop")
+    subprocess.run(["systemctl", "--user", "set-environment", "NANOCLAW_LIVE_STATUS_DISABLED=0"], check=True, capture_output=True)
+    systemctl("start")
+    _await_adapter_connected()
+
+
+def _await_adapter_connected() -> None:
+    """Wait for 'Mattermost WS ready', then confirm the adapter actually joined
+    the mock's WS_CLIENTS (a warmup inject is delivered_to >= 1) — even after
+    'WS ready' there's a brief window before the aiohttp upgrade completes."""
     if not wait_for_ws_ready(NANOCLAW_BOOT_SEC):
         raise RuntimeError("nanoclaw didn't reach 'Mattermost WS ready' in time")
-    # Belt-and-braces: even after 'WS ready' fires in the log, the adapter
-    # only joins the mock's WS_CLIENTS list once the aiohttp handler has
-    # processed the upgrade — there's a sub-100ms window where injects
-    # would be broadcast to zero clients. Verify by injecting a no-op
-    # event and checking the mock confirms `delivered_to >= 1`.
-    deadline = time.time() + 10
+    deadline = time.time() + 15
     while time.time() < deadline:
         try:
             r = http_post("/__test/inject", {
-                "user_id": "_warmup_",
-                "message": "_warmup_",
-                "channel_id": "ch-warmup-no-such-channel",
-                "channel_type": "O",
+                "user_id": "_warmup_", "message": "_warmup_",
+                "channel_id": "ch-warmup-no-such-channel", "channel_type": "O",
             })
             if r.get("delivered_to", 0) >= 1:
-                # adapter is wired into WS_CLIENTS — purge the warmup row from replies
-                # (the adapter ignored it since the channel_id isn't configured)
-                http_post("/__test/reset")
+                http_post("/__test/reset")  # purge the warmup row (adapter ignored it)
                 return
         except Exception:
             pass
         time.sleep(0.5)
-    raise RuntimeError("WS reported ready but mock has no client connected after 10s")
+    raise RuntimeError("WS reported ready but mock has no client connected after 15s")
 
 # Test-only systemd --user env overrides set by restart_nanoclaw_with_mock_config().
 # They MUST be dropped before any production service start, or live-status stays
@@ -561,6 +590,225 @@ def scenario_container_reuse() -> Result:
 
 # ------------------------------- runner --------------------------------------
 
+# =========================================================================
+# Provider matrix + new scenarios (tool-use, live-status, runner commands,
+# provider-switch regression, env hygiene). See README.md for the rationale.
+# =========================================================================
+
+def http_put(path: str, payload: dict) -> dict:
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(f"{MOCK_BASE}{path}", data=body,
+                                 headers={"Content-Type": "application/json"}, method="PUT")
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read())
+
+
+# --- DB / container-config helpers (via the in-tree better-sqlite3 wrapper) ---
+
+CENTRAL_DB = "data/v2.db"
+
+def _q(db: str, sql: str) -> str:
+    """Run SQL through scripts/q.ts (no sqlite3 CLI dependency). Returns
+    stdout (pipe-separated rows, like sqlite3 -list)."""
+    res = subprocess.run(["node_modules/.bin/tsx", "scripts/q.ts", db, sql],
+                         cwd=ROOT, capture_output=True, text=True, timeout=30)
+    return res.stdout.strip()
+
+def group_provider(folder: str) -> str:
+    """Effective provider of ag-<folder> (NULL → claude)."""
+    out = _q(CENTRAL_DB, f"SELECT COALESCE(provider,'claude') FROM container_configs WHERE agent_group_id='ag-{folder}'")
+    return out.strip() or "claude"
+
+def any_opencode_env() -> str | None:
+    """An opencode group's env JSON, to seed the switch-test group's opencode leg."""
+    out = _q(CENTRAL_DB, "SELECT env FROM container_configs WHERE provider='opencode' AND env LIKE '%OPENCODE_API_KEY%' LIMIT 1")
+    return out.strip() or None
+
+def set_container_config(group_id: str, provider: str, model: str, env_json: str) -> None:
+    # Groups created by the adapter at startup have NO container_configs row yet
+    # (backfill runs before adapters start), so upsert first. Only agent_group_id
+    # + updated_at are required; every other column has a default.
+    _q(CENTRAL_DB, "INSERT OR IGNORE INTO container_configs (agent_group_id, updated_at, env) "
+                   f"VALUES ('{group_id}', strftime('%Y-%m-%dT%H:%M:%fZ','now'), '{{}}')")
+    _q(CENTRAL_DB, f"UPDATE container_configs SET provider='{provider}', model='{model}', env='{env_json}' "
+                   f"WHERE agent_group_id='{group_id}'")
+
+def purge_continuation(group_id: str) -> None:
+    import glob
+    for ob in glob.glob(str(ROOT / f"data/v2-sessions/{group_id}/*/outbound.db")):
+        _q(ob, "DELETE FROM session_state WHERE key IN ('continuation:claude','continuation:opencode')")
+
+def kill_group_container(folder: str) -> None:
+    """Kill any running container for ag-<folder> so the next inject respawns it
+    with the current DB config (provider/env changes take effect at spawn)."""
+    names = subprocess.run(["docker", "ps", "--filter", f"name=nanoclaw-v2-{folder}-",
+                            "--format", "{{.Names}}"], capture_output=True, text=True).stdout.split()
+    for n in names:
+        subprocess.run(["docker", "kill", n], capture_output=True)
+
+
+# --- reply matching that ignores live-status posts ---------------------------
+
+def _is_live_status(msg: str) -> bool:
+    return any(m in msg for m in ("🔧", "✅ Terminé", "⏹ Arrêté"))
+
+def wait_for_answer(timeout: int) -> dict | None:
+    """Like wait_for_reply, but skip live-status posts (🔧 / ✅ Terminé / ⏹) so
+    it returns the real answer even when live-status is enabled."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for rep in http_get("/__test/replies"):
+            if not _is_live_status(rep.get("message", "")):
+                return rep
+        time.sleep(0.2)
+    return None
+
+
+# --- new scenarios -----------------------------------------------------------
+
+def scenario_tool_use(label: str, channel_id: str, require_mention: bool) -> Result:
+    """Force a deterministic Bash tool call and assert the computed result —
+    exercises the tool-call path (differs per provider, feeds live-status).
+    1234 * 5678 = 7006652."""
+    name = f"#{label} / tool-use (Bash)"
+    reset_replies()
+    prefix = "@claw " if require_mention else ""
+    inject({
+        "user_id": "human-test",
+        "message": f"{prefix}Utilise le tool Bash pour exécuter exactement `echo $((1234 * 5678))` "
+                   f"et réponds UNIQUEMENT avec le nombre obtenu, rien d'autre.",
+        "channel_id": channel_id, "channel_type": "O",
+    })
+    reply = wait_for_answer(WAIT_REPLY_SEC)
+    if not reply:
+        return Result(name, False, "no reply within timeout")
+    msg = reply.get("message", "")
+    return Result(name, "7006652" in msg, f"got {msg[:80]!r}")
+
+
+def scenario_live_status(label: str, channel_id: str, require_mention: bool) -> Result:
+    """Assert the live-status lifecycle: a 🔧 post is created (POST /posts),
+    edited (PUT patch), and finalized to ✅ Terminé. Requires the service
+    started with live-status ENABLED. The sleep outlasts the 2.5s throttle so
+    a status post is actually created+edited."""
+    name = f"#{label} / live-status lifecycle"
+    # The live-status env is frozen at container spawn — a warm container from an
+    # earlier phase still has it DISABLED. Kill it so the inject respawns fresh
+    # with live-status ENABLED.
+    kill_group_container(f"mattermost_{label}")
+    reset_replies()
+    prefix = "@claw " if require_mention else ""
+    # Force a REAL tool call: `$(date +%s%N)` is unpredictable so the model
+    # can't shortcut it, and `sleep 4` outlasts the 2.5s live-status throttle so
+    # a 🔧 post is actually created → edited → finalized.
+    inject({
+        "user_id": "human-test",
+        "message": f"{prefix}Utilise le tool Bash pour exécuter exactement `sleep 4 && echo LIVE-$(date +%s%N)` "
+                   f"et renvoie la sortie exacte, rien d'autre.",
+        "channel_id": channel_id, "channel_type": "O",
+    })
+    answer = wait_for_answer(WAIT_REPLY_SEC)
+    if not answer:
+        return Result(name, False, "no final answer")
+    replies = http_get("/__test/replies")
+    edits = http_get("/__test/edits")
+    created = any("🔧" in r.get("message", "") for r in replies)
+    finalized = any("✅ Terminé" in e.get("message", "") for e in edits)
+    return Result(name, created and finalized, f"🔧create={created} ✅finalize={finalized} edits={len(edits)}")
+
+
+def scenario_runner_help(channel_id: str) -> Result:
+    """The runner `!help` command (Mattermost intercepts `/`, so only `!`
+    works). Posted directly by the outer loop — provider-agnostic, fast."""
+    name = "runner command !help"
+    reset_replies()
+    inject({"user_id": "human-test", "message": "!help", "channel_id": channel_id, "channel_type": "O"})
+    reply = wait_for_reply(30)
+    if not reply:
+        return Result(name, False, "no reply to !help")
+    msg = reply.get("message", "")
+    return Result(name, "!clear" in msg and "!stop" in msg, f"got {msg[:90]!r}")
+
+
+def scenario_provider_switch() -> Result:
+    """Regression guard for the opencode→claude switch: a stale per-provider
+    continuation must not hang the next turn ("Model not found"). Runs on the
+    throwaway ag-e2e_switch group only — never a production group."""
+    name = "provider switch opencode→claude (continuity)"
+    group, folder, ch = "ag-e2e_switch", "e2e_switch", "ch-e2e-switch"
+    env = any_opencode_env()
+    if not env:
+        return Result(name, False, "no opencode group to copy env from — cannot test opencode leg")
+
+    def _leg(provider: str, model: str, env_json: str, marker: str) -> dict | None:
+        set_container_config(group, provider, model, env_json)
+        purge_continuation(group)
+        kill_group_container(folder)
+        reset_replies()
+        inject({"user_id": "human-test", "message": f"réponds juste {marker}",
+                "channel_id": ch, "channel_type": "O"})
+        return wait_for_answer(WAIT_REPLY_SEC)
+
+    r_oc = _leg("opencode", "opencode-go/minimax-m3", env, "OK-SW-OC")
+    leg_oc = bool(r_oc) and "Model not found" not in r_oc.get("message", "")
+    r_cl = _leg("claude", "sonnet", "{}", "OK-SW-CL")
+    leg_cl = bool(r_cl) and "Model not found" not in r_cl.get("message", "")
+    return Result(name, leg_oc and leg_cl,
+                  f"opencode_leg={'ok' if leg_oc else 'FAIL'} claude_leg={'ok' if leg_cl else 'FAIL'}")
+
+
+# --- provider matrix ---------------------------------------------------------
+
+# Candidate channels to sample. The canonical sub-suite (text + tool-use) runs
+# on the FIRST channel found for each provider, so the matrix always exercises
+# one Claude-backed and one OpenCode-backed group regardless of current
+# provider assignments.
+PROVIDER_MATRIX_CANDIDATES = [
+    ("main",      "ch-main",      True),
+    ("work",      "ch-work",      False),
+    ("coding",    "ch-coding",    False),
+    ("adminsys",  "ch-adminsys",  False),
+    ("famille",   "ch-famille",   True),
+]
+
+def _relabel(r: Result, name: str) -> Result:
+    return Result(name, r.passed, r.detail)
+
+def run_provider_matrix() -> list[Result]:
+    out: list[Result] = []
+    seen: dict[str, str] = {}
+    for label, ch_id, req in PROVIDER_MATRIX_CANDIDATES:
+        prov = group_provider(f"mattermost_{label}")
+        if prov in seen:
+            continue
+        seen[prov] = label
+        tag = f"{prov}:#{label}"
+        print(f"  ▸ matrix {tag} …", flush=True)
+        out.append(_relabel(scenario_channel_text(label, ch_id, req, f"OK-MX-{label.upper()}"),
+                            f"matrix {tag} / text"))
+        out.append(_relabel(scenario_tool_use(label, ch_id, req), f"matrix {tag} / tool-use"))
+    both = {"claude", "opencode"}.issubset(set(seen.keys()))
+    out.append(Result("matrix provider coverage", both,
+                      f"covered {sorted(seen.keys())}" + ("" if both else " — MISSING a provider")))
+    return out
+
+
+def env_hygiene_result() -> Result:
+    """Post-teardown: the systemd --user manager env must carry no test-only
+    NANOCLAW_* overrides (the leak that silently disabled live-status in prod)."""
+    out = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True, text=True).stdout
+    leaked = [v for v in TEST_ENV_OVERRIDES if v in out]
+    return Result("env hygiene (post-teardown)", not leaked,
+                  "clean" if not leaked else f"LEAKED: {leaked}")
+
+
+def _safe(label: str, fn) -> Result:
+    try:
+        return fn()
+    except Exception as e:
+        return Result(label, False, f"exception: {e}")
+
+
 SCENARIOS = [
     ("scenario_main",       lambda: scenario_channel_text("main",      "ch-main",      True,  "OK-MAIN")),
     ("scenario_work",       lambda: scenario_channel_text("work",      "ch-work",      False, "OK-WK")),
@@ -600,36 +848,48 @@ def main() -> int:
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
 
-    print("\n[1/5] Starting mock_mm.py …")
+    print("\n[setup] Starting mock_mm.py …")
     mock_proc = start_mock()
+    results: list[Result] = []
+    full_run = not args.scenario  # extra phases only run on a full suite
     try:
         wait_for_mock_ready()
-        print("[2/5] Mock ready on 127.0.0.1:8888")
+        print("[setup] Mock ready on 127.0.0.1:8888")
 
-        print("[3/5] Stopping live service, swapping config to mock, restarting …")
+        print("[setup] Stopping live service, swapping config to mock, restarting …")
         restart_nanoclaw_with_mock_config()
-        print("[4/5] nanoclaw connected to mock — running scenarios\n")
+        print("[setup] nanoclaw connected to mock — running scenarios\n")
 
-        results: list[Result] = []
         for sid, fn in SCENARIOS:
             if args.scenario and args.scenario != sid:
                 continue
             print(f"▸ {sid} …", flush=True)
-            try:
-                r = fn()
-            except Exception as e:
-                r = Result(sid, False, f"exception: {e}")
-            results.append(r)
-            print(f"  {r}\n")
+            results.append(_safe(sid, fn))
+            print(f"  {results[-1]}\n")
 
-        print("=" * 60)
-        print("RESULTS")
-        print("=" * 60)
-        passed = sum(1 for r in results if r.passed)
-        for r in results:
-            print(f"  {r}")
-        print(f"\n{passed}/{len(results)} passed")
-        exit_code = 0 if passed == len(results) else 1
+        if full_run:
+            print("▸ provider matrix (Claude + OpenCode parity) …", flush=True)
+            try:
+                results.extend(run_provider_matrix())
+            except Exception as e:
+                results.append(Result("provider matrix", False, f"exception: {e}"))
+            print()
+
+            print("▸ runner command (!help) …", flush=True)
+            results.append(_safe("runner !help", lambda: scenario_runner_help("ch-coding")))
+            print(f"  {results[-1]}\n")
+
+            print("▸ provider switch regression (throwaway group) …", flush=True)
+            results.append(_safe("provider switch", scenario_provider_switch))
+            print(f"  {results[-1]}\n")
+
+            print("▸ live-status phase — restarting with live-status ENABLED …", flush=True)
+            try:
+                restart_for_live_status()
+                results.append(_safe("live-status", lambda: scenario_live_status("work", "ch-work", False)))
+            except Exception as e:
+                results.append(Result("live-status", False, f"exception: {e}"))
+            print(f"  {results[-1]}\n")
     finally:
         # Guaranteed first: drop the test-only env overrides, decoupled from the
         # config restore below (which can raise on its safety checks) and run
@@ -637,7 +897,7 @@ def main() -> int:
         # we never reach here at all.
         clear_test_env_overrides()
         if not args.keep_mock:
-            print("\n[5/5] Restoring live config + restarting nanoclaw …")
+            print("\n[teardown] Restoring live config + restarting nanoclaw …")
             try:
                 restore_live_config_and_restart()
                 print("  live config restored, nanoclaw back on production Mattermost")
@@ -645,7 +905,7 @@ def main() -> int:
                 print(f"  WARN: failed to restore: {e}")
             stop_mock(mock_proc)
         else:
-            print("\n[5/5] --keep-mock set: live config NOT restored, mock left running")
+            print("\n[teardown] --keep-mock set: live config NOT restored, mock left running")
             print("  (test-only env overrides cleared; the running mock service keeps")
             print("   them frozen until its next restart)")
             print(f"  to undo manually:")
@@ -653,7 +913,19 @@ def main() -> int:
             print(f"    mv {BACKUP_CONFIG} {LIVE_CONFIG}")
             print(f"    systemctl --user restart nanoclaw")
 
-    return exit_code
+    # Post-teardown assertion: the manager env must be clean now (proves the
+    # harness left no NANOCLAW_* override behind for prod).
+    if full_run and not args.keep_mock:
+        results.append(env_hygiene_result())
+
+    print("\n" + "=" * 60)
+    print("RESULTS")
+    print("=" * 60)
+    passed = sum(1 for r in results if r.passed)
+    for r in results:
+        print(f"  {r}")
+    print(f"\n{passed}/{len(results)} passed")
+    return 0 if passed == len(results) else 1
 
 
 if __name__ == "__main__":
