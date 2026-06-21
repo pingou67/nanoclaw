@@ -101,6 +101,16 @@ docker run --rm --entrypoint sh --user "$(id -u):$(id -g)" -e HOME=/home/node \
 - The provider yields `progress` events from the CLI's `transcript.jsonl`
   (`PLANNER_RESPONSE` content + tool_calls), so **live-status works** the same
   as Claude/OpenCode.
+- **MCP servers**: Antigravity does *not* read a raw `mcp.json` — it loads MCP
+  servers from imported **plugins**. The provider materializes a group's
+  `mcp_servers` as a Gemini-CLI extension under
+  `$HOME/.gemini/extensions/nanoclaw-mcp/gemini-extension.json`, then runs
+  `agy plugin import gemini` to stage them into `$HOME/.gemini/config/`. Set MCP
+  servers the usual way (`ncl groups config add-mcp-server …`); nanoclaw-only
+  keys like `instructions` are stripped (the extension schema is command/args/env
+  only). Because `~/.gemini` is a shared host mount, the import is host-wide across
+  agy groups — fine with one agy group, isolate via a per-session `HOME` if more
+  are added.
 - Memory: agy keeps its own per-conversation brain under
   `~/.gemini/antigravity-cli/brain/<session>` (mounted), so continuations
   resume across turns.
