@@ -46,7 +46,10 @@ streams stdout, and tails the conversation's `transcript.jsonl` for live progres
 - **Live-status**: each `PLANNER_RESPONSE` `tool_calls` entry is routed through
   the shared `summarizeToolUse` helper (`providers/summarize.ts`), so the
   one-liner looks identical to the claude/opencode providers
-  (`🔧 list_dir(DirectoryPath=…)`).
+  (`🔧 list_dir(DirectoryPath=…)`). `transcript.jsonl` is **cumulative per
+  conversation**, so each turn starts tailing from the file's current **end** —
+  otherwise a continuation would replay every prior turn's tool_calls as
+  live-status and could surface a stale `PLANNER_RESPONSE` as its result.
 - **Compaction**: Antigravity auto-compacts internally (opaque, not
   configurable). The provider implements none of the optional compaction hooks
   (`maybeRotateContinuation`, pre-compact archive) — see the design notes if a

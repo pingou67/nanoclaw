@@ -176,11 +176,22 @@ export class AgyProvider implements AgentProvider {
 
         let resultText = '';
         let lastContent = '';
-        let lastReadBytes = 0;
         let rawBuffer = '';
         let processFinished = false;
         const progressQueue: string[] = [];
         let wakeProgress: (() => void) | null = null;
+
+        // transcript.jsonl is CUMULATIVE per conversation: on a continuation it
+        // already holds every PRIOR turn's PLANNER_RESPONSE (content + tool_calls).
+        // Start tailing from its current END so this turn doesn't replay old
+        // tool_calls as live-status, nor surface a stale PLANNER_RESPONSE as its
+        // result. A brand-new conversation has no transcript yet (offset 0).
+        const transcriptCandidates = [
+          path.join(brainDir, '.system_generated', 'logs', 'transcript.jsonl'),
+          path.join(brainDir, 'transcript.jsonl'),
+        ];
+        let resolvedTranscriptFile: string | null = transcriptCandidates.find(p => fs.existsSync(p)) || null;
+        let lastReadBytes = resolvedTranscriptFile ? fs.statSync(resolvedTranscriptFile).size : 0;
 
         activeProc!.stdout?.on('data', (d) => { resultText += d.toString(); });
         activeProc!.on('exit', () => {
@@ -189,18 +200,17 @@ export class AgyProvider implements AgentProvider {
         });
 
         // Tail transcript.jsonl for live progress updates
-        let resolvedTranscriptFile: string | null = null;
         const readTranscript = () => {
           if (!resolvedTranscriptFile) {
-            const possiblePaths = [
-              path.join(brainDir, '.system_generated', 'logs', 'transcript.jsonl'),
-              path.join(brainDir, 'transcript.jsonl'),
-            ];
-            resolvedTranscriptFile = possiblePaths.find(p => fs.existsSync(p)) || null;
+            resolvedTranscriptFile = transcriptCandidates.find(p => fs.existsSync(p)) || null;
+            // Newly-appeared file: this turn owns all of it, read from the start.
+            if (resolvedTranscriptFile) lastReadBytes = 0;
           }
           if (!resolvedTranscriptFile) return;
 
           const stat = fs.statSync(resolvedTranscriptFile);
+          // Defensive: if agy rewrote/truncated the file, restart from the top.
+          if (stat.size < lastReadBytes) lastReadBytes = 0;
           if (stat.size > lastReadBytes) {
             const fd = fs.openSync(resolvedTranscriptFile, 'r');
             const buffer = Buffer.alloc(stat.size - lastReadBytes);
