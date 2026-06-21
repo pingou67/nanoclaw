@@ -24,7 +24,7 @@ function log(msg: string): void {
  * up reading/writing the SAME shared file as claude/opencode. Idempotent; folds
  * any pre-existing AGENTS.md content into CLAUDE.local.md once, then links.
  */
-function ensureMemoryLink(cwd: string): void {
+export function ensureMemoryLink(cwd: string): void {
   const claudeLocal = path.join(cwd, 'CLAUDE.local.md');
   const agentsDir = path.join(cwd, '.agents');
   const agentsMd = path.join(agentsDir, 'AGENTS.md');
