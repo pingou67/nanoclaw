@@ -5,3 +5,4 @@
 //
 // Skills add a new provider by appending one import line below.
 import './opencode.js';
+import './agy.js';
