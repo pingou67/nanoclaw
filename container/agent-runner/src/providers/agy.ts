@@ -4,6 +4,7 @@ import path from 'path';
 import readline from 'readline';
 
 import { registerProvider } from './provider-registry.js';
+import { summarizeToolUse } from './summarize.js';
 import type { AgentProvider, AgentQuery, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
 
 function log(msg: string): void {
@@ -187,8 +188,13 @@ export class AgyProvider implements AgentProvider {
                     lastContent = entry.content;
                   }
                   if (entry.tool_calls && entry.tool_calls.length > 0) {
-                    const tools = entry.tool_calls.map((t: any) => t.name).join(', ');
-                    progressQueue.push(`Tool: ${tools}`);
+                    // Route through the shared summarizeToolUse helper so the
+                    // live-status one-liner looks the SAME as the claude and
+                    // opencode providers (e.g. `list_dir(DirectoryPath=…)`),
+                    // not a cruder `Tool: <name>`.
+                    for (const t of entry.tool_calls as Array<{ name: string; args?: Record<string, unknown> }>) {
+                      progressQueue.push(summarizeToolUse(t.name, t.args ?? {}));
+                    }
                     wakeProgress?.();
                   }
                 }
