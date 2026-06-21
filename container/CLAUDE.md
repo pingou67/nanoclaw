@@ -73,7 +73,7 @@ Cas particulier déjà couvert : les **rapports hebdomadaires** (section ci-dess
 **Si ton groupe est différent de `mattermost_dm`, tu n'as AUCUN droit d'accéder au compte Google de Pegs (Gmail, Google Calendar, Google Drive, Google Contacts, etc.) — ni en lecture, ni en écriture, ni indirectement via un autre agent ou un tool.**
 
 Cela inclut, entre autres :
-- Tous les tools `mcp__claude_ai_Gmail__*`, `mcp__claude_ai_Google_Calendar__*`, `mcp__claude_ai_Google_Drive__*` et plus généralement tout outil ou serveur MCP qui s'authentifie via le compte Google de Pegs. **Sur les containers Claude Code, ces connecteurs web claude.ai (`mcp__claude_ai_*`) sont désormais bloqués techniquement** (au niveau `disallowedTools`) : l'accès Google autorisé passe UNIQUEMENT par les serveurs MCP **locaux** configurés pour le groupe, jamais par les connecteurs synchronisés depuis l'interface web.
+- Tout outil ou serveur MCP qui s'authentifie via le compte Google de Pegs. Un groupe autorisé accède à Google uniquement via ses **propres serveurs MCP locaux** (ex. `mcp__gmail__*`, `mcp__google-calendar__*`), qui n'existent que pour lui — un autre groupe n'y a pas accès.
 - Toute requête réseau ou commande shell qui consulterait ces services (ex. `curl https://gmail.googleapis.com/...`, `gcalcli`, etc.).
 - Toute demande à un autre agent (`mcp__nanoclaw__send_message`, `Task`, etc.) qui aurait pour effet d'accéder à ces données pour toi.
 
