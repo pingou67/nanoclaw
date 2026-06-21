@@ -105,12 +105,14 @@ docker run --rm --entrypoint sh --user "$(id -u):$(id -g)" -e HOME=/home/node \
   servers from imported **plugins**. The provider materializes a group's
   `mcp_servers` as a Gemini-CLI extension under
   `$HOME/.gemini/extensions/nanoclaw-mcp/gemini-extension.json`, then runs
-  `agy plugin import gemini` to stage them into `$HOME/.gemini/config/`. Set MCP
-  servers the usual way (`ncl groups config add-mcp-server …`); nanoclaw-only
-  keys like `instructions` are stripped (the extension schema is command/args/env
-  only). Because `~/.gemini` is a shared host mount, the import is host-wide across
-  agy groups — fine with one agy group, isolate via a per-session `HOME` if more
-  are added.
+  `agy plugin import gemini` to stage them. Set MCP servers the usual way
+  (`ncl groups config add-mcp-server …`); nanoclaw-only keys like `instructions`
+  are stripped (the extension schema is command/args/env only). **Isolation**:
+  `~/.gemini` is a shared host mount, so to keep each agy group's MCP servers
+  separate the provider runs agy under a per-container fake `HOME`
+  (`/tmp/agy-mcp-home`) whose `.gemini` symlinks the real one EXCEPT
+  `config/`+`extensions/` (kept container-local). Multiple Gemini groups can run
+  with different MCP servers without sharing them.
 - Memory: agy keeps its own per-conversation brain under
   `~/.gemini/antigravity-cli/brain/<session>` (mounted), so continuations
   resume across turns.
