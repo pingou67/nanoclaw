@@ -104,6 +104,31 @@ sharing them. Verified with two containers mounting the same `~/.gemini`: the
 one with IMAP sees its folders, the other reports no IMAP tool, and the shared
 `~/.gemini/config` stays empty (no leak).
 
+## Memory portability across providers
+
+The shared, provider-agnostic memory file is `/workspace/agent/CLAUDE.local.md`
+(host: `groups/<folder>/CLAUDE.local.md`). **claude** auto-loads it from the cwd
+(and the composed `CLAUDE.md` references it); **opencode** points at it
+explicitly (`providers/opencode.ts`). So a group switched between claude and
+opencode keeps its memory.
+
+Antigravity, however, persists learned facts to its **own** native file
+`<cwd>/.agents/AGENTS.md`. Left alone, an agy group's memory would be invisible
+to claude/opencode after a provider switch (and vice versa).
+
+Fix (in `providers/agy.ts`, `ensureMemoryLink`): on first turn the provider makes
+`.agents/AGENTS.md` a **symlink to `CLAUDE.local.md`**. Antigravity edits
+AGENTS.md in place (verified: the symlink survives writes), so agy reads/writes
+the same shared file. Any pre-existing `AGENTS.md` content is folded into
+`CLAUDE.local.md` once before linking. Net result: **memory is portable across
+all three providers** — switch a group's `provider` and its accumulated memory
+follows.
+
+> Caveat: an opencode group that enables the `opencode-claude-memory` plugin
+> (`memory_*` tools) writes to a separate structured store, not `CLAUDE.local.md`
+> — that path is not covered by this symlink. The default (no plugin) uses
+> `CLAUDE.local.md`.
+
 ## See also
 
 - `.claude/skills/add-agy/SKILL.md` — install + auth + configuration.

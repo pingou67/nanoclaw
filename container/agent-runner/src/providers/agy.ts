@@ -11,6 +11,46 @@ function log(msg: string): void {
   console.error(`[agy-provider] ${msg}`);
 }
 
+/**
+ * Make agy's memory portable across providers.
+ *
+ * Antigravity persists learned facts to `<cwd>/.agents/AGENTS.md` (its native
+ * memory/rules file). claude and opencode instead read+write
+ * `<cwd>/CLAUDE.local.md`. Left alone, an agy group's memory would be invisible
+ * to the other providers if the group is later switched — and vice versa.
+ *
+ * Fix: make `.agents/AGENTS.md` a symlink to `CLAUDE.local.md`. Antigravity
+ * edits AGENTS.md in place (verified: the symlink survives writes), so agy ends
+ * up reading/writing the SAME shared file as claude/opencode. Idempotent; folds
+ * any pre-existing AGENTS.md content into CLAUDE.local.md once, then links.
+ */
+function ensureMemoryLink(cwd: string): void {
+  const claudeLocal = path.join(cwd, 'CLAUDE.local.md');
+  const agentsDir = path.join(cwd, '.agents');
+  const agentsMd = path.join(agentsDir, 'AGENTS.md');
+  try {
+    fs.mkdirSync(agentsDir, { recursive: true });
+    let st: fs.Stats | null = null;
+    try { st = fs.lstatSync(agentsMd); } catch { /* missing */ }
+    if (st?.isSymbolicLink()) return; // already linked
+    if (!fs.existsSync(claudeLocal)) fs.writeFileSync(claudeLocal, '');
+    if (st?.isFile()) {
+      // One-time migration: fold agy-written memory into the shared file.
+      const prior = fs.readFileSync(agentsMd, 'utf-8');
+      const shared = fs.readFileSync(claudeLocal, 'utf-8');
+      if (prior.trim() && !shared.includes(prior.trim())) {
+        const sep = shared && !shared.endsWith('\n') ? '\n' : '';
+        fs.writeFileSync(claudeLocal, shared + sep + prior.trimEnd() + '\n');
+      }
+      fs.unlinkSync(agentsMd);
+    }
+    fs.symlinkSync('../CLAUDE.local.md', agentsMd);
+    log(`memory: linked .agents/AGENTS.md -> CLAUDE.local.md`);
+  } catch (e) {
+    log(`memory link setup failed: ${e}`);
+  }
+}
+
 // Emulate a UUID generator for session IDs
 function generateUUID() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
@@ -24,6 +64,8 @@ export class AgyProvider implements AgentProvider {
   private activeSessionId: string | undefined;
   // Set once the per-container MCP config has been staged (see query()).
   private mcpReady = false;
+  // Set once the AGENTS.md -> CLAUDE.local.md memory link is in place.
+  private memoryLinked = false;
 
   constructor(private readonly options: ProviderOptions = {}) {}
 
@@ -63,7 +105,13 @@ export class AgyProvider implements AgentProvider {
         if (pending.length === 0 && ended) return;
 
         const text = pending.shift()!;
-        
+
+        // Share agy's memory file with claude/opencode (see ensureMemoryLink).
+        if (!provider.memoryLinked) {
+          ensureMemoryLink(input.cwd || '/workspace/agent');
+          provider.memoryLinked = true;
+        }
+
         let finalPrompt = text;
         if (input.systemContext?.instructions) {
           finalPrompt = `<system_instructions>\n${input.systemContext.instructions}\n</system_instructions>\n\n${text}`;
