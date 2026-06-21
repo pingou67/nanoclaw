@@ -37,6 +37,19 @@ const SDK_DISALLOWED_TOOLS = [
   'ExitWorktree',
 ];
 
+// claude.ai web connectors (Gmail, Google Calendar, Google Drive, …) are
+// surfaced into headless sessions as DEFERRED `mcp__claude_ai_*` tools —
+// they don't appear in the init `mcp_servers`/`tools` list, but the agent can
+// discover and call them via ToolSearch. We hard-block the whole namespace so
+// claude containers only use the MCP servers configured in nanoclaw: when a
+// group is granted Google access it goes through that group's own LOCAL MCP
+// servers (e.g. `mcp__gmail__*`, `mcp__google-calendar__*`), never the account's
+// web-synced connectors. The documented `disableClaudeAiConnectors` managed
+// setting is NOT honored in this SDK/headless mode (verified), so we block at
+// the tool layer — which `bypassPermissions` cannot override.
+const CLAUDE_AI_CONNECTOR_PREFIX = 'mcp__claude_ai_';
+const DISALLOWED_TOOL_PATTERNS = [`${CLAUDE_AI_CONNECTOR_PREFIX}*`];
+
 // Tool allowlist for NanoClaw agent containers. MCP-tool entries are derived
 // at the call site from the registered `mcpServers` map so that any server
 // added via `add_mcp_server` (or wired in container.json directly) is
@@ -61,18 +74,10 @@ const TOOL_ALLOWLIST = [
   'ToolSearch',
   'Skill',
   'NotebookEdit',
-  // claude.ai connectors — Google Calendar. Authorized per-group via
-  // container/CLAUDE.md directive; non-permitted groups must refuse at the
-  // prompt level.
-  'mcp__claude_ai_Google_Calendar__list_calendars',
-  'mcp__claude_ai_Google_Calendar__list_events',
-  'mcp__claude_ai_Google_Calendar__get_event',
-  'mcp__claude_ai_Google_Calendar__suggest_time',
-  // Write tools — famille group only (see container/CLAUDE.md)
-  'mcp__claude_ai_Google_Calendar__create_event',
-  'mcp__claude_ai_Google_Calendar__update_event',
-  'mcp__claude_ai_Google_Calendar__delete_event',
-  'mcp__claude_ai_Google_Calendar__respond_to_event',
+  // NOTE: claude.ai web connectors (`mcp__claude_ai_*`) are intentionally NOT
+  // allowlisted and are hard-blocked via DISALLOWED_TOOL_PATTERNS — Google
+  // access is per-group through LOCAL MCP servers only. See the comment on
+  // CLAUDE_AI_CONNECTOR_PREFIX above.
 ];
 
 // MCP server names are sanitized by the SDK when forming tool prefixes:
@@ -175,7 +180,7 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
 const preToolUseHook: HookCallback = async (input) => {
   const i = input as { tool_name?: string; tool_input?: Record<string, unknown> };
   const toolName = i.tool_name ?? '';
-  if (SDK_DISALLOWED_TOOLS.includes(toolName)) {
+  if (SDK_DISALLOWED_TOOLS.includes(toolName) || toolName.startsWith(CLAUDE_AI_CONNECTOR_PREFIX)) {
     return {
       decision: 'block',
       stopReason: `Tool '${toolName}' is not available in this environment — use the nanoclaw equivalent.`,
@@ -441,7 +446,7 @@ export class ClaudeProvider implements AgentProvider {
           ...TOOL_ALLOWLIST,
           ...Object.keys(this.mcpServers).map(mcpAllowPattern),
         ],
-        disallowedTools: SDK_DISALLOWED_TOOLS,
+        disallowedTools: [...SDK_DISALLOWED_TOOLS, ...DISALLOWED_TOOL_PATTERNS],
         env: this.env,
         model: this.model,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
