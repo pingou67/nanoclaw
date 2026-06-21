@@ -22,6 +22,8 @@ function generateUUID() {
 export class AgyProvider implements AgentProvider {
   readonly supportsNativeSlashCommands = false;
   private activeSessionId: string | undefined;
+  // Set once the per-container MCP config has been staged (see query()).
+  private mcpReady = false;
 
   constructor(private readonly options: ProviderOptions = {}) {}
 
@@ -45,11 +47,11 @@ export class AgyProvider implements AgentProvider {
 
     const kick = () => waiting?.();
     const options = this.options;
+    const provider = this;
 
     async function* gen(): AsyncGenerator<ProviderEvent> {
       let isFirstPrompt = true;
       let resolvedSessionId = sessionId;
-      let mcpImported = false;
 
       while (!aborted) {
         while (pending.length === 0 && !ended && !aborted) {
@@ -84,31 +86,53 @@ export class AgyProvider implements AgentProvider {
           args.push('--effort', options.effort);
         }
         
-        const spawnEnv = process.env;
+        let spawnEnv: NodeJS.ProcessEnv = process.env;
         if (options.mcpServers && Object.keys(options.mcpServers).length > 0) {
           // Antigravity does NOT read a raw mcp.json — it loads MCP servers from
-          // imported "plugins". The working path is: materialize the configured
-          // servers as a Gemini-CLI extension under $HOME/.gemini/extensions/,
-          // then `agy plugin import gemini`, which stages them into
-          // $HOME/.gemini/config/ where the CLI actually reads them at spawn.
-          // Strip nanoclaw-only keys (e.g. `instructions`) — the CLI extension
-          // schema only knows command/args/env.
-          const cleanServers: Record<string, unknown> = {};
-          for (const [name, cfg] of Object.entries(options.mcpServers)) {
-            cleanServers[name] = { command: cfg.command, args: cfg.args, env: cfg.env };
-          }
-          const geminiDir = path.join(process.env.HOME || '/root', '.gemini');
-          const extDir = path.join(geminiDir, 'extensions', 'nanoclaw-mcp');
-          fs.mkdirSync(extDir, { recursive: true });
-          fs.writeFileSync(
-            path.join(extDir, 'gemini-extension.json'),
-            JSON.stringify({ name: 'nanoclaw-mcp', version: '1.0.0', mcpServers: cleanServers }, null, 2)
-          );
-          if (!mcpImported) {
-            const imp = spawnSync('agy', ['plugin', 'import', 'gemini'], { encoding: 'utf-8' });
+          // imported "plugins". To keep MCP servers ISOLATED PER CONTAINER (so
+          // different agy groups don't share a single ~/.gemini/config), we run
+          // agy under a container-local fake HOME (/tmp, isolated per Docker
+          // container). The fake .gemini symlinks the real one's contents
+          // (oauth token, conversations, brain, settings) EXCEPT config/
+          // extensions, which stay container-local. The configured servers are
+          // materialized as a Gemini-CLI extension, then `agy plugin import
+          // gemini` stages them into the local config where the CLI reads them.
+          // nanoclaw-only keys (e.g. `instructions`) are stripped — the
+          // extension schema only knows command/args/env.
+          const fakeHome = '/tmp/agy-mcp-home';
+          const fakeGemini = path.join(fakeHome, '.gemini');
+          const realGemini = path.join(process.env.HOME || '/root', '.gemini');
+          if (!provider.mcpReady) {
+            fs.mkdirSync(fakeGemini, { recursive: true });
+            // Share everything except config/extensions with the real .gemini.
+            if (fs.existsSync(realGemini)) {
+              for (const item of fs.readdirSync(realGemini)) {
+                if (item === 'config' || item === 'extensions') continue;
+                const link = path.join(fakeGemini, item);
+                if (!fs.existsSync(link)) {
+                  try { fs.symlinkSync(path.join(realGemini, item), link); } catch (e) { /* ignore */ }
+                }
+              }
+            }
+            const cleanServers: Record<string, unknown> = {};
+            for (const [name, cfg] of Object.entries(options.mcpServers)) {
+              cleanServers[name] = { command: cfg.command, args: cfg.args, env: cfg.env };
+            }
+            const extDir = path.join(fakeGemini, 'extensions', 'nanoclaw-mcp');
+            fs.mkdirSync(extDir, { recursive: true });
+            fs.mkdirSync(path.join(fakeGemini, 'config'), { recursive: true });
+            fs.writeFileSync(
+              path.join(extDir, 'gemini-extension.json'),
+              JSON.stringify({ name: 'nanoclaw-mcp', version: '1.0.0', mcpServers: cleanServers }, null, 2)
+            );
+            const imp = spawnSync('agy', ['plugin', 'import', 'gemini'], {
+              encoding: 'utf-8',
+              env: { ...process.env, HOME: fakeHome },
+            });
             log(`mcp import: ${((imp.stdout || '') + (imp.stderr || '')).replace(/\s+/g, ' ').trim().slice(0, 200)}`);
-            mcpImported = true;
+            provider.mcpReady = true;
           }
+          spawnEnv = { ...process.env, HOME: fakeHome };
         }
 
         activeProc = spawn('agy', args, {
