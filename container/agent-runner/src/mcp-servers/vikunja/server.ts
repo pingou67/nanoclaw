@@ -24,6 +24,9 @@ import { z } from 'zod';
 
 const BASE = (process.env.VIKUNJA_URL || '').replace(/\/$/, '');
 const TOKEN = process.env.VIKUNJA_TOKEN || '';
+/** Projet par défaut pour create_task quand `project_id` n'est pas fourni (1 = Inbox).
+ *  Configurable par groupe via l'env du serveur MCP (ex. VIKUNJA_DEFAULT_PROJECT_ID=2 pour WORK). */
+const DEFAULT_PROJECT = Number(process.env.VIKUNJA_DEFAULT_PROJECT_ID || '1') || 1;
 if (!BASE || !TOKEN) {
   console.error('[vikunja-mcp] VIKUNJA_URL / VIKUNJA_TOKEN manquants dans l\'env');
   process.exit(1);
@@ -131,10 +134,10 @@ reg('get_task', "Détail complet d'une tâche (JSON).", { id: z.number() }, (a) 
 
 reg(
   'create_task',
-  'Crée une tâche dans un projet (défaut: projet 1 / Inbox).',
+  `Crée une tâche dans un projet (défaut de ce groupe : projet ${DEFAULT_PROJECT}).`,
   {
     title: z.string(),
-    project_id: z.number().optional().describe('Défaut 1.'),
+    project_id: z.number().optional().describe(`Défaut ${DEFAULT_PROJECT}.`),
     description: z.string().optional(),
     due_date: z.string().optional().describe('RFC3339 ou YYYY-MM-DD.'),
     start_date: z.string().optional(),
@@ -145,7 +148,7 @@ reg(
     repeat_after: z.number().optional().describe('Secondes entre répétitions.'),
     repeat_mode: z.number().optional().describe('0=par défaut, 1=mois, 2=à partir de la date.'),
   },
-  (a) => api('PUT', `/projects/${a.project_id ?? 1}/tasks`, { title: a.title, ...taskBody(a) }),
+  (a) => api('PUT', `/projects/${a.project_id ?? DEFAULT_PROJECT}/tasks`, { title: a.title, ...taskBody(a) }),
 );
 
 reg(
