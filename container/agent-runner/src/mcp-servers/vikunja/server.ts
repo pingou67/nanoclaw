@@ -9,11 +9,13 @@
  *
  * Env :
  *  - `VIKUNJA_URL` (ex. https://vikunja.pegs.fr) et `VIKUNJA_TOKEN` (token d'API). Requis.
- *  - `VIKUNJA_DEFAULT_PROJECT_ID` : projet par défaut de create_task (défaut 1/Inbox).
- *  - `VIKUNJA_PROJECT_SCOPE` : cloisonnement. Vide ou `ALL` = tous les projets ;
- *    `4` = uniquement le projet 4 ; `2,3` = plusieurs. Quand défini, TOUTES les
- *    opérations tâches/projets sont restreintes à ce périmètre (lecture comme
- *    écriture) : list filtré, et tout id hors périmètre est refusé.
+ *  - `VIKUNJA_DEFAULT_PROJECT_ID` : projet par défaut de create_task — **nom ou id**
+ *    (ex. `FAMILLE` ou `4`). Défaut 1/Inbox.
+ *  - `VIKUNJA_PROJECT_SCOPE` : cloisonnement, par **nom(s) ou id(s)**. Vide ou `ALL`
+ *    = tous les projets ; `FAMILLE` (ou `4`) = un seul ; `WORK,PERSO` (ou `2,3`) =
+ *    plusieurs. Noms insensibles à la casse, résolus au démarrage. Quand défini,
+ *    TOUTES les opérations tâches/projets sont restreintes à ce périmètre (lecture
+ *    comme écriture) : list filtré, et tout hors périmètre est refusé.
  *
  * Rien n'est jamais loggé sur stdout (réservé au protocole MCP) — diagnostics sur stderr.
  *
@@ -36,19 +38,6 @@ if (!BASE || !TOKEN) {
   console.error('[vikunja-mcp] VIKUNJA_URL / VIKUNJA_TOKEN manquants dans l\'env');
   process.exit(1);
 }
-
-/** Périmètre projet : null = tous, sinon ensemble d'ids autorisés. */
-function parseScope(v: string | undefined): Set<number> | null {
-  if (!v || v.trim().toUpperCase() === 'ALL') return null;
-  const ids = v.split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n));
-  return ids.length ? new Set(ids) : null;
-}
-const SCOPE = parseScope(process.env.VIKUNJA_PROJECT_SCOPE);
-const scopeList = (): string => (SCOPE ? [...SCOPE].join(', ') : 'tous');
-
-/** Projet par défaut de create_task ; ramené dans le périmètre s'il est cloisonné. */
-let DEFAULT_PROJECT = Number(process.env.VIKUNJA_DEFAULT_PROJECT_ID || '1') || 1;
-if (SCOPE && !SCOPE.has(DEFAULT_PROJECT)) DEFAULT_PROJECT = [...SCOPE][0];
 
 type Query = Record<string, string | number | boolean | undefined | null>;
 
@@ -77,6 +66,43 @@ async function api(method: string, path: string, body?: unknown, query?: Query):
   }
   return data;
 }
+
+// ── Périmètre projet + projet par défaut : acceptent un NOM ou un id ──
+// VIKUNJA_PROJECT_SCOPE : vide ou "ALL" = tous ; sinon un/plusieurs noms et/ou
+// ids séparés par des virgules (ex. "FAMILLE", "WORK,PERSO", "2,3"). On résout
+// les noms en ids au démarrage via la liste des projets (insensible à la casse).
+const ALL_PROJECTS = (await api('GET', '/projects')) as Array<{ id: number; title: string }>;
+const projById = new Map(ALL_PROJECTS.map((p) => [p.id, p.title] as const));
+const projByName = new Map(ALL_PROJECTS.map((p) => [p.title.toLowerCase(), p.id] as const));
+/** Résout un jeton (nom ou id) en id de projet existant, ou undefined. */
+function resolveRef(tok: string): number | undefined {
+  const t = tok.trim();
+  if (/^\d+$/.test(t)) return projById.has(Number(t)) ? Number(t) : undefined;
+  return projByName.get(t.toLowerCase());
+}
+function resolveScope(): Set<number> | null {
+  const raw = process.env.VIKUNJA_PROJECT_SCOPE;
+  if (!raw || raw.trim().toUpperCase() === 'ALL') return null;
+  const ids = new Set<number>();
+  const unknown: string[] = [];
+  for (const tok of raw.split(',').map((s) => s.trim()).filter(Boolean)) {
+    const id = resolveRef(tok);
+    if (id !== undefined) ids.add(id);
+    else unknown.push(tok);
+  }
+  if (unknown.length) console.error(`[vikunja-mcp] projet(s) introuvable(s) ignoré(s) dans VIKUNJA_PROJECT_SCOPE : ${unknown.join(', ')}`);
+  if (ids.size === 0) {
+    console.error('[vikunja-mcp] VIKUNJA_PROJECT_SCOPE ne résout aucun projet existant — arrêt.');
+    process.exit(1);
+  }
+  return ids;
+}
+const SCOPE = resolveScope();
+const scopeList = (): string => (SCOPE ? [...SCOPE].map((id) => `${projById.get(id) ?? '?'} (${id})`).join(', ') : 'tous');
+
+/** Projet par défaut de create_task (nom ou id) ; ramené dans le périmètre si cloisonné. */
+let DEFAULT_PROJECT = resolveRef(process.env.VIKUNJA_DEFAULT_PROJECT_ID || '1') ?? 1;
+if (SCOPE && !SCOPE.has(DEFAULT_PROJECT)) DEFAULT_PROJECT = [...SCOPE][0];
 
 const scopeErr = (what: string): Error => new Error(`${what} hors du périmètre autorisé pour ce canal (projet(s) ${scopeList()}).`);
 /** Refuse un projet hors périmètre. */
