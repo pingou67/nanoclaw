@@ -39,10 +39,19 @@ Le serveur est lancé par une entrée de `container_configs.mcp_servers` du grou
   "vikunja": {
     "command": "bun",
     "args": ["run", "/app/src/mcp-servers/vikunja/server.ts"],
-    "env": { "VIKUNJA_URL": "https://…", "VIKUNJA_TOKEN": "…" }  // secrets ICI, pas dans le code
+    "env": {
+      "VIKUNJA_URL": "https://…",
+      "VIKUNJA_TOKEN": "…",            // secrets ICI, pas dans le code
+      "VIKUNJA_DEFAULT_PROJECT_ID": "2", // optionnel : projet par défaut de create_task
+      "VIKUNJA_PROJECT_SCOPE": "11"      // optionnel : cloisonne le groupe à un/des projet(s) (id, "2,3", ou ALL)
+    }
   }
 }
 ```
+
+Le cloisonnement par groupe (un même backend, des périmètres différents selon le
+canal) se fait ainsi côté serveur via l'env — c'est de l'isolation **dure**, pas
+une consigne de prompt.
 
 via `ncl groups config add-mcp-server` ou un `UPDATE` SQL. Les secrets vivent dans
 le champ `env` de l'entrée (DB centrale, hors git), **scopés au serveur** — ils ne
