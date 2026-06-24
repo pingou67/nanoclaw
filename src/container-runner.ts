@@ -523,8 +523,17 @@ async function buildContainerArgs(
   // (OpenRouter, DeepSeek, etc.) — clearing it would strip the auth header
   // and the upstream returns 401 / "Missing Authentication header".
   const homeDir = process.env.HOME || `/home/${process.env.USER || 'node'}`;
-  const claudeCredentials = path.join(homeDir, '.claude', '.credentials.json');
-  if (fs.existsSync(claudeCredentials) && _provider === 'claude') {
+  // Claude Code supports multiple config dirs via CLAUDE_CONFIG_DIR. On this host
+  // the claude.ai-authenticated config moved from ~/.claude to ~/.claude-anthropic,
+  // and the systemd service does NOT inherit the shell's CLAUDE_CONFIG_DIR alias.
+  // Probe known locations (explicit env override first) and use the first that
+  // exists, so the OAuth mount survives the config-dir move.
+  const claudeCredentials = [
+    process.env.CLAUDE_CONFIG_DIR ? path.join(process.env.CLAUDE_CONFIG_DIR, '.credentials.json') : null,
+    path.join(homeDir, '.claude-anthropic', '.credentials.json'),
+    path.join(homeDir, '.claude', '.credentials.json'),
+  ].find((p): p is string => p !== null && fs.existsSync(p));
+  if (claudeCredentials && _provider === 'claude') {
     args.push(...readonlyMountArgs(claudeCredentials, '/home/node/.claude/.credentials.json'));
     args.push('-e', 'ANTHROPIC_API_KEY=');
     args.push('-e', 'HTTPS_PROXY=');
