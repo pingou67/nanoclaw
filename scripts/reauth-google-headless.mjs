@@ -131,7 +131,7 @@ function exchangeCode(code, scope) {
 const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
 const ask = (q) => new Promise((res) => rl.question(q, res));
 
-async function reauthOne(label, scope, tokenPath) {
+async function reauthOne(label, scope, tokenPath, wrapKey = null) {
   const authUrl = buildAuthUrl(scope);
   console.error(`\n=== ${label} re-auth ===`);
   console.error(`\n1. Open this URL in your LOCAL browser:\n\n   ${authUrl}\n`);
@@ -156,8 +156,24 @@ async function reauthOne(label, scope, tokenPath) {
 
   console.error(`   Exchanging code for tokens…`);
   const tokens = await exchangeCode(code, scope);
-  fs.writeFileSync(tokenPath, JSON.stringify(tokens, null, 2));
-  console.error(`   ✓ written to ${tokenPath}`);
+
+  // Token file format differs per MCP server:
+  //  - gmail (gongrzhe): raw OAuth response written as-is (uses expires_in).
+  //  - gcal  (@cocal):   multi-account store keyed by account name ("normal"),
+  //                      and google-auth-library expects an absolute `expiry_date`
+  //                      (ms epoch) rather than the relative `expires_in`.
+  let out;
+  if (wrapKey) {
+    const account = { ...tokens };
+    if (typeof tokens.expires_in === 'number') {
+      account.expiry_date = Date.now() + tokens.expires_in * 1000;
+    }
+    out = { [wrapKey]: account };
+  } else {
+    out = tokens;
+  }
+  fs.writeFileSync(tokenPath, JSON.stringify(out, null, 2));
+  console.error(`   ✓ written to ${tokenPath}${wrapKey ? ` (wrapped under "${wrapKey}", expiry_date set)` : ''}`);
   console.error(`     access_token expires: ${new Date(Date.now() + (tokens.expires_in ?? 0) * 1000).toISOString()}`);
   if (tokens.refresh_token) {
     console.error(`     refresh_token: present (good — long-lived)`);
@@ -172,7 +188,8 @@ async function main() {
     await reauthOne('Gmail', SCOPES.gmail, gmailTokenPath);
   }
   if (service === 'gcal' || service === 'both') {
-    await reauthOne('Google Calendar', SCOPES.gcal, gcalTokenPath);
+    // @cocal/google-calendar-mcp keys tokens by account name; "normal" is the default.
+    await reauthOne('Google Calendar', SCOPES.gcal, gcalTokenPath, 'normal');
   }
   console.error(`\n=== DONE ===`);
   rl.close();
