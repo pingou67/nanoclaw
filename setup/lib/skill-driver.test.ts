@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { runSkill, hostExec, hostExecStream, type RunSkillOptions } from './skill-driver.js';
+import { runSkill, hostExec, hostExecStream, promptValidator, type RunSkillOptions } from './skill-driver.js';
 import { fullyApplied, type Prompter, type StepReporter } from '../../scripts/skill-apply.js';
 
 // A small SKILL.md exercising the three things the driver wires: an operator
@@ -147,5 +147,54 @@ describe('thin skill driver', () => {
     await runSkill(skill, { projectRoot: root, prompter, reuse: true, exec: (c) => void cmds.push(c) });
     expect(asked).toContain('bot_token'); // declined → prompted
     expect(cmds).toContain('use NEWLY-PASTED');
+  });
+
+  // A cred a HELPER SCRIPT owns (written by effect:external, not nc:env-set) has no
+  // env-set→ENV_KEY linkage to infer. An explicit `nc:prompt … reuse:<ENV_KEY>`
+  // restores the masked reuse offer — the imessage Photon case.
+  function helperReuseScratch(): { root: string; skill: string } {
+    const root = mkdtempSync(join(tmpdir(), 'reuse-helper-'));
+    const skill = mkdtempSync(join(tmpdir(), 'reuse-helper-skill-'));
+    writeFileSync(join(root, 'package.json'), '{"name":"scratch"}');
+    // present in .env, but NOT written by any nc:env-set in the skill below
+    writeFileSync(join(root, '.env'), 'IMESSAGE_SERVER_URL=https://photon.example.com\n');
+    writeFileSync(
+      join(skill, 'SKILL.md'),
+      '# helper reuse demo\n\n```nc:prompt server_url validate:^https?:// reuse:IMESSAGE_SERVER_URL\nYour Photon server URL.\n```\n```nc:run effect:external\nbash configure.sh "{{server_url}}"\n```\n',
+    );
+    return { root, skill };
+  }
+
+  it('reuse: offers an existing .env value for a HELPER-owned cred (no env-set linkage)', async () => {
+    const { root, skill } = helperReuseScratch();
+    const asked: string[] = [];
+    const cmds: string[] = [];
+    const confirmed: string[] = [];
+    const prompter: Prompter = {
+      async ask(n) {
+        asked.push(n);
+        return 'https://typed.example';
+      },
+      async confirm(msg) {
+        confirmed.push(msg);
+        return true; // yes, reuse the existing helper-owned value
+      },
+    };
+    await runSkill(skill, { projectRoot: root, prompter, reuse: true, exec: (c) => void cmds.push(c) });
+    expect(confirmed.some((m) => /IMESSAGE_SERVER_URL/.test(m))).toBe(true); // the reuse: link surfaced the offer
+    expect(asked).not.toContain('server_url'); // accepted → never re-prompted
+    expect(cmds).toContain('bash configure.sh "https://photon.example.com"'); // reused value flowed downstream
+  });
+
+  it('promptValidator honors flags:i (case-insensitive) and min (rejects short); error overrides the message', () => {
+    const ci = promptValidator('^https://', { flags: 'i' });
+    expect(ci).toBeDefined();
+    expect(ci!('HTTPS://example.com')).toBeUndefined(); // case-insensitive match passes
+    expect(ci!('ftp://example.com')).toBeTruthy(); // non-match rejected
+    const min = promptValidator(undefined, { min: 20 });
+    expect(min!('short')).toBeTruthy(); // below the minimum length → rejected
+    expect(min!('x'.repeat(20))).toBeUndefined(); // at the minimum → passes
+    expect(promptValidator('^x', { error: 'Bad token format' })!('y')).toBe('Bad token format'); // custom message
+    expect(promptValidator(undefined, undefined)).toBeUndefined(); // no regex + no min ⇒ no validator
   });
 });

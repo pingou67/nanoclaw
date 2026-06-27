@@ -131,10 +131,10 @@ Set up remote iMessage via Photon:
 
 Then collect the two values:
 
-```nc:prompt server_url when:mode=remote validate:^https?://
+```nc:prompt server_url when:mode=remote validate:^https?:// flags:i reuse:IMESSAGE_SERVER_URL
 Your Photon server URL — starts with http:// or https:// (e.g. https://photon.example.com).
 ```
-```nc:prompt api_key secret when:mode=remote
+```nc:prompt api_key secret when:mode=remote reuse:IMESSAGE_API_KEY
 Your Photon API key — from the Photon dashboard.
 ```
 

@@ -44,9 +44,20 @@
 //        a non-zero exit bounces to an agent (degrade, not crash) and, via the
 //        run-health gate, blocks the dangerous side effects that follow it (a
 //        restart, a pairing/QR step, a wire). An unresolved {{var}} defers.
-//   prompt <var> [secret] [validate:<re>]  body: the question → binds {{var}}  skip if satisfied
+//   prompt <var> [secret] [validate:<re>] [flags:<re-flags>] [min:<n>]
+//          [normalize:trim|rstrip-slash|lower] [error:<msg>] [reuse:<ENV_KEY>]
+//        body: the question → binds {{var}}                       skip if satisfied
 //        validate:<re> is a regex the interactive prompter enforces (e.g.
 //        validate:^xoxb- to require a Slack bot token); `inputs` bypass it.
+//        flags:<re-flags> are regex flags applied to validate (e.g. flags:i → a
+//        case-insensitive scheme match). min:<n> is a minimum length the prompter
+//        enforces (re-asks if shorter; `inputs` bypass it). error:<msg> overrides
+//        the message shown on a validation miss (single token — no spaces).
+//        normalize:<how> deterministically transforms the value AT BIND — for BOTH
+//        `inputs` and interactive answers — one of trim | rstrip-slash | lower.
+//        reuse:<ENV_KEY> lets a re-run offer an existing .env value for a credential
+//        a HELPER SCRIPT owns (written by effect:external, not nc:env-set) — the
+//        masked reuse offer the env-set→ENV_KEY inference can't otherwise see.
 //   operator                body: instructions for the human operator  output-only
 //        The SKILL.md is addressed to the coding agent; `operator` delineates the
 //        parts meant for the HUMAN (e.g. clicking through the Slack UI). Lead it
@@ -224,17 +235,35 @@ export function validate(directives: Directive[], ctx?: { chatVersion?: string }
         }
         break;
       }
-      case 'prompt':
+      case 'prompt': {
         if (!promptVar(d)) flag(d, 'prompt requires a variable name, e.g. `nc:prompt token`');
         if (d.body.length === 0) flag(d, 'prompt requires a question in its body');
+        const flags = typeof d.attrs.flags === 'string' ? d.attrs.flags : undefined;
         if (typeof d.attrs.validate === 'string') {
           try {
-            new RegExp(d.attrs.validate);
+            new RegExp(d.attrs.validate, flags);
           } catch {
-            flag(d, `prompt validate:${d.attrs.validate} is not a valid regex`);
+            flag(d, `prompt validate:${d.attrs.validate}${flags ? ` flags:${flags}` : ''} is not a valid regex`);
+          }
+        } else if (flags !== undefined) {
+          // flags without validate: still verify they're legal regex flags.
+          try {
+            new RegExp('', flags);
+          } catch {
+            flag(d, `prompt flags:${flags} are not valid regex flags`);
           }
         }
+        if (typeof d.attrs.min === 'string' && !/^\d+$/.test(d.attrs.min)) {
+          flag(d, `prompt min:${d.attrs.min} must be a non-negative integer`);
+        }
+        if (typeof d.attrs.normalize === 'string' && !['trim', 'rstrip-slash', 'lower'].includes(d.attrs.normalize)) {
+          flag(d, `prompt normalize:${d.attrs.normalize} must be one of trim|rstrip-slash|lower`);
+        }
+        if (typeof d.attrs.reuse === 'string' && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(d.attrs.reuse)) {
+          flag(d, `prompt reuse:${d.attrs.reuse} must be a valid ENV_KEY`);
+        }
         break;
+      }
       case 'operator':
         if (d.body.length === 0) flag(d, 'operator requires instructions for the human in its body');
         break;

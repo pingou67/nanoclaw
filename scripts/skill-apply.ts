@@ -27,11 +27,27 @@ import { readFileSync, existsSync, writeFileSync, appendFileSync, copyFileSync, 
 import { join, dirname } from 'node:path';
 import { parseDirectives, promptVar, type Directive } from './skill-directives.js';
 
+// Optional per-prompt UX hints an `nc:prompt`'s attrs carry. Every field is
+// trailing-optional, so an existing `async ask(name)` test fake is untouched.
+//   • flags      regex flags for `validate` (e.g. `i` → case-insensitive match)
+//   • min        a minimum length the interactive prompter enforces (re-asks if short)
+//   • error      the validation message the prompter surfaces on a mismatch
+//   • normalize  a deterministic transform applied AT BIND (see `normalizeValue`) to
+//                BOTH `inputs` and interactive answers: trim | rstrip-slash | lower
+export interface PromptOpts {
+  flags?: string;
+  min?: number;
+  error?: string;
+  normalize?: string;
+}
+
 export interface Prompter {
   // Return the value, or undefined to DEFER (headless rebuild collects these).
   // `validate` is an optional regex (from `nc:prompt … validate:<re>`) the
-  // interactive prompter enforces, re-asking until the answer matches.
-  ask(varName: string, question: string, secret: boolean, validate?: string): Promise<string | undefined>;
+  // interactive prompter enforces, re-asking until the answer matches. `opts`
+  // carries the trailing-optional PromptOpts (flags/min/error — normalize is the
+  // engine's, applied at bind, not the prompter's). A fake may ignore both.
+  ask(varName: string, question: string, secret: boolean, validate?: string, opts?: PromptOpts): Promise<string | undefined>;
   // Show an `nc:operator` block to the human operator (a clack note in setup, a
   // channel message when a coding agent relays). Absent ⇒ no operator present
   // (headless rebuild), so the instructions are simply skipped.
@@ -385,6 +401,38 @@ export function stepLabel(d: Directive, md: string): string | null {
   return (effect && byEffect[effect]) || 'Running';
 }
 
+// Deterministic input normalization applied AT BIND to every prompt value —
+// `inputs` AND interactive answers alike — driven by `nc:prompt normalize:<how>`:
+//   trim          strip leading/trailing whitespace
+//   rstrip-slash  drop trailing slash(es) — a base URL with no trailing path
+//   lower         lowercase
+// Absent/unknown ⇒ a no-op (lint gates the known set). Doing it here, not in the
+// prompter, means a programmatic `inputs` value and a typed answer land identically.
+function normalizeValue(value: string, normalize: string | undefined): string {
+  switch (normalize) {
+    case 'trim':
+      return value.trim();
+    case 'rstrip-slash':
+      return value.replace(/\/+$/, '');
+    case 'lower':
+      return value.toLowerCase();
+    default:
+      return value;
+  }
+}
+
+// The PromptOpts an `nc:prompt`'s attrs carry. Stripped with the fence when a
+// skill degrades to prose — invisible to the agent — so a plain re-read still
+// reads as a normal question. `min` parses to a number; the rest pass through.
+function promptOptsOf(d: Directive): PromptOpts {
+  const opts: PromptOpts = {};
+  if (typeof d.attrs.flags === 'string') opts.flags = d.attrs.flags;
+  if (typeof d.attrs.error === 'string') opts.error = d.attrs.error;
+  if (typeof d.attrs.normalize === 'string') opts.normalize = d.attrs.normalize;
+  if (typeof d.attrs.min === 'string' && /^\d+$/.test(d.attrs.min)) opts.min = Number(d.attrs.min);
+  return opts;
+}
+
 function substitute(value: string, vars: Map<string, { value: string; secret: boolean }>): string {
   return value.replace(VAR_REF, (_, name) => {
     const v = vars.get(name);
@@ -646,13 +694,17 @@ export async function applySkill(skillDir: string, root: string, opts: ApplyOpti
       if (d.kind === 'prompt') {
         const v = promptVar(d)!;
         const secret = d.args.includes('secret');
+        const validate = typeof d.attrs.validate === 'string' ? d.attrs.validate : undefined;
+        const promptOpts = promptOptsOf(d);
         // Pre-supplied inputs win (fully-programmatic apply); fall back to the
         // interactive prompter; still undefined ⇒ defer (headless, no answer).
         let val = opts.inputs?.[v];
-        const validate = typeof d.attrs.validate === 'string' ? d.attrs.validate : undefined;
-        if (val === undefined) val = await opts.prompter?.ask(v, d.body.join(' '), secret, validate);
+        if (val === undefined) val = await opts.prompter?.ask(v, d.body.join(' '), secret, validate, promptOpts);
         if (val === undefined) res.deferred.push(v);
-        else vars.set(v, { value: val, secret });
+        // normalize:<how> binds DETERMINISTICALLY for both inputs and answers, so
+        // an `inputs` value and a typed one land identically (a trailing slash
+        // stripped, whitespace trimmed) — see normalizeValue.
+        else vars.set(v, { value: normalizeValue(val, promptOpts.normalize), secret });
         continue;
       }
       if (d.kind === 'operator') {

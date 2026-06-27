@@ -243,3 +243,45 @@ describe('when: guard + multi-field capture', () => {
     expect(validate(parseDirectives(md))).toEqual([]);
   });
 });
+
+describe('prompt PromptOpts attrs (flags/min/normalize/error/reuse)', () => {
+  it('parses flags/min/normalize/reuse into attrs alongside the var + secret flag', () => {
+    const md = [
+      '```nc:prompt server_url secret validate:^https?:// flags:i min:8 normalize:rstrip-slash reuse:IMESSAGE_SERVER_URL',
+      'URL?',
+      '```',
+    ].join('\n');
+    const [d] = parseDirectives(md);
+    expect(promptVar(d)).toBe('server_url'); // the var, not `secret`
+    expect(d.attrs.flags).toBe('i');
+    expect(d.attrs.min).toBe('8');
+    expect(d.attrs.normalize).toBe('rstrip-slash');
+    expect(d.attrs.reuse).toBe('IMESSAGE_SERVER_URL');
+    expect(validate([d])).toEqual([]); // a well-formed prompt with all attrs lints clean
+  });
+
+  it('accepts validate:<re> combined with flags:i (a case-insensitive regex is still valid)', () => {
+    const md = ['```nc:prompt u validate:^https?:// flags:i', 'URL?', '```'].join('\n');
+    expect(validate(parseDirectives(md))).toEqual([]);
+  });
+
+  it('flags a non-numeric min:', () => {
+    const md = ['```nc:prompt u min:lots', 'q', '```'].join('\n');
+    expect(validate(parseDirectives(md)).some((p) => /min:lots must be a non-negative integer/.test(p.message))).toBe(true);
+  });
+
+  it('flags an unknown normalize: value', () => {
+    const md = ['```nc:prompt u normalize:uppercase', 'q', '```'].join('\n');
+    expect(validate(parseDirectives(md)).some((p) => /normalize:uppercase must be one of/.test(p.message))).toBe(true);
+  });
+
+  it('flags a reuse: that is not a valid ENV_KEY', () => {
+    const md = ['```nc:prompt u reuse:not-an-env-key', 'q', '```'].join('\n');
+    expect(validate(parseDirectives(md)).some((p) => /reuse:not-an-env-key must be a valid ENV_KEY/.test(p.message))).toBe(true);
+  });
+
+  it('flags illegal regex flags:', () => {
+    const md = ['```nc:prompt u validate:^x flags:zzz', 'q', '```'].join('\n');
+    expect(validate(parseDirectives(md)).some((p) => /is not a valid regex/.test(p.message))).toBe(true);
+  });
+});

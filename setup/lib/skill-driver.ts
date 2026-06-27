@@ -13,8 +13,8 @@ import { join } from 'node:path';
 
 import * as p from '@clack/prompts';
 
-import { applySkill, fullyApplied, type ApplyResult, type Prompter, type StepOutcome, type StepReporter } from '../../scripts/skill-apply.js';
-import { parseDirectives } from '../../scripts/skill-directives.js';
+import { applySkill, fullyApplied, type ApplyResult, type Prompter, type PromptOpts, type StepOutcome, type StepReporter } from '../../scripts/skill-apply.js';
+import { parseDirectives, promptVar } from '../../scripts/skill-directives.js';
 import { startSpinner } from './runner.js';
 
 /**
@@ -23,15 +23,37 @@ import { startSpinner } from './runner.js';
  * note. The prompt that follows an operator block is the natural barrier — the
  * user can't paste a token before they've done the steps.
  */
+/**
+ * Build the clack `validate` callback an `nc:prompt` carries — the interactive
+ * enforcement of `validate:<re>` (with `flags:`), `min:`, and the `error:` message.
+ * Returns undefined when the prompt has neither a regex nor a min (no validation to
+ * do). Exported so the policy is unit-testable without a TTY. Normalization is NOT
+ * here: it's deterministic, applied at bind by the engine (skill-apply
+ * `normalizeValue`), so it lands the same for `inputs` and typed answers.
+ */
+export function promptValidator(
+  validate: string | undefined,
+  opts: PromptOpts | undefined,
+): ((v: string | undefined) => string | undefined) | undefined {
+  const re = validate ? new RegExp(validate, opts?.flags) : undefined;
+  const min = opts?.min;
+  if (!re && min === undefined) return undefined;
+  return (v) => {
+    const s = (v ?? '').trim();
+    if (min !== undefined && s.length < min) return opts?.error ?? `Must be at least ${min} characters.`;
+    if (re && !re.test(s)) return opts?.error ?? `That doesn't match the expected format.`;
+    return undefined;
+  };
+}
+
 export function clackPrompter(): Prompter {
   return {
-    async ask(_varName, question, secret, validate) {
-      const re = validate ? new RegExp(validate) : undefined;
-      const check = re
-        ? (v: string | undefined) => (re.test((v ?? '').trim()) ? undefined : `That doesn't match the expected format.`)
-        : undefined;
+    async ask(_varName, question, secret, validate, opts) {
+      const check = promptValidator(validate, opts);
+      // clearOnError wipes a rejected secret so the operator re-pastes cleanly
+      // (a half-pasted token isn't left masked in the field).
       const ans = secret
-        ? await p.password({ message: question, validate: check })
+        ? await p.password({ message: question, validate: check, clearOnError: true })
         : await p.text({ message: question, validate: check });
       if (p.isCancel(ans)) return undefined; // cancelled ⇒ defer
       const v = String(ans).trim();
@@ -82,10 +104,21 @@ async function reuseFromEnv(
   }
   const varToKey = new Map<string, string>();
   for (const d of parseDirectives(md)) {
-    if (d.kind !== 'env-set') continue;
-    for (const line of d.body) {
-      const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/);
-      if (m) varToKey.set(m[2], m[1]); // var → ENV_KEY
+    // 1st pass: infer var → ENV_KEY from env-set directives (KEY={{var}}).
+    if (d.kind === 'env-set') {
+      for (const line of d.body) {
+        const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/);
+        if (m) varToKey.set(m[2], m[1]); // var → ENV_KEY
+      }
+    }
+    // 2nd pass: an explicit `nc:prompt … reuse:<ENV_KEY>` links a prompt to a
+    // credential a HELPER SCRIPT owns — written by effect:external, not nc:env-set
+    // (e.g. imessage's Photon IMESSAGE_SERVER_URL / IMESSAGE_API_KEY). The env-set
+    // inference above can't see those, so the prompt states the linkage to regain
+    // the masked reuse offer on a re-run.
+    if (d.kind === 'prompt' && typeof d.attrs.reuse === 'string') {
+      const v = promptVar(d);
+      if (v) varToKey.set(v, d.attrs.reuse); // var → ENV_KEY (explicit)
     }
   }
   let env: Record<string, string> = {};

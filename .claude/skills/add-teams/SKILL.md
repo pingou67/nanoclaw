@@ -90,7 +90,7 @@ reach this machine's webhook server (port 3000) at `/api/webhooks/teams`. If you
 don't have a tunnel running yet, start one in another terminal first — e.g.
 `ngrok http 3000` gives you `https://abcd1234.ngrok.io`.
 
-```nc:prompt public_url validate:^https://
+```nc:prompt public_url validate:^https:// normalize:rstrip-slash
 Paste your public base URL (https://…, no trailing path) — e.g. https://abcd1234.ngrok.io.
 ```
 
@@ -129,7 +129,7 @@ Create the client secret:
 4. COPY THE VALUE NOW — Azure only shows it once (the Value column, not the Secret ID).
 ```
 
-```nc:prompt app_password secret
+```nc:prompt app_password secret min:20
 Paste the client secret Value — Certificates & secrets (shown only once).
 ```
 

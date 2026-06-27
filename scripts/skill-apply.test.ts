@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { applySkill, removeSkill, planSkill, fullyApplied, firstFailureHint, stepLabel, type Prompter, type StepReporter } from './skill-apply.js';
+import { applySkill, removeSkill, planSkill, fullyApplied, firstFailureHint, stepLabel, type Prompter, type PromptOpts, type StepReporter } from './skill-apply.js';
 import { parseDirectives, validate } from './skill-directives.js';
 
 // A synthetic skill exercising the fs handlers for real (no network), plus one
@@ -1073,5 +1073,76 @@ describe('firstFailureHint', () => {
     expect(res.deferred).toContain('token'); // deferred, not bounced
     expect(res.agentTasks).toEqual([]);
     expect(firstFailureHint(res)).toBeUndefined();
+  });
+});
+
+// PromptOpts: `nc:prompt` attrs (flags/min/error/normalize). `normalize:<how>` is
+// applied DETERMINISTICALLY at engine bind — to BOTH an `inputs` value and an
+// interactive answer — so they land identically (a deliberate behavior change).
+// flags/min/error are carried through to the prompter (their interactive
+// enforcement is asserted in skill-driver.test.ts against promptValidator).
+const NORMALIZE_SKILL = `# normalize demo
+
+## Collect a base URL
+\`\`\`nc:prompt public_url normalize:rstrip-slash
+Paste your base URL.
+\`\`\`
+\`\`\`nc:env-set
+PUBLIC_URL={{public_url}}
+\`\`\`
+`;
+
+describe('nc:prompt PromptOpts (normalize at bind, opts threading)', () => {
+  let nroot: string;
+  let nskill: string;
+  beforeEach(() => {
+    nskill = mkdtempSync(join(tmpdir(), 'nc-opts-skill-'));
+    nroot = mkdtempSync(join(tmpdir(), 'nc-opts-proj-'));
+    writeFileSync(join(nskill, 'SKILL.md'), NORMALIZE_SKILL);
+    writeFileSync(join(nroot, '.env'), '');
+    writeFileSync(join(nroot, 'package.json'), '{"name":"scratch"}');
+  });
+
+  it('normalize:rstrip-slash strips a trailing slash on an inputs value (bound + consumed downstream)', async () => {
+    const res = await applySkill(nskill, nroot, { inputs: { public_url: 'https://x.ngrok.io/' }, exec: () => {} });
+    expect(res.vars.public_url).toBe('https://x.ngrok.io'); // slash stripped at bind
+    expect(readFileSync(join(nroot, '.env'), 'utf8')).toContain('PUBLIC_URL=https://x.ngrok.io');
+  });
+
+  it('normalize:rstrip-slash strips a trailing slash on an interactive answer too (same bind path)', async () => {
+    const res = await applySkill(nskill, nroot, { prompter: headless({ public_url: 'https://x.ngrok.io/' }), exec: () => {} });
+    expect(res.vars.public_url).toBe('https://x.ngrok.io'); // identical to the inputs path
+    expect(readFileSync(join(nroot, '.env'), 'utf8')).toContain('PUBLIC_URL=https://x.ngrok.io');
+  });
+
+  it('threads validate + PromptOpts (flags/min/normalize) through to the prompter, then normalizes the answer at bind', async () => {
+    writeFileSync(
+      join(nskill, 'SKILL.md'),
+      '# o\n\n```nc:prompt url validate:^https?:// flags:i min:5 normalize:rstrip-slash\nURL?\n```\n',
+    );
+    let seenValidate: string | undefined;
+    let seenOpts: PromptOpts | undefined;
+    const prompter: Prompter = {
+      async ask(_n, _q, _s, validate, opts) {
+        seenValidate = validate;
+        seenOpts = opts;
+        return 'HTTPS://x.io/'; // the prompter returns the raw answer; the engine normalizes
+      },
+    };
+    const res = await applySkill(nskill, nroot, { prompter, exec: () => {} });
+    expect(seenValidate).toBe('^https?://');
+    expect(seenOpts).toMatchObject({ flags: 'i', min: 5, normalize: 'rstrip-slash' });
+    // normalize applied at bind (trailing slash gone); case preserved (lower not set)
+    expect(res.vars.url).toBe('HTTPS://x.io');
+  });
+
+  it('normalize:lower and trim also bind deterministically', async () => {
+    writeFileSync(
+      join(nskill, 'SKILL.md'),
+      '# n\n\n```nc:prompt a normalize:lower\nA?\n```\n```nc:prompt b normalize:trim\nB?\n```\n',
+    );
+    const res = await applySkill(nskill, nroot, { inputs: { a: 'MixedCASE', b: '  spaced  ' }, exec: () => {} });
+    expect(res.vars.a).toBe('mixedcase');
+    expect(res.vars.b).toBe('spaced');
   });
 });
