@@ -174,7 +174,9 @@ function buildOpenCodeConfig(options: ProviderOptions): Record<string, unknown> 
     permission: 'allow',
     autoupdate: false,
     snapshot: false,
-    compaction: { maxContext: 165000 },
+    // No compaction override: opencode auto-compacts by default, triggering on
+    // the model's auto-detected context window (e.g. minimax-m3 = 1M from its
+    // models.dev cache). Letting it self-manage avoids a stale hardcoded cap.
     provider: providerOptions,
     instructions,
     mcp,
