@@ -16,7 +16,14 @@ export function summarizeToolUse(name: string, input: Record<string, unknown>): 
   if (typeof input.file_path === 'string') return `${name}(${s(input.file_path, 80)})`;
   if (typeof input.path === 'string') return `${name}(${s(input.path, 80)})`;
   // Bash
-  if (name === 'Bash' && typeof input.command === 'string') return `Bash(${s(input.command, 80)})`;
+  if (name === 'Bash' && typeof input.command === 'string') {
+    // Web fetches via curl/wget are the common case during web research — show
+    // just the host, not the full command + flags + long URL (which reads like
+    // a half-rendered page preview in the live-status post).
+    const fetchHost = input.command.match(/\b(?:curl|wget)\b[^|;]*?https?:\/\/([^/\s'"]+)/i);
+    if (fetchHost) return `Web fetch(${fetchHost[1]})`;
+    return `Bash(${s(input.command, 80)})`;
+  }
   // Common search/query tools
   if (typeof input.query === 'string') return `${name}("${s(input.query, 50)}")`;
   if (typeof input.pattern === 'string') return `${name}(/${s(input.pattern, 50)}/)`;

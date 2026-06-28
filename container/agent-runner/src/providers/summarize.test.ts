@@ -8,6 +8,19 @@ describe('summarizeToolUse', () => {
     expect(summarizeToolUse('Bash', { command: longCmd })).toBe(`Bash(${longCmd.slice(0, 79)}…)`);
   });
 
+  it('renders a curl/wget web fetch as the host only (not the full command)', () => {
+    expect(
+      summarizeToolUse('Bash', {
+        command: `curl -sL -A "Mozilla/5.0" 'https://www.cnews.fr/sport/2026-06-27/coupe-du-monde'`,
+      }),
+    ).toBe('Web fetch(www.cnews.fr)');
+    expect(summarizeToolUse('Bash', { command: 'wget https://example.com/page' })).toBe(
+      'Web fetch(example.com)',
+    );
+    // A non-fetch bash command still shows the command.
+    expect(summarizeToolUse('Bash', { command: 'ls -la' })).toBe('Bash(ls -la)');
+  });
+
   it('prefers the dedicated arg keys (file_path, path, command, query, pattern)', () => {
     expect(summarizeToolUse('Read', { file_path: '/etc/hostname' })).toBe('Read(/etc/hostname)');
     expect(summarizeToolUse('Read', { path: '/tmp/x' })).toBe('Read(/tmp/x)');
