@@ -34,6 +34,8 @@ import {
   buildHelpText,
   isRunnerCommand,
   stripInternalTags,
+  stripToolMarkup,
+  stripEnvelopeTags,
   type RoutingContext,
 } from './formatter.js';
 import { isUploadTraceCommand, uploadTrace } from './upload-trace.js';
@@ -208,6 +210,10 @@ let freshFgContinuationNeeded = false;
 /** Provider name captured at runPollLoop start so transitionToBackground
  * can clear the persisted continuation without taking it as a parameter. */
 let runnerProviderName = '';
+/** Whether the active provider delivers structurally (final text → origin, no
+ * `<message to>` regex). Captured at runPollLoop start; see AgentProvider
+ * `structuredDelivery`. Default false (legacy text-envelope parsing). */
+let runnerStructuredDelivery = false;
 
 /**
  * Demote the foreground query to background. Idempotent for a given fg ref —
@@ -666,6 +672,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
   pendingBgResults.length = 0;
   freshFgContinuationNeeded = false;
   runnerProviderName = config.providerName;
+  runnerStructuredDelivery = config.provider.structuredDelivery ?? false;
 
   // Finalize any live-status post orphaned by a previous container that died
   // mid-turn (crash, absolute-ceiling kill, manual restart) — otherwise the
@@ -1416,17 +1423,14 @@ export async function processQuery(
         await finalizeLiveStatus(active);
         markCompleted(initialBatchIds);
         if (event.text) {
-          // BG path: tag the result with the bg job id so the user can tell
-          // it apart from regular foreground messages, then end the query
-          // (bg queries are single-turn, no follow-ups). The text dispatcher
-          // still applies — the agent should produce <message to="..."> blocks.
+          // BG path: tag the result with the bg job id so the user can tell it
+          // apart from regular foreground messages, then end the query (bg
+          // queries are single-turn, no follow-ups).
           if (active.kind === 'background') {
-            const tag = `\`${active.jobId}\` `;
-            const tagged = event.text.replace(
-              /<message(\s+to="[^"]+")\s*>/g,
-              (_m, attrs) => `<message${attrs}>${tag}`,
-            );
-            const { sent, hasUnwrapped } = dispatchResultText(tagged, routing);
+            // Tag each delivered message with the bg job id so the user can tell
+            // it apart from foreground replies. dispatchResultText applies the
+            // tag for both delivery styles (envelope blocks or structured reply).
+            const { sent, hasUnwrapped } = dispatchResultText(event.text, routing, `\`${active.jobId}\` `);
             if (sent === 0 && event.isError === true) {
               deliverErrorResult(event.text, routing);
             }
@@ -1563,8 +1567,10 @@ function handleEvent(event: ProviderEvent, _routing: RoutingContext): void {
  * This is the same user-facing write the outer catch block does, minus the
  * `Error:` prefix — the provider's text is already a user-facing message.
  */
-function deliverErrorResult(text: string, routing: RoutingContext): void {
-  log('Error result with no <message> envelope — delivering to channel');
+/** Deliver one chat message to the session's origin destination (the channel +
+ * thread this turn is replying in). Used by the structured-delivery path and the
+ * error fallback. No envelope, no regex — the text is delivered as-is. */
+function deliverToOrigin(text: string, routing: RoutingContext): void {
   writeMessageOut({
     id: generateId(),
     in_reply_to: routing.inReplyTo,
@@ -1576,6 +1582,11 @@ function deliverErrorResult(text: string, routing: RoutingContext): void {
   });
 }
 
+function deliverErrorResult(text: string, routing: RoutingContext): void {
+  log('Error result with no <message> envelope — delivering to channel');
+  deliverToOrigin(text, routing);
+}
+
 /**
  * Parse the agent's final text for <message to="name">...</message> blocks
  * and dispatch each one to its resolved destination. Text outside of blocks
@@ -1584,7 +1595,31 @@ function deliverErrorResult(text: string, routing: RoutingContext): void {
  * The agent must always wrap output in <message to="name">...</message>
  * blocks, even with a single destination. Bare text is scratchpad only.
  */
-function dispatchResultText(text: string, routing: RoutingContext): { sent: number; hasUnwrapped: boolean } {
+function dispatchResultText(
+  rawText: string,
+  routing: RoutingContext,
+  bgTag = '',
+): { sent: number; hasUnwrapped: boolean } {
+  // Structured-delivery providers (e.g. Claude): routing comes from the
+  // structured `send_message` tool, and the final result text is the reply to
+  // the conversation this turn is in. Sanitize it (drop any leaked tool-call
+  // markup + habitual <internal>/<message> tags) and deliver as-is to the
+  // origin — we never regex-parse free text for routing, so no markup fragment
+  // can bleed into a parsed reply. Empty after sanitizing → pure scratchpad.
+  if (runnerStructuredDelivery) {
+    const clean = stripEnvelopeTags(stripToolMarkup(stripInternalTags(rawText))).trim();
+    if (!clean) return { sent: 0, hasUnwrapped: false };
+    deliverToOrigin(bgTag + clean, routing);
+    return { sent: 1, hasUnwrapped: false };
+  }
+
+  // Legacy text-envelope path: regex-parse <message to="…"> blocks.
+  // Strip any orphan tool-call markup the model leaked first (defense-in-depth).
+  let text = stripToolMarkup(rawText);
+  // Background jobs prefix each delivered block with their `bg-N` id.
+  if (bgTag) {
+    text = text.replace(/<message(\s+to="[^"]+")\s*>/g, (_m, attrs) => `<message${attrs}>${bgTag}`);
+  }
   const MESSAGE_RE = /<message\s+to="([^"]+)"\s*>([\s\S]*?)<\/message>/g;
 
   let match: RegExpExecArray | null;

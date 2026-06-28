@@ -48,6 +48,9 @@ CHANNELS = {
     "famille":      {"id": "ch-famille",      "type": "O"},
     "adminsys":     {"id": "ch-adminsys",     "type": "O"},
     "work":         {"id": "ch-work",         "type": "O"},
+    # OpenCode-backed test channel — keeps the provider matrix exercising an
+    # OpenCode group now that main/adminsys/coding moved to Claude.
+    "testor":       {"id": "ch-testor",       "type": "O"},
     "dm":           {"id": "ch-dm",           "type": "D"},
     # Dedicated throwaway channel for the provider-switch regression test —
     # backs a test-only agent group the harness flips opencode↔claude, so no

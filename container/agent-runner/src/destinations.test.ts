@@ -61,3 +61,36 @@ describe('buildSystemPromptAddendum — multi-destination routing guidance', () 
     expect(prompt).toContain('`casa`');
   });
 });
+
+describe('buildSystemPromptAddendum — structured delivery', () => {
+  it('drops the <message> envelope guidance and points at reply-text + send_message', () => {
+    seedDestination('casa', 'Casa', 'whatsapp', 'group-1@g.us');
+
+    const prompt = buildSystemPromptAddendum('Casa', true);
+
+    expect(prompt).not.toContain('<message to="name">');
+    expect(prompt).not.toContain('Wrap each delivered message');
+    expect(prompt).toContain('write your reply as your normal response text');
+    expect(prompt).toContain('send_message');
+    expect(prompt).toContain('<internal>');
+    expect(prompt).toContain('`casa`');
+  });
+
+  it('still lists multiple destinations in structured mode', () => {
+    seedDestination('casa', 'Casa', 'whatsapp', 'group-1@g.us');
+    seedDestination('worker-1', 'worker-1', 'whatsapp', 'phone-2@s.whatsapp.net');
+
+    const prompt = buildSystemPromptAddendum('Casa', true);
+
+    expect(prompt).toContain('`casa`');
+    expect(prompt).toContain('`worker-1`');
+    expect(prompt).not.toContain('<message to="name">');
+  });
+
+  it('handles the no-destination case in structured mode without crashing', () => {
+    const prompt = buildSystemPromptAddendum('Casa', true);
+
+    expect(prompt).toContain('no configured destinations');
+    expect(prompt).not.toContain('<message to="name">');
+  });
+});

@@ -27,7 +27,9 @@ const instructions = [
   '   The agent needs to see: who said what, in what order, and from which destination.',
   '',
   '3. At the END of the compaction summary, include this verbatim reminder:',
-  '   "You MUST wrap all responses in <message to="name">...</message> blocks.',
+  '   "Deliver your reply as your normal response text — it goes to the conversation you are in.',
+  '   Use the send_message tool ({to, text}) to reach any OTHER destination. Do NOT wrap responses in <message> tags;',
+  '   put private reasoning in <internal>...</internal> (never delivered).',
   `   Available destinations: ${names.length > 0 ? names.map((n) => `\`${n}\``).join(', ') : '(none)'}."`,
 ];
 

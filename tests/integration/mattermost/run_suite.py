@@ -769,6 +769,7 @@ PROVIDER_MATRIX_CANDIDATES = [
     ("coding",    "ch-coding",    False),
     ("adminsys",  "ch-adminsys",  False),
     ("famille",   "ch-famille",   True),
+    ("testor",    "ch-testor",    False),  # OpenCode-backed — keeps both providers covered
 ]
 
 def _relabel(r: Result, name: str) -> Result:

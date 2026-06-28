@@ -79,41 +79,64 @@ export function findByRouting(
  * per-agent-group and changes when the operator renames an agent, while
  * the shared base is identical across all agents.
  */
-export function buildSystemPromptAddendum(assistantName?: string): string {
+export function buildSystemPromptAddendum(assistantName?: string, structuredDelivery = false): string {
   const sections: string[] = [];
 
   if (assistantName) {
     sections.push(['# You are ' + assistantName, '', `Your name is **${assistantName}**. Use it when the channel asks who you are, when introducing yourself, and when signing any message that explicitly calls for a signature.`].join('\n'));
   }
 
-  sections.push(buildDestinationsSection());
+  sections.push(structuredDelivery ? buildStructuredDestinationsSection() : buildDestinationsSection());
 
   return sections.join('\n\n');
 }
 
-function buildDestinationsSection(): string {
+/** Header + destination list shared by both delivery styles. */
+function destinationListLines(): string[] {
   const all = getAllDestinations();
-
   if (all.length === 0) {
-    return [
-      '## Sending messages',
-      '',
-      'You currently have no configured destinations. You cannot send messages until an admin wires one up.',
-    ].join('\n');
+    return ['You currently have no configured destinations. You cannot send messages until an admin wires one up.'];
   }
-
-  const lines = ['## Sending messages', ''];
   if (all.length === 1) {
     const d = all[0];
     const label = d.displayName && d.displayName !== d.name ? ` (${d.displayName})` : '';
-    lines.push(`Your destination is \`${d.name}\`${label}.`);
-  } else {
-    lines.push('You can send messages to the following destinations:', '');
-    for (const d of all) {
-      const label = d.displayName && d.displayName !== d.name ? ` (${d.displayName})` : '';
-      lines.push(`- \`${d.name}\`${label}`);
-    }
+    return [`Your destination is \`${d.name}\`${label}.`];
   }
+  const lines = ['You can send messages to the following destinations:', ''];
+  for (const d of all) {
+    const label = d.displayName && d.displayName !== d.name ? ` (${d.displayName})` : '';
+    lines.push(`- \`${d.name}\`${label}`);
+  }
+  return lines;
+}
+
+/**
+ * Structured-delivery instructions (providers with `structuredDelivery`): the
+ * agent's final reply text is delivered as-is to the conversation it is in, and
+ * extra destinations go through the structured `send_message` tool. No XML
+ * envelope — so no tool-call markup can bleed into a regex-parsed reply.
+ */
+function buildStructuredDestinationsSection(): string {
+  const lines = ['## Sending messages', ''];
+  lines.push(...destinationListLines());
+  if (getAllDestinations().length === 0) return lines.join('\n');
+  lines.push('');
+  lines.push(
+    'Just write your reply as your normal response text — it is delivered to the conversation you are replying in. Do NOT wrap it in any `<message>` tags.',
+  );
+  lines.push('');
+  lines.push(
+    'To message a *different* destination (or several), call the `send_message` tool with `to` (destination name) and `text`. Use one call per destination. It also works mid-turn for a quick acknowledgment ("on it") before a slow tool call. Each call lands as its own message.',
+  );
+  lines.push('');
+  lines.push('Wrap any private reasoning you do NOT want delivered in `<internal>…</internal>`.');
+  return lines.join('\n');
+}
+
+function buildDestinationsSection(): string {
+  const lines = ['## Sending messages', ''];
+  lines.push(...destinationListLines());
+  if (getAllDestinations().length === 0) return lines.join('\n');
   lines.push('');
   lines.push(
     'Wrap each delivered message in a `<message to="name">…</message>` block; include several blocks in one response to address several destinations. `<internal>…</internal>` marks thinking you don\'t want sent.',

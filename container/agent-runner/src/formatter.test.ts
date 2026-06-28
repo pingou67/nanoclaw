@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
 import { initTestSessionDb, closeSessionDb, getInboundDb } from './db/connection.js';
 import { getPendingMessages } from './db/messages-in.js';
-import { formatMessages, stripInternalTags } from './formatter.js';
+import { formatMessages, stripInternalTags, stripToolMarkup, stripEnvelopeTags } from './formatter.js';
 import { TIMEZONE } from './timezone.js';
 
 beforeEach(() => {
@@ -192,5 +192,40 @@ describe('stripInternalTags', () => {
     expect(stripInternalTags('<internal>thinking</internal>The answer is 42')).toBe(
       'The answer is 42',
     );
+  });
+});
+
+describe('stripToolMarkup', () => {
+  it('removes a trailing orphan </parameter> leaked by the model', () => {
+    expect(stripToolMarkup('Voici les matchs · [FIFA](https://x)\n</parameter>')).toBe(
+      'Voici les matchs · [FIFA](https://x)\n',
+    );
+  });
+
+  it('removes invoke / parameter / function_calls fragments (with or without antml: prefix)', () => {
+    expect(stripToolMarkup('a<invoke name="x">b</invoke>c')).toBe('abc');
+    expect(stripToolMarkup('a<parameter name="q">b</parameter>c')).toBe('abc');
+    expect(stripToolMarkup('a<function_calls>b</function_calls>c')).toBe('abc');
+  });
+
+  it('leaves legitimate prose and other tags untouched', () => {
+    expect(stripToolMarkup('hello **world** <https://x> and `code`')).toBe(
+      'hello **world** <https://x> and `code`',
+    );
+  });
+});
+
+describe('stripEnvelopeTags', () => {
+  it('removes <message …> and </message> tags but keeps the inner content', () => {
+    expect(stripEnvelopeTags('<message to="dm">bonjour</message>')).toBe('bonjour');
+  });
+
+  it('handles several blocks and bare tags', () => {
+    expect(stripEnvelopeTags('<message to="a">x</message><message to="b">y</message>')).toBe('xy');
+    expect(stripEnvelopeTags('a</message>b')).toBe('ab');
+  });
+
+  it('leaves prose without envelope tags untouched', () => {
+    expect(stripEnvelopeTags('a normal reply with no tags')).toBe('a normal reply with no tags');
   });
 });

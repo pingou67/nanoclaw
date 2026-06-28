@@ -362,6 +362,10 @@ const STALE_SESSION_RE = /no conversation found|ENOENT.*\.jsonl|session.*not fou
 
 export class ClaudeProvider implements AgentProvider {
   readonly supportsNativeSlashCommands = true;
+  // The Claude Agent SDK exposes structured assistant content + structured
+  // tool calls, so we route via the `send_message` tool and deliver the final
+  // text to the origin directly — no `<message to="…">` regex on free text.
+  readonly structuredDelivery = true;
 
   private assistantName?: string;
   private mcpServers: Record<string, McpServerConfig>;

@@ -436,3 +436,29 @@ function escapeXml(str: string): string {
 export function stripInternalTags(text: string): string {
   return text.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
 }
+
+/**
+ * Strip orphan tool-call markup that some models (notably Opus 4.x) occasionally
+ * leak into their final text — e.g. a stray `</parameter>` left at the end of a
+ * reply, or a partial `<invoke …>` / `<function_calls>` fragment. These tags are
+ * never legitimate prose, so removing them is safe. Defense-in-depth against the
+ * SDK passing a malformed tool-call fragment through in `result`.
+ *
+ * Observed 2026-06-28 on #dm: a web-search answer was delivered with a trailing
+ * `</parameter>` after the model's tool block bled into the response text.
+ */
+export function stripToolMarkup(text: string): string {
+  return text.replace(/<\/?(?:antml:)?(?:function_calls|invoke|parameter)(?:\s[^>]*)?\/?>/gi, '');
+}
+
+/**
+ * Remove `<message …>` / `</message>` envelope *tags* while keeping their inner
+ * content. Used only on the structured-delivery path (see AgentProvider
+ * `structuredDelivery`): routing there comes from the structured `send_message`
+ * tool, not from parsing these tags — so if a model wraps its origin reply in an
+ * envelope out of habit, we degrade it to plain text rather than shipping the
+ * literal tags. This drops tags, it does NOT parse them for routing.
+ */
+export function stripEnvelopeTags(text: string): string {
+  return text.replace(/<\/?message(?:\s[^>]*)?>/gi, '');
+}

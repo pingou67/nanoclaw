@@ -15,6 +15,20 @@ export interface AgentProvider {
   readonly usesMemoryScaffold?: boolean;
 
   /**
+   * Optional. When true, the agent delivers via structured tool calls
+   * (`send_message`) and its final result TEXT is treated as the reply to the
+   * conversation it is in — the runner delivers that text directly to the
+   * origin destination and does NOT regex-parse `<message to="…">` envelopes
+   * out of free text. This eliminates the leak class where model tool-call
+   * markup (a stray `</parameter>`, etc.) bleeds into a regex-extracted reply,
+   * because routing comes from the SDK's structured output, not text parsing.
+   *
+   * Providers whose harness exposes structured assistant content (the Claude
+   * Agent SDK) set this; others keep the legacy text-envelope path. Default off.
+   */
+  readonly structuredDelivery?: boolean;
+
+  /**
    * Optional. Called by the poll-loop after each completed exchange (a
    * result, a wrapping retry, or an error). Providers whose harness keeps no
    * on-disk transcript implement this to persist exchanges themselves (e.g.

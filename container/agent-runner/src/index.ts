@@ -46,14 +46,6 @@ async function main(): Promise<void> {
 
   log(`Starting v2 agent-runner (provider: ${providerName})`);
 
-  // Runtime-generated system-prompt addendum: agent identity (name) plus
-  // the live destinations map. Everything else (capabilities, per-module
-  // instructions, per-channel formatting) is loaded by Claude Code from
-  // /workspace/agent/CLAUDE.md — the composed entry imports the shared
-  // base (/app/CLAUDE.md) and each enabled module's fragment. Per-group
-  // memory lives in /workspace/agent/CLAUDE.local.md (auto-loaded).
-  const instructions = buildSystemPromptAddendum(config.assistantName || undefined);
-
   // Discover additional directories mounted at /workspace/extra/*
   const additionalDirectories: string[] = [];
   const extraBase = '/workspace/extra';
@@ -102,6 +94,16 @@ async function main(): Promise<void> {
   // boot (idempotent). Default off — the trunk default (Claude) omits the flag
   // and keeps its native memory untouched.
   if (provider.usesMemoryScaffold) ensureMemoryScaffold();
+
+  // Runtime-generated system-prompt addendum: agent identity (name) plus the
+  // live destinations map. Built after the provider exists so its delivery
+  // style (structuredDelivery) selects the right routing guidance — structured
+  // (reply directly + send_message tool) vs legacy (<message to="…"> envelopes).
+  // Everything else is loaded by the harness from /workspace/agent/CLAUDE.md.
+  const instructions = buildSystemPromptAddendum(
+    config.assistantName || undefined,
+    provider.structuredDelivery ?? false,
+  );
 
   await runPollLoop({
     provider,
