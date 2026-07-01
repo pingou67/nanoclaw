@@ -101,6 +101,7 @@ registerResource({
             messaging_group_agents: 0,
             agent_group_members: 0,
             user_roles: 0,
+            agent_message_policies: 0,
             container_configs: 0,
           };
 
@@ -138,6 +139,13 @@ registerResource({
             .prepare('DELETE FROM agent_group_members WHERE agent_group_id = ?')
             .run(groupId).changes;
           counts.user_roles = db.prepare('DELETE FROM user_roles WHERE agent_group_id = ?').run(groupId).changes;
+          // a2a policies FK-reference agent_groups on both sides — without this
+          // the final agent_groups delete fails the FK check and rolls back.
+          if (hasTable(db, 'agent_message_policies')) {
+            counts.agent_message_policies = db
+              .prepare('DELETE FROM agent_message_policies WHERE from_agent_group_id = ? OR to_agent_group_id = ?')
+              .run(groupId, groupId).changes;
+          }
           // migration-014 has ON DELETE CASCADE on container_configs.agent_group_id;
           // the explicit delete here mirrors the other tables and surfaces the count.
           counts.container_configs = db
@@ -341,6 +349,15 @@ registerResource({
         const apt = args.apt as string | undefined;
         const npm = args.npm as string | undefined;
         if (!apt && !npm) throw new Error('Provide --apt <pkg> or --npm <pkg>');
+
+        // Same validation as the install_packages self-mod path
+        // (src/modules/self-mod/request.ts) — package names get interpolated
+        // into Dockerfile RUN lines by buildAgentGroupImage, so an
+        // unvalidated name is a root shell in the build container.
+        const APT_RE = /^[a-z0-9][a-z0-9._+-]*$/;
+        const NPM_RE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+        if (apt && !APT_RE.test(apt)) throw new Error(`Invalid apt package name: ${apt}`);
+        if (npm && !NPM_RE.test(npm)) throw new Error(`Invalid npm package name: ${npm}`);
 
         if (apt) {
           const existing = JSON.parse(row.packages_apt) as string[];

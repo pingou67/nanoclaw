@@ -16,7 +16,7 @@
  * core iterates handlers and the first one to return `true` claims the response.
  */
 import { wakeContainer } from '../../container-runner.js';
-import { deletePendingApproval, getPendingApproval, getSession } from '../../db/sessions.js';
+import { claimPendingApproval, deletePendingApproval, getPendingApproval, getSession } from '../../db/sessions.js';
 import type { ResponsePayload } from '../../response-registry.js';
 import { log } from '../../log.js';
 import { writeSessionMessage } from '../../session-manager.js';
@@ -60,6 +60,17 @@ async function handleRegisteredApproval(
   selectedOption: string,
   userId: string,
 ): Promise<void> {
+  // Atomic claim — a double click (or platform retry) dispatches two
+  // concurrent chains; without this the handler side effects (image builds,
+  // approved ncl commands, message replays) run twice.
+  if (!claimPendingApproval(approval.approval_id)) {
+    log.info('Approval already being resolved — ignoring duplicate click', {
+      approvalId: approval.approval_id,
+      action: approval.action,
+    });
+    return;
+  }
+
   if (!approval.session_id) {
     deletePendingApproval(approval.approval_id);
     return;

@@ -107,11 +107,36 @@ export async function armReasonCapture(approval: PendingApproval, session: Sessi
     return;
   }
 
+  // A second "Reject with reason…" from the same admin DM displaces the
+  // first arming. Finalize the displaced approval as a plain reject right
+  // away (same terminal state the sweep applies to ghosted holds) so its
+  // requester isn't left hanging until the window elapses.
+  const key = dmKey(dm.channel_type, dm.platform_id);
+  const displaced = awaitingReason.get(key);
+  if (displaced && displaced.approvalId !== approval.approval_id) {
+    awaitingReason.delete(key);
+    const prior = getPendingApproval(displaced.approvalId);
+    if (prior && prior.status === 'awaiting_reason') {
+      const priorSession = prior.session_id ? getSession(prior.session_id) : null;
+      if (priorSession) {
+        // Attribution is known here (unlike the sweep): the displaced hold
+        // was armed by this same admin.
+        await finalizeReject(prior, priorSession, displaced.userId);
+      } else {
+        deletePendingApproval(prior.approval_id);
+      }
+    }
+    log.info('reject-with-reason: prior arming displaced, finalized as plain reject', {
+      displacedApprovalId: displaced.approvalId,
+      approvalId: approval.approval_id,
+    });
+  }
+
   // Prompt is out — now hold the row and arm capture. Order matters: a reply
   // can't arrive before the prompt is read, so there's no lost-message window.
   const expiresAt = new Date(Date.now() + REASON_CAPTURE_WINDOW_MS).toISOString();
   markApprovalAwaitingReason(approval.approval_id, expiresAt);
-  awaitingReason.set(dmKey(dm.channel_type, dm.platform_id), { approvalId: approval.approval_id, userId });
+  awaitingReason.set(key, { approvalId: approval.approval_id, userId });
   log.info('reject-with-reason: awaiting reason reply', { approvalId: approval.approval_id, userId });
 }
 

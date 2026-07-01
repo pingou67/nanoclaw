@@ -17,6 +17,14 @@ import { DEFAULT_SOCKET_PATH } from './socket-client.js';
 
 let server: net.Server | null = null;
 
+/**
+ * Cap on the newline-framed read buffer. CLI request frames are small
+ * (command + flags); 1 MB is far beyond any legitimate frame, so a buffer
+ * that grows past it is a runaway/malicious client — drop the connection
+ * rather than accumulate unbounded memory.
+ */
+const MAX_BUFFER_BYTES = 1024 * 1024;
+
 export async function startCliServer(socketPath: string = DEFAULT_SOCKET_PATH): Promise<void> {
   // Stale-socket cleanup — a previous run that crashed may have left the
   // file behind, and net.createServer refuses to bind to an existing path.
@@ -56,6 +64,15 @@ function handleConnection(conn: net.Socket): void {
   let buffer = '';
   conn.on('data', (chunk) => {
     buffer += chunk.toString('utf8');
+    if (buffer.length > MAX_BUFFER_BYTES) {
+      write(conn, {
+        id: 'unknown',
+        ok: false,
+        error: { code: 'transport-error', message: `frame exceeds ${MAX_BUFFER_BYTES} byte limit` },
+      });
+      conn.destroy();
+      return;
+    }
     let idx: number;
     while ((idx = buffer.indexOf('\n')) >= 0) {
       const line = buffer.slice(0, idx).trim();

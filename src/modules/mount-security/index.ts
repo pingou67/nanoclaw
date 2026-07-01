@@ -260,6 +260,17 @@ export function validateMount(mount: AdditionalMount): MountValidationResult {
     };
   }
 
+  // Docker's -v syntax is colon-delimited — a colon anywhere in the resolved
+  // host path (e.g. a directory named "repo:v2" under an allowed root) would
+  // produce a malformed mount triple. The container-path check above only
+  // covers the container side.
+  if (realPath.includes(':')) {
+    return {
+      allowed: false,
+      reason: `Host path contains ':' which breaks Docker mount syntax: "${realPath}"`,
+    };
+  }
+
   // Check against blocked patterns
   const blockedMatch = matchesBlockedPattern(realPath, allowlist.blockedPatterns);
   if (blockedMatch !== null) {

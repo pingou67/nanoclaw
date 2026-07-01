@@ -211,6 +211,22 @@ export function deletePendingApproval(approvalId: string): void {
   getDb().prepare('DELETE FROM pending_approvals WHERE approval_id = ?').run(approvalId);
 }
 
+/**
+ * Atomically claim an approval for resolution. Response dispatch is
+ * fire-and-forget, so a double click (or a platform retry of the callback)
+ * runs two concurrent resolution chains — only the one that flips the status
+ * first may execute the side effects. Returns false for the loser.
+ *
+ * 'awaiting_reason' rows are claimable again on purpose: after arming
+ * "Reject with reason…" the admin can still click Approve/Reject on the card.
+ */
+export function claimPendingApproval(approvalId: string): boolean {
+  const info = getDb()
+    .prepare("UPDATE pending_approvals SET status = 'resolving' WHERE approval_id = ? AND status != 'resolving'")
+    .run(approvalId);
+  return info.changes > 0;
+}
+
 export function getPendingApprovalsByAction(action: string): PendingApproval[] {
   return getDb().prepare('SELECT * FROM pending_approvals WHERE action = ?').all(action) as PendingApproval[];
 }
