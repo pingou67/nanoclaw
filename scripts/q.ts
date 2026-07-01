@@ -18,6 +18,8 @@
  * while routing through the better-sqlite3 dep that setup already
  * installs and verifies.
  */
+import fs from 'fs';
+
 import Database from 'better-sqlite3';
 
 const [, , dbPath, sql] = process.argv;
@@ -27,7 +29,14 @@ if (!dbPath || sql === undefined) {
   process.exit(2);
 }
 
-const db = new Database(dbPath);
+// fileMustExist: without it better-sqlite3 silently creates an empty DB on a
+// typo'd path, masking the real error.
+if (!fs.existsSync(dbPath)) {
+  console.error(`Error: database file not found: ${dbPath}`);
+  process.exit(2);
+}
+
+const db = new Database(dbPath, { fileMustExist: true });
 try {
   try {
     const stmt = db.prepare(sql);

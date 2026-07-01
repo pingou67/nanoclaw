@@ -76,7 +76,9 @@ for (const version of migrationVersions) {
       success: false,
       error: `Migration ${version}/index.ts not found`,
     });
-    continue;
+    // Stop at the first failure — later migrations would run against a
+    // broken intermediate state.
+    break;
   }
 
   try {
@@ -92,6 +94,9 @@ for (const version of migrationVersions) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     results.push({ version, success: false, error: message });
+    // Stop at the first failure — later migrations would run against a
+    // broken intermediate state.
+    break;
   }
 }
 

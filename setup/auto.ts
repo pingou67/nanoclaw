@@ -1072,8 +1072,10 @@ function writeEnvLine(key: string, value: string): void {
   const envFile = path.join(process.cwd(), '.env');
   const content = fs.existsSync(envFile) ? fs.readFileSync(envFile, 'utf-8') : '';
   const re = new RegExp(`^${key}=.*$`, 'm');
+  // Function replacement: a plain string is subject to `$`-pattern
+  // expansion ($&, $`, $', $n…), which would corrupt secrets containing $.
   const next = re.test(content)
-    ? content.replace(re, `${key}=${value}`)
+    ? content.replace(re, () => `${key}=${value}`)
     : content.trimEnd() + (content ? '\n' : '') + `${key}=${value}\n`;
   fs.writeFileSync(envFile, next);
 }

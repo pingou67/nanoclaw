@@ -50,7 +50,9 @@ export async function run(args: string[]): Promise<void> {
   const existed = lineRegex.test(content);
 
   if (existed) {
-    content = content.replace(lineRegex, newLine);
+    // Function replacement: a plain string is subject to `$`-pattern
+    // expansion ($&, $`, $', $n…), which would corrupt secrets containing $.
+    content = content.replace(lineRegex, () => newLine);
   } else {
     const sep = content && !content.endsWith('\n') ? '\n' : '';
     content = content + sep + newLine + '\n';

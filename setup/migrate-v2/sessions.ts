@@ -50,8 +50,9 @@ function copyTree(src: string, dst: string): number {
       written += copyTree(s, d);
       continue;
     }
-    // Skip dangling symlinks (e.g. v1's .claude/debug/latest pointer).
-    if (entry.isSymbolicLink() && !fs.existsSync(s)) continue;
+    // Skip all symlinks (e.g. v1's .claude/debug/latest pointer) — a link to
+    // a directory would hit copyFileSync and throw EISDIR.
+    if (entry.isSymbolicLink()) continue;
     if (fs.existsSync(d)) continue;
     fs.copyFileSync(s, d);
     written += 1;
@@ -164,8 +165,10 @@ function main(): void {
             const obPath = outboundDbPath(ag.id, session.id);
             if (fs.existsSync(obPath)) {
               const ob = new Database(obPath);
+              // INSERT OR IGNORE: re-running the migration must not clobber a
+              // live v2 conversation with the stale v1 session id.
               ob.prepare(
-                "INSERT OR REPLACE INTO session_state (key, value, updated_at) VALUES ('continuation:claude', ?, ?)",
+                "INSERT OR IGNORE INTO session_state (key, value, updated_at) VALUES ('continuation:claude', ?, ?)",
               ).run(v1SessionId, new Date().toISOString());
               ob.close();
             }

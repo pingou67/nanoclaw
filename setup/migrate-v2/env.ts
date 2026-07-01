@@ -11,14 +11,28 @@ import path from 'path';
 
 function parseEnv(text: string): Map<string, string> {
   const out = new Map<string, string>();
-  for (const raw of text.split('\n')) {
-    const line = raw.trimEnd();
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trimEnd();
     if (!line || line.startsWith('#')) continue;
     const eq = line.indexOf('=');
     if (eq <= 0) continue;
     const key = line.slice(0, eq).trim();
     if (!/^[A-Z_][A-Z0-9_]*$/i.test(key)) continue;
-    out.set(key, line);
+    let raw = line;
+    // Minimal multiline support: a quoted value whose closing quote isn't on
+    // the same line (dotenv-legal, e.g. an inline PEM key) continues on
+    // following lines until the closing quote.
+    const value = line.slice(eq + 1).trimStart();
+    const quote = value[0] === '"' || value[0] === "'" ? value[0] : null;
+    if (quote && !value.slice(1).includes(quote)) {
+      while (i + 1 < lines.length) {
+        i++;
+        raw += '\n' + lines[i];
+        if (lines[i].includes(quote)) break;
+      }
+    }
+    out.set(key, raw);
   }
   return out;
 }

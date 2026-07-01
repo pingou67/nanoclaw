@@ -198,7 +198,9 @@ find_v1() {
       echo "$NANOCLAW_V1_PATH"
       return 0
     fi
-    step_fail "NANOCLAW_V1_PATH=$NANOCLAW_V1_PATH does not contain store/messages.db"
+    # stderr: we're inside a $(find_v1) command substitution — stdout is
+    # captured into V1_PATH, so the diagnostic would never reach the user.
+    step_fail "NANOCLAW_V1_PATH=$NANOCLAW_V1_PATH does not contain store/messages.db" >&2
     return 1
   fi
 
@@ -623,6 +625,7 @@ if [ "$V1_RUNNING" = "true" ]; then
     # Install and start v2 service
     V2_SERVICE_LOG="$STEPS_DIR/service-install.log"
     V2_SERVICE_ERR="$STEPS_DIR/service-install.err"
+    V2_SERVICE_OK=false
     if pnpm exec tsx setup/index.ts --step service > "$V2_SERVICE_LOG" 2>"$V2_SERVICE_ERR"; then
       # Parse the actual unit name from the service step stdout (clean, no ANSI)
       if [ "$PLATFORM_SERVICE" = "systemd" ]; then
@@ -630,43 +633,59 @@ if [ "$V1_RUNNING" = "true" ]; then
       elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
         V2_SERVICE=$(grep '^SERVICE_LABEL:' "$V2_SERVICE_LOG" | head -1 | sed 's/^SERVICE_LABEL: *//')
       fi
+      V2_SERVICE_OK=true
       step_ok "v2 service installed and started $(dim "($V2_SERVICE)")"
     else
       step_fail "Could not start v2 service $(dim "(see $V2_SERVICE_LOG)")"
     fi
 
-    SERVICE_SWITCHED=true
-    echo
-    step_info "v2 is running — send a test message to your bot"
-    echo
+    if [ "$V2_SERVICE_OK" = "true" ]; then
+      SERVICE_SWITCHED=true
+      echo
+      step_info "v2 is running — send a test message to your bot"
+      echo
 
-    # Ask: keep or revert?
-    KEEP_ANSWER_FILE=$(mktemp)
-    pnpm exec tsx setup/migrate-v2/switchover-prompt.ts --keep-or-revert "$KEEP_ANSWER_FILE" || true
-    KEEP_ANSWER=$(cat "$KEEP_ANSWER_FILE" 2>/dev/null || echo "keep")
-    rm -f "$KEEP_ANSWER_FILE"
+      # Ask: keep or revert? Default to revert (safe) unless the user
+      # explicitly answers "keep" — a prompt failure must not leave v1 disabled.
+      KEEP_ANSWER_FILE=$(mktemp)
+      pnpm exec tsx setup/migrate-v2/switchover-prompt.ts --keep-or-revert "$KEEP_ANSWER_FILE" || true
+      KEEP_ANSWER=$(cat "$KEEP_ANSWER_FILE" 2>/dev/null || echo "revert")
+      rm -f "$KEEP_ANSWER_FILE"
 
-    if [ "$KEEP_ANSWER" = "revert" ]; then
-      # Stop v2
-      if [ "$PLATFORM_SERVICE" = "systemd" ] && [ -n "$V2_SERVICE" ]; then
-        systemctl --user stop "$V2_SERVICE" 2>/dev/null || true
-        systemctl --user disable "$V2_SERVICE" 2>/dev/null || true
-      elif [ "$PLATFORM_SERVICE" = "launchd" ] && [ -n "$V2_SERVICE" ]; then
-        launchctl unload ~/Library/LaunchAgents/${V2_SERVICE}.plist 2>/dev/null || true
+      if [ "$KEEP_ANSWER" = "keep" ]; then
+        step_ok "Keeping v2 service"
+        disable_v1_service
+      else
+        # Stop v2
+        if [ "$PLATFORM_SERVICE" = "systemd" ] && [ -n "$V2_SERVICE" ]; then
+          systemctl --user stop "$V2_SERVICE" 2>/dev/null || true
+          systemctl --user disable "$V2_SERVICE" 2>/dev/null || true
+        elif [ "$PLATFORM_SERVICE" = "launchd" ] && [ -n "$V2_SERVICE" ]; then
+          launchctl unload ~/Library/LaunchAgents/${V2_SERVICE}.plist 2>/dev/null || true
+        fi
+
+        # Restart v1
+        if [ "$PLATFORM_SERVICE" = "systemd" ]; then
+          systemctl --user start "$V1_SERVICE" 2>/dev/null || true
+        elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
+          launchctl load ~/Library/LaunchAgents/${V1_SERVICE}.plist 2>/dev/null || true
+        fi
+
+        step_ok "Reverted to v1 service"
+        SERVICE_SWITCHED=false
       fi
-
-      # Restart v1
+    else
+      # v2 service install failed — bring v1 back and stay on it. Do NOT set
+      # SERVICE_SWITCHED: leaving v1 stopped+disabled with no v2 running would
+      # take the bot fully offline.
       if [ "$PLATFORM_SERVICE" = "systemd" ]; then
         systemctl --user start "$V1_SERVICE" 2>/dev/null || true
       elif [ "$PLATFORM_SERVICE" = "launchd" ]; then
         launchctl load ~/Library/LaunchAgents/${V1_SERVICE}.plist 2>/dev/null || true
       fi
-
-      step_ok "Reverted to v1 service"
-      SERVICE_SWITCHED=false
-    else
-      step_ok "Keeping v2 service"
-      disable_v1_service
+      echo
+      step_fail "v2 service install FAILED — restarted the v1 service and staying on v1 $(dim "(see $V2_SERVICE_LOG)")"
+      echo
     fi
   else
     step_skip "Service switchover skipped"

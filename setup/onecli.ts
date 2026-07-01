@@ -92,7 +92,9 @@ function writeEnvVar(name: string, value: string): void {
   let content = fs.existsSync(envFile) ? fs.readFileSync(envFile, 'utf-8') : '';
   const re = new RegExp(`^${name}=.*$`, 'm');
   if (re.test(content)) {
-    content = content.replace(re, `${name}=${value}`);
+    // Function replacement: a plain string is subject to `$`-pattern
+    // expansion ($&, $`, $', $n…), which would corrupt secrets containing $.
+    content = content.replace(re, () => `${name}=${value}`);
   } else {
     content = content.trimEnd() + (content ? '\n' : '') + `${name}=${value}\n`;
   }

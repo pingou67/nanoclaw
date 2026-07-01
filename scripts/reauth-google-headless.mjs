@@ -172,7 +172,7 @@ async function reauthOne(label, scope, tokenPath, wrapKey = null) {
   } else {
     out = tokens;
   }
-  fs.writeFileSync(tokenPath, JSON.stringify(out, null, 2));
+  fs.writeFileSync(tokenPath, JSON.stringify(out, null, 2), { mode: 0o600 });
   console.error(`   ✓ written to ${tokenPath}${wrapKey ? ` (wrapped under "${wrapKey}", expiry_date set)` : ''}`);
   console.error(`     access_token expires: ${new Date(Date.now() + (tokens.expires_in ?? 0) * 1000).toISOString()}`);
   if (tokens.refresh_token) {

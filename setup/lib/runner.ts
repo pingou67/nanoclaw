@@ -172,6 +172,17 @@ export function spawnStep(
   });
 }
 
+/**
+ * Redact secret values from an argv before logging it. Any argument that
+ * follows a value-bearing secret flag (--value, --token, --secret, --password,
+ * --api-key) is replaced — pasted OAuth tokens/API keys must never land in
+ * logs/setup-steps/*.log.
+ */
+function redactSecretArgs(args: string[]): string[] {
+  const SECRET_FLAGS = new Set(['--value', '--token', '--secret', '--password', '--api-key']);
+  return args.map((a, i) => (i > 0 && SECRET_FLAGS.has(args[i - 1]) ? '<redacted>' : a));
+}
+
 export function spawnQuiet(
   cmd: string,
   args: string[],
@@ -185,7 +196,7 @@ export function spawnQuiet(
     });
     let transcript = '';
     const raw = fs.createWriteStream(rawLogPath, { flags: 'w' });
-    raw.write(`# ${[cmd, ...args].join(' ')} — ${new Date().toISOString()}\n\n`);
+    raw.write(`# ${[cmd, ...redactSecretArgs(args)].join(' ')} — ${new Date().toISOString()}\n\n`);
     const blocks: Block[] = [];
     const stream = new StatusStream((b) => blocks.push(b));
     child.stdout.on('data', (c: Buffer) => {

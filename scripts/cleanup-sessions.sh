@@ -59,7 +59,17 @@ if [ ! -f "$STORE_DB" ]; then
   exit 1
 fi
 
-ACTIVE_IDS=$(sqlite3 "$STORE_DB" "SELECT session_id FROM sessions;" 2>/dev/null || true)
+# Abort if the active-session set can't be read — an empty set would let
+# live sessions' files be deleted.
+if ! command -v sqlite3 >/dev/null 2>&1; then
+  log "ERROR: sqlite3 CLI not found — cannot read active sessions, aborting"
+  exit 1
+fi
+
+if ! ACTIVE_IDS=$(sqlite3 "$STORE_DB" "SELECT session_id FROM sessions;"); then
+  log "ERROR: failed to query active sessions from $STORE_DB — aborting"
+  exit 1
+fi
 
 is_active() {
   echo "$ACTIVE_IDS" | grep -qF "$1"
