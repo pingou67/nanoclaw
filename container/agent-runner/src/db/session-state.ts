@@ -116,20 +116,49 @@ export interface LiveStatusPostRef {
   threadId: string | null;
 }
 
-export function setLiveStatusPost(ref: LiveStatusPostRef): void {
-  setValue(LIVE_POST_KEY, JSON.stringify(ref));
-}
-
-export function getLiveStatusPost(): LiveStatusPostRef | undefined {
+/**
+ * The persisted value is a MAP keyed by outboundId — fg and bg queries can
+ * each maintain their own live post concurrently, and a single-slot value
+ * meant one query's finalize wiped the other's ref (its orphaned "🔧 …"
+ * post could then never be cleaned up after a crash).
+ */
+function readLivePostMap(): Record<string, LiveStatusPostRef> {
   const v = getValue(LIVE_POST_KEY);
-  if (!v) return undefined;
+  if (!v) return {};
   try {
-    return JSON.parse(v) as LiveStatusPostRef;
+    const parsed = JSON.parse(v) as Record<string, LiveStatusPostRef> | LiveStatusPostRef;
+    // Legacy single-object shape (pre multi-slot): migrate on read.
+    if (typeof parsed === 'object' && parsed !== null && 'outboundId' in parsed) {
+      const ref = parsed as LiveStatusPostRef;
+      return { [ref.outboundId]: ref };
+    }
+    return parsed as Record<string, LiveStatusPostRef>;
   } catch {
-    return undefined;
+    return {};
   }
 }
 
-export function clearLiveStatusPost(): void {
+export function addLiveStatusPost(ref: LiveStatusPostRef): void {
+  const map = readLivePostMap();
+  map[ref.outboundId] = ref;
+  setValue(LIVE_POST_KEY, JSON.stringify(map));
+}
+
+export function getLiveStatusPosts(): LiveStatusPostRef[] {
+  return Object.values(readLivePostMap());
+}
+
+export function removeLiveStatusPost(outboundId: string): void {
+  const map = readLivePostMap();
+  if (!(outboundId in map)) return;
+  delete map[outboundId];
+  if (Object.keys(map).length === 0) {
+    deleteValue(LIVE_POST_KEY);
+  } else {
+    setValue(LIVE_POST_KEY, JSON.stringify(map));
+  }
+}
+
+export function clearLiveStatusPosts(): void {
   deleteValue(LIVE_POST_KEY);
 }

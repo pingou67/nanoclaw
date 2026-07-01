@@ -25,9 +25,16 @@ describe('isUploadTraceCommand', () => {
     expect(isUploadTraceCommand(make('  /upload-trace now '))).toBe(true);
   });
 
+  it('matches the !-form (Mattermost swallows /-commands client-side)', () => {
+    expect(isUploadTraceCommand(make('!upload-trace'))).toBe(true);
+    expect(isUploadTraceCommand(make('!UPLOAD-TRACE'))).toBe(true);
+    expect(isUploadTraceCommand(make('  !upload-trace now '))).toBe(true);
+  });
+
   it('does not match other text or commands', () => {
     expect(isUploadTraceCommand(make('hello'))).toBe(false);
     expect(isUploadTraceCommand(make('/upload'))).toBe(false);
+    expect(isUploadTraceCommand(make('!upload'))).toBe(false);
     expect(isUploadTraceCommand(make('/clear'))).toBe(false);
     expect(isUploadTraceCommand({ content: 'not json' } as MessageInRow)).toBe(false);
   });

@@ -434,9 +434,16 @@ export class ClaudeProvider implements AgentProvider {
 
     const instructions = input.systemContext?.instructions;
 
+    // Hard-abort handle: without it, abort() only stops CONSUMING events —
+    // the SDK subprocess keeps running (and executing tools) until its turn
+    // ends naturally, so !stop / !bg-cancel / the bg max-duration reap never
+    // actually stopped anything, they just discarded the output.
+    const abortController = new AbortController();
+
     const sdkResult = sdkQuery({
       prompt: stream,
       options: {
+        abortController,
         cwd: input.cwd,
         additionalDirectories: this.additionalDirectories,
         resume: input.continuation,
@@ -474,47 +481,62 @@ export class ClaudeProvider implements AgentProvider {
 
     async function* translateEvents(): AsyncGenerator<ProviderEvent> {
       let messageCount = 0;
-      for await (const message of sdkResult) {
-        if (aborted) return;
-        messageCount++;
+      try {
+        for await (const message of sdkResult) {
+          if (aborted) return;
+          messageCount++;
 
-        // Yield activity for every SDK event so the poll loop knows the agent is working
-        yield { type: 'activity' };
+          // Yield activity for every SDK event so the poll loop knows the agent is working
+          yield { type: 'activity' };
 
-        if (message.type === 'system' && message.subtype === 'init') {
-          yield { type: 'init', continuation: message.session_id };
-        } else if (message.type === 'result') {
-          // `result` text exists only on subtype:"success"; error subtypes
-          // (e.g. a non-retryable 403 billing_error) carry their message in
-          // `errors[]` instead. Surface either so the poll-loop can deliver a
-          // billing/quota notice to the user rather than dropping the turn.
-          const m = message as { result?: string; is_error?: boolean; errors?: string[] };
-          const text = m.result ?? (m.errors && m.errors.length > 0 ? m.errors.join('\n') : null);
-          yield { type: 'result', text, isError: m.is_error === true };
-        } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
-          yield { type: 'error', message: 'API retry', retryable: true };
-        } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'rate_limit_event') {
-          yield { type: 'error', message: 'Rate limit', retryable: false, classification: 'quota' };
-        } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary') {
-          const meta = (message as { compact_metadata?: { pre_tokens?: number } }).compact_metadata;
-          const detail = meta?.pre_tokens ? ` (${meta.pre_tokens.toLocaleString()} tokens compacted)` : '';
-          yield { type: 'result', text: `Context compacted${detail}.` };
-        } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
-          const tn = message as { summary?: string };
-          yield { type: 'progress', message: tn.summary || 'Task notification' };
-        } else if (message.type === 'assistant') {
-          // Surface tool calls as progress events so the poll-loop can update
-          // a live status post in the channel (gated by /live toggle, default
-          // ON). Each tool_use block emits one progress event with a brief
-          // human-readable summary (tool name + first 1-2 noteworthy args).
-          const msg = message as { message?: { content?: Array<{ type: string; name?: string; input?: Record<string, unknown> }> } };
-          const blocks = msg.message?.content ?? [];
-          for (const block of blocks) {
-            if (block.type === 'tool_use' && typeof block.name === 'string') {
-              yield { type: 'progress', message: summarizeToolUse(block.name, block.input ?? {}) };
+          if (message.type === 'system' && message.subtype === 'init') {
+            yield { type: 'init', continuation: message.session_id };
+          } else if (message.type === 'result') {
+            // `result` text exists only on subtype:"success"; error subtypes
+            // (e.g. a non-retryable 403 billing_error) carry their message in
+            // `errors[]` instead. Surface either so the poll-loop can deliver a
+            // billing/quota notice to the user rather than dropping the turn.
+            const m = message as { result?: string; is_error?: boolean; errors?: string[] };
+            const text = m.result ?? (m.errors && m.errors.length > 0 ? m.errors.join('\n') : null);
+            yield { type: 'result', text, isError: m.is_error === true };
+          } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
+            yield { type: 'error', message: 'API retry', retryable: true };
+          } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'rate_limit_event') {
+            yield { type: 'error', message: 'Rate limit', retryable: false, classification: 'quota' };
+          } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary') {
+            // Progress, NOT result: auto-compaction can fire MID-turn, and the
+            // poll-loop treats any result event as end-of-turn — a bg job would
+            // have "Context compacted." recorded as its final answer and the
+            // real result discarded; a fg turn would pause its keepalive and
+            // finalize its live status while the SDK is still working.
+            const meta = (message as { compact_metadata?: { pre_tokens?: number } }).compact_metadata;
+            const detail = meta?.pre_tokens ? ` (${meta.pre_tokens.toLocaleString()} tokens compacted)` : '';
+            yield { type: 'progress', message: `Context compacted${detail}.` };
+          } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
+            const tn = message as { summary?: string };
+            yield { type: 'progress', message: tn.summary || 'Task notification' };
+          } else if (message.type === 'assistant') {
+            // Surface tool calls as progress events so the poll-loop can update
+            // a live status post in the channel (gated by /live toggle, default
+            // ON). Each tool_use block emits one progress event with a brief
+            // human-readable summary (tool name + first 1-2 noteworthy args).
+            const msg = message as { message?: { content?: Array<{ type: string; name?: string; input?: Record<string, unknown> }> } };
+            const blocks = msg.message?.content ?? [];
+            for (const block of blocks) {
+              if (block.type === 'tool_use' && typeof block.name === 'string') {
+                yield { type: 'progress', message: summarizeToolUse(block.name, block.input ?? {}) };
+              }
             }
           }
         }
+      } catch (err) {
+        // A hard abort makes the SDK iterator reject (AbortError) — that's
+        // the expected shutdown path, not an error to surface to the user.
+        if (aborted) {
+          log(`Query aborted after ${messageCount} SDK messages`);
+          return;
+        }
+        throw err;
       }
       log(`Query completed after ${messageCount} SDK messages`);
     }
@@ -526,6 +548,9 @@ export class ClaudeProvider implements AgentProvider {
       abort: () => {
         aborted = true;
         stream.end();
+        // Hard abort: actually terminates the SDK subprocess and its
+        // in-flight tool calls, instead of only discarding their output.
+        abortController.abort();
       },
     };
   }

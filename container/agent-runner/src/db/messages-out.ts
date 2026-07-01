@@ -4,7 +4,7 @@
  * Writes to outbound.db (container-owned).
  * The host polls this DB (read-only) for undelivered messages.
  */
-import { getInboundDb, getOutboundDb } from './connection.js';
+import { getInboundDb, getOutboundDb, openInboundDb } from './connection.js';
 
 export interface MessageOutRow {
   id: string;
@@ -46,32 +46,52 @@ export function writeMessageOut(msg: WriteMessageOut): number {
   const outbound = getOutboundDb();
   const inbound = getInboundDb();
 
-  // Read max seq from both DBs to maintain global ordering.
-  // Safe: each side only reads the other DB, never writes to it.
-  const maxOut = (outbound.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM messages_out').get() as { m: number }).m;
+  // Read the inbound max outside the write lock — it only grows via the host
+  // (even seqs), so a slightly stale read can't produce an odd-seq collision.
   const maxIn = (inbound.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM messages_in').get() as { m: number }).m;
-  const max = Math.max(maxOut, maxIn);
-  const nextSeq = max % 2 === 0 ? max + 1 : max + 2; // next odd
 
-  // bun:sqlite requires named parameters to be passed with the prefix character
-  // in the JS object keys (better-sqlite3 auto-stripped it, bun:sqlite does not).
-  outbound
-    .prepare(
-      `INSERT INTO messages_out (id, seq, in_reply_to, timestamp, deliver_after, recurrence, kind, platform_id, channel_type, thread_id, content)
+  // THREE processes write messages_out concurrently (agent-runner live-status,
+  // the mcp-tools stdio subprocess's send_message, the ncl CLI). The MAX(seq)
+  // read and the INSERT must be one atomic unit or two writers compute the
+  // same odd seq and the loser hits the UNIQUE(seq) constraint. BEGIN
+  // IMMEDIATE takes the write lock up front; busy_timeout=5000 (connection.ts)
+  // makes the loser wait instead of failing. ncl.ts does the same on its side.
+  outbound.exec('BEGIN IMMEDIATE');
+  let nextSeq: number;
+  try {
+    const maxOut = (outbound.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM messages_out').get() as { m: number })
+      .m;
+    const max = Math.max(maxOut, maxIn);
+    nextSeq = max % 2 === 0 ? max + 1 : max + 2; // next odd
+
+    // bun:sqlite requires named parameters to be passed with the prefix character
+    // in the JS object keys (better-sqlite3 auto-stripped it, bun:sqlite does not).
+    outbound
+      .prepare(
+        `INSERT INTO messages_out (id, seq, in_reply_to, timestamp, deliver_after, recurrence, kind, platform_id, channel_type, thread_id, content)
      VALUES ($id, $seq, $in_reply_to, datetime('now'), $deliver_after, $recurrence, $kind, $platform_id, $channel_type, $thread_id, $content)`,
-    )
-    .run({
-      $id: msg.id,
-      $seq: nextSeq,
-      $in_reply_to: msg.in_reply_to ?? null,
-      $deliver_after: msg.deliver_after ?? null,
-      $recurrence: msg.recurrence ?? null,
-      $kind: msg.kind,
-      $platform_id: msg.platform_id ?? null,
-      $channel_type: msg.channel_type ?? null,
-      $thread_id: msg.thread_id ?? null,
-      $content: msg.content,
-    });
+      )
+      .run({
+        $id: msg.id,
+        $seq: nextSeq,
+        $in_reply_to: msg.in_reply_to ?? null,
+        $deliver_after: msg.deliver_after ?? null,
+        $recurrence: msg.recurrence ?? null,
+        $kind: msg.kind,
+        $platform_id: msg.platform_id ?? null,
+        $channel_type: msg.channel_type ?? null,
+        $thread_id: msg.thread_id ?? null,
+        $content: msg.content,
+      });
+    outbound.exec('COMMIT');
+  } catch (err) {
+    try {
+      outbound.exec('ROLLBACK');
+    } catch {
+      /* no open tx */
+    }
+    throw err;
+  }
 
   return nextSeq;
 }
@@ -88,28 +108,35 @@ export function writeMessageOut(msg: WriteMessageOut): number {
  * after successful delivery).
  */
 export function getMessageIdBySeq(seq: number): string | null {
-  const inbound = getInboundDb();
+  // Fresh short-lived connection: messages_in and delivered are host-written
+  // mid-session, and the long-lived singleton's page cache can serve a stale
+  // view across the mount (connection.ts invariant — singleton is only safe
+  // for spawn-time-static tables).
+  const inbound = openInboundDb();
+  try {
+    // Inbound messages: ID is already the platform message ID
+    const inRow = inbound.prepare('SELECT id FROM messages_in WHERE seq = ?').get(seq) as
+      | { id: string }
+      | undefined;
+    if (inRow) return inRow.id;
 
-  // Inbound messages: ID is already the platform message ID
-  const inRow = inbound.prepare('SELECT id FROM messages_in WHERE seq = ?').get(seq) as
-    | { id: string }
-    | undefined;
-  if (inRow) return inRow.id;
+    // Outbound messages: look up platform message ID from delivered table
+    const outRow = getOutboundDb().prepare('SELECT id FROM messages_out WHERE seq = ?').get(seq) as
+      | { id: string }
+      | undefined;
+    if (!outRow) return null;
 
-  // Outbound messages: look up platform message ID from delivered table
-  const outRow = getOutboundDb().prepare('SELECT id FROM messages_out WHERE seq = ?').get(seq) as
-    | { id: string }
-    | undefined;
-  if (!outRow) return null;
+    // Check if host has stored the platform message ID after delivery
+    const deliveredRow = inbound
+      .prepare('SELECT platform_message_id FROM delivered WHERE message_out_id = ?')
+      .get(outRow.id) as { platform_message_id: string | null } | undefined;
+    if (deliveredRow?.platform_message_id) return deliveredRow.platform_message_id;
 
-  // Check if host has stored the platform message ID after delivery
-  const deliveredRow = inbound
-    .prepare('SELECT platform_message_id FROM delivered WHERE message_out_id = ?')
-    .get(outRow.id) as { platform_message_id: string | null } | undefined;
-  if (deliveredRow?.platform_message_id) return deliveredRow.platform_message_id;
-
-  // Fallback to internal ID (edits/reactions on undelivered messages won't work)
-  return outRow.id;
+    // Fallback to internal ID (edits/reactions on undelivered messages won't work)
+    return outRow.id;
+  } finally {
+    inbound.close();
+  }
 }
 
 /**
@@ -149,9 +176,16 @@ export function getUndeliveredMessages(): MessageOutRow[] {
  * "edit" mode for the running status post.
  */
 export function getDeliveredPlatformId(outboundMsgId: string): string | null {
-  const inbound = getInboundDb();
-  const row = inbound
-    .prepare('SELECT platform_message_id FROM delivered WHERE message_out_id = ?')
-    .get(outboundMsgId) as { platform_message_id: string | null } | undefined;
-  return row?.platform_message_id ?? null;
+  // Fresh connection — `delivered` is host-written continuously; the
+  // singleton's stale page cache would make finalizeLiveStatus's platform-id
+  // resolution retries spin forever on virtiofs mounts.
+  const inbound = openInboundDb();
+  try {
+    const row = inbound
+      .prepare('SELECT platform_message_id FROM delivered WHERE message_out_id = ?')
+      .get(outboundMsgId) as { platform_message_id: string | null } | undefined;
+    return row?.platform_message_id ?? null;
+  } finally {
+    inbound.close();
+  }
 }

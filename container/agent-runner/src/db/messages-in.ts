@@ -68,6 +68,12 @@ export function getPendingMessages(isFirstPoll = false): MessageInRow[] {
 
   try {
     const onWakeFilter = hasOnWakeColumn(inbound) ? 'AND (on_wake = 0 OR ?1 = 1)' : '';
+    // Fetch well beyond the per-prompt cap: the ack filter below runs on
+    // outbound.db, so a tight SQL LIMIT here would let already-acked rows at
+    // the newest end shadow older unacked rows until the host's 60s sweep
+    // syncs statuses. The real cap is applied after filtering. 200 comfortably
+    // exceeds any realistic pending backlog between sweeps.
+    const INTERNAL_FETCH_CAP = 200;
     const pending = inbound
       .prepare(
         `SELECT * FROM messages_in
@@ -77,7 +83,7 @@ export function getPendingMessages(isFirstPoll = false): MessageInRow[] {
          ORDER BY seq DESC
          LIMIT ?2`,
       )
-      .all(isFirstPoll ? 1 : 0, getMaxMessagesPerPrompt()) as MessageInRow[];
+      .all(isFirstPoll ? 1 : 0, INTERNAL_FETCH_CAP) as MessageInRow[];
 
     if (pending.length === 0) return [];
 
@@ -88,9 +94,13 @@ export function getPendingMessages(isFirstPoll = false): MessageInRow[] {
       ),
     );
 
-    // Reverse: we fetched DESC to take the most recent N, but the agent
-    // should see them in chronological order (oldest first).
-    return pending.filter((m) => !ackedIds.has(m.id)).reverse();
+    // Rows are DESC, so the first N unacked entries are the most recent —
+    // same "keep the newest N, truncate the old end" semantics as before.
+    // Reverse so the agent sees them in chronological order (oldest first).
+    return pending
+      .filter((m) => !ackedIds.has(m.id))
+      .slice(0, getMaxMessagesPerPrompt())
+      .reverse();
   } finally {
     inbound.close();
   }

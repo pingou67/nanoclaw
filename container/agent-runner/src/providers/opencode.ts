@@ -51,9 +51,17 @@ function spawnOpencodeServer(config: Record<string, unknown>, timeoutMs = 10_000
     }, timeoutMs);
 
     let output = '';
+    let lineBuffer = '';
     proc.stdout?.on('data', (chunk: Buffer) => {
-      output += chunk.toString();
-      for (const line of output.split('\n')) {
+      const s = chunk.toString();
+      output += s;
+      lineBuffer += s;
+      // Only match COMPLETE lines — a chunk boundary inside the URL would
+      // otherwise resolve with a truncated baseUrl (e.g. :40 instead of :4096).
+      let idx: number;
+      while ((idx = lineBuffer.indexOf('\n')) !== -1) {
+        const line = lineBuffer.slice(0, idx);
+        lineBuffer = lineBuffer.slice(idx + 1);
         if (line.startsWith('opencode server listening')) {
           const match = line.match(/on\s+(https?:\/\/[^\s]+)/);
           if (match) {
@@ -205,13 +213,20 @@ export function parsePluginEnv(raw: string | undefined): string[] {
 type SharedRuntime = {
   proc: ChildProcess;
   client: OpencodeClient;
-  stream: AsyncGenerator<{ type: string; properties: Record<string, unknown> }, void, void>;
-  streamRelease: () => void;
 };
+
+/** SSE event shape yielded by a per-query subscription stream. */
+type OpencodeEvent = { type: string; properties: Record<string, unknown> };
 
 let sharedRuntime: SharedRuntime | null = null;
 let sharedConfigKey: string | null = null;
 let sharedInit: Promise<SharedRuntime> | null = null;
+/**
+ * Number of gen() loops currently using the shared server. The poll-loop
+ * runs fg + bg queries CONCURRENTLY, so the server must never be torn down
+ * on behalf of one query while another still depends on it.
+ */
+let runtimeUsers = 0;
 
 function runtimeConfigKey(options: ProviderOptions): string {
   return JSON.stringify({
@@ -235,31 +250,23 @@ async function ensureSharedRuntime(options: ProviderOptions): Promise<SharedRunt
     const config = buildOpenCodeConfig(options);
     const { url, proc } = await spawnOpencodeServer(config);
     const client = createOpencodeClient({ baseUrl: url });
-    const sub = await client.event.subscribe();
-    const stream = sub.stream as AsyncGenerator<{ type: string; properties: Record<string, unknown> }, void, void>;
-    sharedRuntime = {
-      proc,
-      client,
-      stream,
-      streamRelease: () => {
-        void stream.return?.(undefined);
-      },
-    };
+    sharedRuntime = { proc, client };
     sharedConfigKey = key;
     sharedInit = null;
     return sharedRuntime;
-  })();
+  })().catch((err) => {
+    // A failed spawn must NOT stay cached: leaving the rejected promise in
+    // `sharedInit` would make every subsequent turn fail instantly with the
+    // same stale error until the container restarts.
+    sharedInit = null;
+    throw err;
+  });
 
   return sharedInit;
 }
 
 export function destroySharedRuntime(): void {
   if (sharedRuntime) {
-    try {
-      sharedRuntime.streamRelease();
-    } catch {
-      /* ignore */
-    }
     killProcessTree(sharedRuntime.proc);
     sharedRuntime = null;
     sharedConfigKey = null;
@@ -333,7 +340,6 @@ export class OpenCodeProvider implements AgentProvider {
   readonly supportsNativeSlashCommands = false;
 
   private readonly options: ProviderOptions;
-  private activeSessionId: string | undefined;
 
   constructor(options: ProviderOptions = {}) {
     this.options = options;
@@ -345,16 +351,18 @@ export class OpenCodeProvider implements AgentProvider {
   }
 
   query(input: QueryInput): AgentQuery {
-    if (input.continuation) {
-      this.activeSessionId = input.continuation;
-    } else {
-      this.activeSessionId = undefined;
-    }
+    // Per-QUERY session id — the poll-loop runs fg + bg queries concurrently,
+    // and a shared (instance-level) session id made a new fg resume the very
+    // session a demoted bg turn was still running in.
+    let activeSessionId: string | undefined = input.continuation || undefined;
 
     const pending: string[] = [];
     let waiting: (() => void) | null = null;
     let ended = false;
     let aborted = false;
+    // Set once gen() has resolved the shared runtime — abort() uses it for a
+    // best-effort server-side session abort.
+    let abortClient: OpencodeClient | null = null;
 
     const systemInstructions = input.systemContext?.instructions;
     pending.push(wrapPromptWithContext(input.prompt, systemInstructions));
@@ -369,8 +377,20 @@ export class OpenCodeProvider implements AgentProvider {
     async function* gen(): AsyncGenerator<ProviderEvent> {
       let initYielded = false;
       const rt = await ensureSharedRuntime(self.options);
-      const { client, stream } = rt;
+      const { client } = rt;
+      abortClient = client;
 
+      // Per-query SSE subscription. The old design shared ONE stream across
+      // all queries — two concurrent gen() loops calling next() on the same
+      // AsyncGenerator steal each other's events (each event is delivered to
+      // exactly one caller): the fg could consume the bg's result, the bg
+      // could hang to its idle timeout and tear the shared runtime down under
+      // the fg. Each query now owns its subscription; the server multicasts.
+      runtimeUsers += 1;
+      const sub = await client.event.subscribe();
+      const stream = sub.stream as AsyncGenerator<OpencodeEvent, void, void>;
+
+      try {
       while (!aborted) {
         while (pending.length === 0 && !ended && !aborted) {
           await new Promise<void>((resolve) => {
@@ -383,7 +403,7 @@ export class OpenCodeProvider implements AgentProvider {
         if (pending.length === 0 && ended) return;
 
         const text = pending.shift()!;
-        let sessionId = self.activeSessionId;
+        let sessionId = activeSessionId;
 
         if (!sessionId) {
           const created = await client.session.create();
@@ -392,7 +412,7 @@ export class OpenCodeProvider implements AgentProvider {
           }
           sessionId = created.data?.id;
           if (!sessionId) throw new Error('OpenCode: failed to create session (no id)');
-          self.activeSessionId = sessionId;
+          activeSessionId = sessionId;
         }
 
         if (!initYielded) {
@@ -464,11 +484,16 @@ export class OpenCodeProvider implements AgentProvider {
           body: { parts: [{ type: 'text', text }, ...fileParts] },
         });
         if (promptRes.error) {
-          self.activeSessionId = undefined;
+          activeSessionId = undefined;
           throw new Error(`OpenCode promptAsync: ${JSON.stringify(promptRes.error)}`);
         }
 
-        const partTextByMessageId = new Map<string, string>();
+        // Per message: partID → text. A single assistant message can carry
+        // SEVERAL text parts (text, tool, text again); keying the text by
+        // messageID alone kept only the last part and silently dropped the
+        // substantive earlier ones. Insertion order of the inner map is the
+        // order parts first appeared, which matches display order.
+        const partTextsByMessageId = new Map<string, Map<string, string>>();
         const roleByMessageId = new Map<string, string>();
         // Dedupe tool progress events: a single tool call transitions
         // pending → running → completed, but the live status should only
@@ -488,8 +513,12 @@ export class OpenCodeProvider implements AgentProvider {
           if (!r.timedOut) return;
           log(`OpenCode event timeout (${IDLE_TIMEOUT_MS}ms) — clearing session ${sessionId}`);
           eventTimedOut = true;
-          self.activeSessionId = undefined;
-          destroySharedRuntime();
+          activeSessionId = undefined;
+          // Tear the shared server down only when we're its SOLE user — with
+          // a concurrent fg/bg still attached, destroying it would kill their
+          // in-flight turns too. If the server is genuinely hung, each query
+          // hits its own timeout and the last one out destroys it.
+          if (runtimeUsers <= 1) destroySharedRuntime();
           kick();
         }, 5000);
 
@@ -512,7 +541,11 @@ export class OpenCodeProvider implements AgentProvider {
 
             switch (ev.type) {
               case 'message.updated': {
-                const info = ev.properties.info as { id?: string; role?: string } | undefined;
+                // The subscription is server-wide: with concurrent fg/bg
+                // queries, another session's events arrive here too — filter
+                // on OUR session id when the event carries one.
+                const info = ev.properties.info as { id?: string; role?: string; sessionID?: string } | undefined;
+                if (info?.sessionID && info.sessionID !== sessionId) break;
                 if (info?.id && info?.role) {
                   roleByMessageId.set(info.id, info.role);
                   if (info.role === 'assistant') {
@@ -523,12 +556,20 @@ export class OpenCodeProvider implements AgentProvider {
               }
               case 'message.part.updated': {
                 const part = ev.properties.part as
-                  | { type?: string; messageID?: string; text?: string }
+                  | { type?: string; id?: string; messageID?: string; sessionID?: string; text?: string }
                   | ToolPart
                   | undefined;
                 if (!part) break;
+                const partSession = (part as { sessionID?: string }).sessionID;
+                if (partSession && partSession !== sessionId) break;
                 if (part.type === 'text' && part.messageID && (part as { text?: string }).text) {
-                  partTextByMessageId.set(part.messageID, (part as { text: string }).text);
+                  const partId = (part as { id?: string }).id ?? 'single';
+                  let parts = partTextsByMessageId.get(part.messageID);
+                  if (!parts) {
+                    parts = new Map<string, string>();
+                    partTextsByMessageId.set(part.messageID, parts);
+                  }
+                  parts.set(partId, (part as { text: string }).text);
                 } else if (part.type === 'tool') {
                   const progress = toolPartToProgress(part as ToolPart, emittedToolCallIds);
                   if (progress) yield progress;
@@ -562,7 +603,7 @@ export class OpenCodeProvider implements AgentProvider {
                   st.attempt >= SESSION_STATUS_RETRY_ERROR_AFTER &&
                   st.message
                 ) {
-                  self.activeSessionId = undefined;
+                  activeSessionId = undefined;
                   throw new Error(`OpenCode retry limit (${st.attempt}): ${st.message}`);
                 }
                 break;
@@ -570,7 +611,7 @@ export class OpenCodeProvider implements AgentProvider {
               case 'session.error': {
                 const props = ev.properties as { sessionID?: string; error?: unknown };
                 if (props.sessionID === sessionId || props.sessionID === undefined) {
-                  self.activeSessionId = undefined;
+                  activeSessionId = undefined;
                   throw new Error(sessionErrorMessage(props));
                 }
                 break;
@@ -602,12 +643,23 @@ export class OpenCodeProvider implements AgentProvider {
         // Yield the latest assistant message. If the model produced
         // multiple messages in this turn, this is the LAST one — the
         // earlier ones were either superseded or part of the model's
-        // thinking that the user doesn't need to see.
+        // thinking that the user doesn't need to see. Its text parts are
+        // joined in first-appearance order.
         let resultText = '';
         if (latestAssistantMsgId) {
-          resultText = partTextByMessageId.get(latestAssistantMsgId) ?? '';
+          const parts = partTextsByMessageId.get(latestAssistantMsgId);
+          if (parts) resultText = [...parts.values()].filter(Boolean).join('\n\n');
         }
         yield { type: 'result', text: resultText || null };
+      }
+      } finally {
+        // Release OUR subscription and user slot — never the shared server.
+        runtimeUsers = Math.max(0, runtimeUsers - 1);
+        try {
+          void stream.return?.(undefined);
+        } catch {
+          /* ignore */
+        }
       }
     }
 
@@ -623,9 +675,21 @@ export class OpenCodeProvider implements AgentProvider {
       events: gen(),
       abort: () => {
         aborted = true;
-        this.activeSessionId = undefined;
         kick();
-        destroySharedRuntime();
+        // Best-effort server-side abort of OUR session only. The old code
+        // called destroySharedRuntime() here, which SIGKILLed the server all
+        // other in-flight queries (fg + bgs) depend on — a single !bg-cancel
+        // errored the foreground turn.
+        const sid = activeSessionId;
+        activeSessionId = undefined;
+        if (abortClient && sid) {
+          void Promise.resolve(
+            (abortClient.session as unknown as { abort?: (args: { path: { id: string } }) => Promise<unknown> })
+              .abort?.({ path: { id: sid } }),
+          ).catch(() => {
+            /* best effort */
+          });
+        }
       },
     };
   }

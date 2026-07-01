@@ -9,16 +9,17 @@ import {
 import { getDeliveredPlatformId, writeMessageOut } from './db/messages-out.js';
 import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
 import {
+  addLiveStatusPost,
   clearContinuation,
-  clearLiveStatusPost,
+  clearLiveStatusPosts,
   getLiveEnabled,
-  getLiveStatusPost,
+  getLiveStatusPosts,
   migrateLegacyContinuation,
+  removeLiveStatusPost,
   setContinuation,
   setLiveEnabled,
-  setLiveStatusPost,
 } from './db/session-state.js';
-import { clearCurrentInReplyTo, setCurrentInReplyTo } from './current-batch.js';
+import { clearCurrentInReplyTo, getCurrentInReplyTo, setCurrentInReplyTo } from './current-batch.js';
 import {
   formatMessages,
   extractRouting,
@@ -180,6 +181,15 @@ export interface ActiveQuery {
    * activity chatter in the channel for background scheduled work.
    */
   interactive: boolean;
+  /**
+   * Set true when the query is aborted (`!stop`, `!bg-cancel`, max-duration
+   * reap). Providers abort SOFTLY — the flag is only observed on the next SDK
+   * event, which during a long tool call can be minutes away. Meanwhile this
+   * query's 500ms follow-up poller is still armed; without this flag it would
+   * keep claiming new messages and pushing them into a dead stream (silently
+   * swallowing them) or auto-bg-demoting the REPLACEMENT foreground query.
+   */
+  aborted?: boolean;
   routing: RoutingContext;
   initialBatchIds: string[];
   live: LiveStatus;
@@ -220,9 +230,13 @@ let runnerStructuredDelivery = false;
  * no-op if already background or null. Posts a user-facing notice and clears
  * the foreground slot so the outer loop can start a fresh fg query.
  */
-function transitionToBackground(reason: 'manual' | 'auto'): string | null {
+function transitionToBackground(reason: 'manual' | 'auto', requester?: ActiveQuery): string | null {
   const fg = activeForegroundQuery;
   if (!fg || fg.kind === 'background') return null;
+  // A stale poller (its query was stopped/aborted but the SDK hasn't
+  // unwound yet) must never demote the CURRENT foreground query in its
+  // place — only the poller owning the live fg may demote it.
+  if (requester && requester !== fg) return null;
 
   bgJobCounter += 1;
   const jobId = `bg-${bgJobCounter}`;
@@ -302,7 +316,7 @@ function escapeXml(s: string): string {
  *   next throttle window will pick up the latest text.
  * Finalize (text=null) is handled by finalizeLiveStatus, not here.
  */
-function updateLiveStatus(active: ActiveQuery, text: string): void {
+function updateLiveStatus(active: ActiveQuery, text: string, opts: { countAction?: boolean } = {}): void {
   // Channels that don't carry an addressable platform id (e.g. agent-to-agent
   // routing) have no concept of a status post. Skip entirely.
   if (LIVE_STATUS_DISABLED) return;
@@ -315,7 +329,11 @@ function updateLiveStatus(active: ActiveQuery, text: string): void {
   const live = active.live;
   const now = Date.now();
 
-  live.eventCount += 1;
+  // The 3s refresh ticker re-renders with countAction=false — only real tool
+  // events count as "actions", otherwise a single 60s tool call shows ~20
+  // actions and reads as a runaway loop (the "141 actions" incident was
+  // mostly refresh ticks).
+  if (opts.countAction !== false) live.eventCount += 1;
   live.latestText = text;
 
   // Throttle: respect minimum interval since the last write.
@@ -338,7 +356,7 @@ function updateLiveStatus(active: ActiveQuery, text: string): void {
     });
     live.outboundId = newId;
     live.lastUpdateAt = now;
-    setLiveStatusPost({
+    addLiveStatusPost({
       outboundId: newId,
       platformMsgId: null,
       platformId: active.routing.platformId,
@@ -354,7 +372,7 @@ function updateLiveStatus(active: ActiveQuery, text: string): void {
     if (!live.platformMsgId) return; // host hasn't delivered yet; next tick.
     // Got the platform id — update the persisted ref so startup cleanup can
     // edit the post directly without re-resolving.
-    setLiveStatusPost({
+    addLiveStatusPost({
       outboundId: live.outboundId,
       platformMsgId: live.platformMsgId,
       platformId: active.routing.platformId,
@@ -430,7 +448,9 @@ async function finalizeLiveStatus(
       thread_id: active.routing.threadId,
       content: JSON.stringify({ operation: 'edit', messageId: live.platformMsgId, text: body }),
     });
-    clearLiveStatusPost();
+    // Remove only OUR slot — a concurrent query (fg vs bg) may have its own
+    // live post whose ref must survive for crash cleanup.
+    removeLiveStatusPost(live.outboundId);
   }
   // else: couldn't resolve — leave the persisted ref for startup cleanup.
 
@@ -464,6 +484,7 @@ async function stopAllActivity(): Promise<number> {
   pendingBgResults.length = 0;
 
   for (const aq of all) {
+    aq.aborted = true; // disarm the query's follow-up poller immediately
     try {
       aq.query.abort();
     } catch {
@@ -503,6 +524,7 @@ async function cancelBackgroundJob(jobId: string): Promise<boolean> {
   if (!bg) return false;
 
   activeBackgroundQueries.delete(jobId);
+  bg.aborted = true; // disarm its follow-up poller
   try {
     bg.query.abort();
   } catch {
@@ -548,6 +570,82 @@ function listBackgroundJobs(): Array<{ jobId: string; elapsedS: number; lastActi
 }
 
 /**
+ * Shared handlers for the read-only / bg-control runner commands
+ * (`!bg-list`, `!bg-cancel`, `!live`). Called from BOTH the outer loop and
+ * the mid-stream follow-up poller — consulting the bg list or cancelling a
+ * bg must never abort the in-flight foreground turn.
+ */
+async function handleBgListCommand(routing: RoutingContext): Promise<void> {
+  const jobs = listBackgroundJobs();
+  const text =
+    jobs.length === 0
+      ? 'Aucune tâche en background.'
+      : 'Tâches en background :\n\n' +
+        jobs.map((j) => `- \`${j.jobId}\` (${j.elapsedS}s, ${j.platformId ?? '?'}) — ${j.lastAction}`).join('\n') +
+        '\n\nPour annuler une tâche : `!bg-cancel N` (ex. `!bg-cancel 1`).';
+  writeMessageOut({
+    id: generateId(),
+    kind: 'chat',
+    platform_id: routing.platformId,
+    channel_type: routing.channelType,
+    thread_id: routing.threadId,
+    content: JSON.stringify({ text }),
+  });
+}
+
+async function handleBgCancelCommand(msg: MessageInRow, routing: RoutingContext): Promise<void> {
+  const requested = parseBgCancelIds(msg);
+  // No N → cancel everything. With N(s) → cancel each, report which
+  // didn't exist (race: bg may have completed between msg arrival and
+  // our handling).
+  let cancelled = 0;
+  const notFound: string[] = [];
+  if (requested.length === 0) {
+    cancelled = await cancelAllBackgroundJobs();
+  } else {
+    for (const id of requested) {
+      if (await cancelBackgroundJob(id)) cancelled += 1;
+      else notFound.push(id);
+    }
+  }
+  let text: string;
+  if (requested.length === 0) {
+    text = cancelled > 0 ? `⏹ ${cancelled} tâche(s) background interrompue(s).` : 'Aucune tâche background à annuler.';
+  } else if (notFound.length === 0) {
+    text = `⏹ ${cancelled} tâche(s) interrompue(s) : ${requested.join(', ')}.`;
+  } else {
+    text = `⏹ ${cancelled} tâche(s) interrompue(s). Introuvable(s) : ${notFound.join(', ')}.`;
+  }
+  writeMessageOut({
+    id: generateId(),
+    kind: 'chat',
+    platform_id: routing.platformId,
+    channel_type: routing.channelType,
+    thread_id: routing.threadId,
+    content: JSON.stringify({ text }),
+  });
+}
+
+function handleLiveCommand(routing: RoutingContext): void {
+  const currentlyEnabled = getLiveEnabled();
+  const next = !currentlyEnabled;
+  setLiveEnabled(next);
+  log(`/live toggled: ${next ? 'ON' : 'OFF'}`);
+  writeMessageOut({
+    id: generateId(),
+    kind: 'chat',
+    platform_id: routing.platformId,
+    channel_type: routing.channelType,
+    thread_id: routing.threadId,
+    content: JSON.stringify({
+      text: next
+        ? "📡 Live status : **ON** — je posterai un message d'avancement qui se met à jour pendant que je travaille."
+        : '🔇 Live status : **OFF** — je travaille en silence jusqu\'au message final.',
+    }),
+  });
+}
+
+/**
  * Per-iteration check (called from the poll heartbeat): any bg that has been
  * alive for longer than BG_MAX_DURATION_MS is auto-cancelled. Each kill
  * posts a user-facing notice so the user knows why the bg went silent.
@@ -566,6 +664,7 @@ async function reapStaleBackgroundJobs(): Promise<number> {
     const bg = activeBackgroundQueries.get(jobId);
     if (!bg) continue;
     activeBackgroundQueries.delete(jobId);
+    bg.aborted = true; // disarm its follow-up poller
     try {
       bg.query.abort();
     } catch {
@@ -594,25 +693,27 @@ async function reapStaleBackgroundJobs(): Promise<number> {
  * Without this, the "🔧 …" post hangs in the channel forever.
  */
 function cleanupOrphanLiveStatus(): void {
-  const ref = getLiveStatusPost();
-  if (!ref) return;
-  const platformMsgId = ref.platformMsgId ?? getDeliveredPlatformId(ref.outboundId);
-  if (platformMsgId) {
-    writeMessageOut({
-      id: generateId(),
-      kind: 'chat',
-      platform_id: ref.platformId,
-      channel_type: ref.channelType,
-      thread_id: ref.threadId,
-      content: JSON.stringify({
-        operation: 'edit',
-        messageId: platformMsgId,
-        text: '✅ _Terminé (session précédente interrompue)_',
-      }),
-    });
-    log(`Cleaned up orphan live-status post ${platformMsgId}`);
+  const refs = getLiveStatusPosts();
+  if (refs.length === 0) return;
+  for (const ref of refs) {
+    const platformMsgId = ref.platformMsgId ?? getDeliveredPlatformId(ref.outboundId);
+    if (platformMsgId) {
+      writeMessageOut({
+        id: generateId(),
+        kind: 'chat',
+        platform_id: ref.platformId,
+        channel_type: ref.channelType,
+        thread_id: ref.threadId,
+        content: JSON.stringify({
+          operation: 'edit',
+          messageId: platformMsgId,
+          text: '✅ _Terminé (session précédente interrompue)_',
+        }),
+      });
+      log(`Cleaned up orphan live-status post ${platformMsgId}`);
+    }
   }
-  clearLiveStatusPost();
+  clearLiveStatusPosts();
 }
 
 /** Push a completed bg query's result into the injection queue. */
@@ -840,76 +941,17 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         continue;
       }
       if (isBgListCommand(msg)) {
-        const jobs = listBackgroundJobs();
-        const text = jobs.length === 0
-          ? 'Aucune tâche en background.'
-          : 'Tâches en background :\n\n' + jobs.map((j) =>
-              `- \`${j.jobId}\` (${j.elapsedS}s, ${j.platformId ?? '?'}) — ${j.lastAction}`,
-            ).join('\n') + '\n\nPour annuler une tâche : `!bg-cancel N` (ex. `!bg-cancel 1`).';
-        writeMessageOut({
-          id: generateId(),
-          kind: 'chat',
-          platform_id: routing.platformId,
-          channel_type: routing.channelType,
-          thread_id: routing.threadId,
-          content: JSON.stringify({ text }),
-        });
+        await handleBgListCommand(routing);
         commandIds.push(msg.id);
         continue;
       }
       if (isBgCancelCommand(msg)) {
-        const requested = parseBgCancelIds(msg);
-        // No N → cancel everything. With N(s) → cancel each, report which
-        // didn't exist (race: bg may have completed between msg arrival and
-        // our handling).
-        let cancelled = 0;
-        const notFound: string[] = [];
-        if (requested.length === 0) {
-          cancelled = await cancelAllBackgroundJobs();
-        } else {
-          for (const id of requested) {
-            if (await cancelBackgroundJob(id)) cancelled += 1;
-            else notFound.push(id);
-          }
-        }
-        let text: string;
-        if (requested.length === 0) {
-          text = cancelled > 0
-            ? `⏹ ${cancelled} tâche(s) background interrompue(s).`
-            : 'Aucune tâche background à annuler.';
-        } else if (notFound.length === 0) {
-          text = `⏹ ${cancelled} tâche(s) interrompue(s) : ${requested.join(', ')}.`;
-        } else {
-          text = `⏹ ${cancelled} tâche(s) interrompue(s). Introuvable(s) : ${notFound.join(', ')}.`;
-        }
-        writeMessageOut({
-          id: generateId(),
-          kind: 'chat',
-          platform_id: routing.platformId,
-          channel_type: routing.channelType,
-          thread_id: routing.threadId,
-          content: JSON.stringify({ text }),
-        });
+        await handleBgCancelCommand(msg, routing);
         commandIds.push(msg.id);
         continue;
       }
       if (isLiveCommand(msg)) {
-        const currentlyEnabled = getLiveEnabled();
-        const next = !currentlyEnabled;
-        setLiveEnabled(next);
-        log(`/live toggled: ${next ? 'ON' : 'OFF'}`);
-        writeMessageOut({
-          id: generateId(),
-          kind: 'chat',
-          platform_id: routing.platformId,
-          channel_type: routing.channelType,
-          thread_id: routing.threadId,
-          content: JSON.stringify({
-            text: next
-              ? '📡 Live status : **ON** — je posterai un message d\'avancement qui se met à jour pendant que je travaille.'
-              : '🔇 Live status : **OFF** — je travaille en silence jusqu\'au message final.',
-          }),
-        });
+        handleLiveCommand(routing);
         commandIds.push(msg.id);
         continue;
       }
@@ -972,12 +1014,20 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       continue;
     }
 
+    // Interactive = the turn was started by a real user message, not purely
+    // by scheduled tasks. Live-status posts are suppressed for task-only
+    // turns (weekly summary, daily reminder, news digest…).
+    const interactive = keep.some((m) => m.kind === 'chat' || m.kind === 'chat-sdk');
+
     // Format messages: passthrough commands get raw text (only if the
     // provider natively handles slash commands), others get XML.
     // Prepend any completed background-job results as <background-result>
     // blocks so the agent sees what each backgrounded task produced.
+    // Interactive turns only: a silent scheduled-task turn (cron summary…)
+    // must not consume the queued results — the user could never act on
+    // them there. They stay queued for the next real user turn.
     const userPrompt = formatMessagesWithCommands(keep, config.provider.supportsNativeSlashCommands);
-    const bgPreamble = consumePendingBgResults();
+    const bgPreamble = interactive ? consumePendingBgResults() : '';
     const prompt = bgPreamble + userPrompt;
 
     log(`Processing ${keep.length} message(s), kinds: ${[...new Set(keep.map((m) => m.kind))].join(',')}`);
@@ -991,11 +1041,6 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
 
     const skippedSet = new Set(skipped);
     const processingIds = ids.filter((id) => !commandIds.includes(id) && !skippedSet.has(id));
-
-    // Interactive = the turn was started by a real user message, not purely
-    // by scheduled tasks. Live-status posts are suppressed for task-only
-    // turns (weekly summary, daily reminder, news digest…).
-    const interactive = keep.some((m) => m.kind === 'chat' || m.kind === 'chat-sdk');
 
     // Set up the ActiveQuery descriptor before spawning the consumer.
     // processQuery mutates the same descriptor on bg transition.
@@ -1055,7 +1100,11 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         const errMsg = err instanceof Error ? err.message : String(err);
         log(`Query error: ${errMsg}`);
 
-        if (continuation && config.provider.isSessionInvalid(err)) {
+        // Only a FOREGROUND query may clear the shared continuation: a bg
+        // job dying with a session-invalid error would otherwise wipe the
+        // current foreground conversation's memory (its own continuation was
+        // already detached at demotion — see transitionToBackground).
+        if (activeQuery.kind === 'foreground' && continuation && config.provider.isSessionInvalid(err)) {
           log(`Stale session detected (${continuation}) — clearing for next retry`);
           continuation = undefined;
           clearContinuation(config.providerName);
@@ -1076,7 +1125,13 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
           content: JSON.stringify({ text: `${tag}Error: ${errMsg}` }),
         });
       } finally {
-        clearCurrentInReplyTo();
+        // Only clear the shared inReplyTo if it's still OURS — a background
+        // job completing mid-foreground-turn must not null the value the
+        // current fg's send_message/send_file tools stamp on outbound rows
+        // (a2a return-path routing would lose the correlation).
+        if (getCurrentInReplyTo() === routing.inReplyTo) {
+          clearCurrentInReplyTo();
+        }
         markCompleted(processingIds);
         // Slot bookkeeping: free fg slot or remove from bg map.
         if (activeForegroundQuery === activeQuery) activeForegroundQuery = null;
@@ -1153,7 +1208,10 @@ export async function processQuery(
   let endedForCommand = false;
   let corruptionStreak = 0;
   const pollHandle = setInterval(() => {
-    if (done || pollInFlight || endedForCommand) return;
+    // `active.aborted`: the query was stopped (!stop / !bg-cancel / reap) but
+    // the SDK abort is soft — until the next event unwinds the for-await,
+    // this poller would otherwise keep claiming messages for a dead stream.
+    if (done || pollInFlight || endedForCommand || active.aborted) return;
     pollInFlight = true;
 
     void (async () => {
@@ -1190,7 +1248,7 @@ export async function processQuery(
         if (bgCommandMsgs.length > 0 && active.kind === 'foreground') {
           markCompleted(bgCommandMsgs.map((m) => m.id));
           if (active.activelyProcessing) {
-            transitionToBackground('manual');
+            transitionToBackground('manual', active);
           } else {
             writeMessageOut({
               id: generateId(),
@@ -1206,8 +1264,38 @@ export async function processQuery(
           return;
         }
 
-        // Slash commands need a fresh query: /clear resets the SDK's
-        // resume id (fixed at sdkQuery() time); admin/passthrough commands
+        // Read-only / bg-control commands (!help, !bg-list, !bg-cancel,
+        // !live): handled INLINE — consulting the bg list or cancelling a
+        // background job must never abort the in-flight foreground turn.
+        const inlineMsgs = pending.filter(
+          (m) => isHelpCommand(m) || isBgListCommand(m) || isBgCancelCommand(m) || isLiveCommand(m),
+        );
+        if (inlineMsgs.length > 0) {
+          markCompleted(inlineMsgs.map((m) => m.id));
+          for (const m of inlineMsgs) {
+            if (isHelpCommand(m)) {
+              writeMessageOut({
+                id: generateId(),
+                kind: 'chat',
+                platform_id: routing.platformId,
+                channel_type: routing.channelType,
+                thread_id: routing.threadId,
+                content: JSON.stringify({ text: buildHelpText() }),
+              });
+            } else if (isBgListCommand(m)) {
+              await handleBgListCommand(routing);
+            } else if (isBgCancelCommand(m)) {
+              await handleBgCancelCommand(m, routing);
+            } else if (isLiveCommand(m)) {
+              handleLiveCommand(routing);
+            }
+          }
+          // Fall through: other pending messages (if any) still get the
+          // normal treatment below on this same tick.
+        }
+
+        // Commands that need a fresh query: /clear resets the SDK's
+        // resume id (fixed at sdkQuery() time); admin commands
         // (/compact, /cost, …) only dispatch when they're the first input
         // of a query — pushed mid-stream they arrive as plain text and
         // the SDK never runs them. Abort the active stream and leave the
@@ -1216,21 +1304,35 @@ export async function processQuery(
         // not end: end() lets an in-flight turn run to completion, which
         // can block the command (e.g. /clear during a long task) for as
         // long as the turn takes.
-        if (pending.some((m) => isRunnerCommand(m))) {
+        //
+        // Scope: admin-category commands (any prefix) and `/`-prefixed
+        // passthrough (real SDK slash commands). `!`-prefixed passthrough is
+        // ordinary text ("!important note" …) — Mattermost users would lose
+        // their in-flight turn over a message that isn't a command at all.
+        const needsFreshQuery = (m: MessageInRow): boolean => {
+          if (m.kind !== 'chat' && m.kind !== 'chat-sdk') return false;
+          const info = categorizeMessage(m);
+          if (info.category === 'admin') return true;
+          return info.category === 'passthrough' && info.text.trimStart().startsWith('/');
+        };
+        if (pending.some((m) => needsFreshQuery(m))) {
           log('Pending slash command — aborting active stream so outer loop can process');
           endedForCommand = true;
           query.abort();
           return;
         }
 
-        // Skip system messages (MCP tool responses).
+        // Skip system messages (MCP tool responses) and the inline-handled
+        // commands above (already markCompleted — they must not be pushed
+        // into the query as text).
         // Thread routing is the router's concern — if a message landed in this
         // session, the agent should see it. Per-thread sessions already isolate
         // threads into separate containers; shared sessions intentionally merge
         // everything. Filtering on thread_id here caused deadlocks when the
         // initial batch and follow-ups had mismatched thread_ids (e.g. a
         // host-generated welcome trigger with null thread vs a Discord DM reply).
-        const newMessages = pending.filter((m) => m.kind !== 'system');
+        const inlineIds = new Set(inlineMsgs.map((m) => m.id));
+        const newMessages = pending.filter((m) => m.kind !== 'system' && !inlineIds.has(m.id));
         if (newMessages.length === 0) return;
 
         // Smart auto-bg: only fires when ALL of these hold:
@@ -1252,7 +1354,7 @@ export async function processQuery(
           active.activelyProcessing &&
           Date.now() - active.turnStartedAt > AUTO_BG_THRESHOLD_MS
         ) {
-          transitionToBackground('auto');
+          transitionToBackground('auto', active);
           // Release the new messages back to pending so the next fg can pick
           // them up rather than being consumed by a now-bg'd query.
           releaseProcessing(newMessages.map((m) => m.id));
@@ -1287,10 +1389,15 @@ export async function processQuery(
         // MODULE-HOOK:scheduling-pre-task-followup:end
 
         if (keep.length === 0) return;
-        // Re-check done — the outer query may have finished while the script
-        // was awaited. Pushing into a closed stream is wasted work; the
-        // claimed messages get released by the host's processing-claim sweep.
-        if (done) return;
+        // Re-check done/aborted — the outer query may have finished (or been
+        // stopped) while the script was awaited. Pushing into a closed or
+        // aborted stream silently swallows the messages: push-after-end is
+        // never consumed but markCompleted below would still run. Release
+        // the claim so the outer loop picks them up as a fresh foreground.
+        if (done || active.aborted) {
+          releaseProcessing(keep.map((m) => m.id));
+          return;
+        }
 
         const keptIds = keep.map((m) => m.id);
         const prompt = formatMessages(keep);
@@ -1364,7 +1471,8 @@ export async function processQuery(
   const liveStatusRefresh = setInterval(() => {
     if (done || !active.activelyProcessing) return;
     if (active.live.outboundId && active.live.latestText) {
-      updateLiveStatus(active, active.live.latestText);
+      // countAction: false — a refresh re-render is not a new tool action.
+      updateLiveStatus(active, active.live.latestText, { countAction: false });
     }
   }, 3_000);
 

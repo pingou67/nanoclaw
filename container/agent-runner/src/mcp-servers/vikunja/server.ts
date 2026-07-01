@@ -259,7 +259,17 @@ reg(
   { task_ids: z.array(z.number()), fields: z.record(z.string(), z.unknown()).describe('Champs à appliquer, ex: {"done": true}.') },
   async (a) => {
     for (const id of a.task_ids as number[]) await reqTask(id);
-    return api('POST', '/tasks/bulk', { task_ids: a.task_ids, ...(a.fields as object) });
+    // Même allowlist que update_task (via taskBody) : sans elle, un `fields`
+    // arbitraire pourrait poser project_id et déplacer des tâches hors du
+    // périmètre du canal.
+    const fields = a.fields as Record<string, unknown>;
+    if (fields.project_id !== undefined) {
+      throw new Error(`project_id n'est pas modifiable via bulk_update_tasks (périmètre : projet(s) ${scopeList()}) — utilise duplicate_task pour copier vers un autre projet du périmètre.`);
+    }
+    const body = taskBody(fields);
+    const dropped = Object.keys(fields).filter((k) => !(k in body));
+    if (dropped.length) console.error(`[vikunja-mcp] bulk_update_tasks : champ(s) hors allowlist ignoré(s) : ${dropped.join(', ')}`);
+    return api('POST', '/tasks/bulk', { task_ids: a.task_ids, ...body });
   },
 );
 

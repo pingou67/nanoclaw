@@ -87,7 +87,8 @@ export function isClearCommand(msg: MessageInRow): boolean {
   const text = (content.text || '').trim().toLowerCase();
   // `!`-prefix only — Mattermost intercepts every `/`-command before the bot
   // can see it, so the `/clear` form was always unreachable in practice.
-  return text.startsWith('!clear');
+  // Exact match: `!clearly …` or `!clear-cache` must NOT wipe the session.
+  return text === '!clear';
 }
 
 /**
@@ -448,7 +449,21 @@ export function stripInternalTags(text: string): string {
  * `</parameter>` after the model's tool block bled into the response text.
  */
 export function stripToolMarkup(text: string): string {
-  return text.replace(/<\/?(?:antml:)?(?:function_calls|invoke|parameter)(?:\s[^>]*)?\/?>/gi, '');
+  return applyOutsideCodeFences(text, (seg) =>
+    seg.replace(/<\/?(?:antml:)?(?:function_calls|invoke|parameter)(?:\s[^>]*)?\/?>/gi, ''),
+  );
+}
+
+/**
+ * Apply `transform` only to the segments of `text` OUTSIDE fenced code
+ * blocks (``` … ```). The strip helpers run on every final reply — without
+ * this, an answer legitimately QUOTING tool-call XML or `<message>` examples
+ * in a code block would have its tags silently deleted, leaving gibberish.
+ * An unterminated fence leaves the trailing segment treated as prose.
+ */
+function applyOutsideCodeFences(text: string, transform: (segment: string) => string): string {
+  const parts = text.split(/(```[\s\S]*?```)/);
+  return parts.map((p, i) => (i % 2 === 1 ? p : transform(p))).join('');
 }
 
 /**
@@ -460,5 +475,5 @@ export function stripToolMarkup(text: string): string {
  * literal tags. This drops tags, it does NOT parse them for routing.
  */
 export function stripEnvelopeTags(text: string): string {
-  return text.replace(/<\/?message(?:\s[^>]*)?>/gi, '');
+  return applyOutsideCodeFences(text, (seg) => seg.replace(/<\/?message(?:\s[^>]*)?>/gi, ''));
 }

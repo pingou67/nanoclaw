@@ -10,7 +10,7 @@
  * The host re-validates on the delivery side against the central DB,
  * so even if this table is stale the host's enforcement is authoritative.
  */
-import { getInboundDb } from './db/connection.js';
+import { openInboundDb } from './db/connection.js';
 
 export interface DestinationEntry {
   name: string;
@@ -41,14 +41,30 @@ function rowToEntry(row: DestRow): DestinationEntry {
   };
 }
 
+// Lookups use short-lived openInboundDb() connections (open, query, close),
+// NOT the getInboundDb() singleton: the host updates this table mid-session
+// (see header), and the singleton's page cache can go stale on virtiofs
+// mounts. Callers hit these at most a few times per message / per system
+// prompt build, so a per-call open (microseconds) is negligible.
+
 export function getAllDestinations(): DestinationEntry[] {
-  const rows = getInboundDb().prepare('SELECT * FROM destinations ORDER BY name').all() as DestRow[];
-  return rows.map(rowToEntry);
+  const db = openInboundDb();
+  try {
+    const rows = db.prepare('SELECT * FROM destinations ORDER BY name').all() as DestRow[];
+    return rows.map(rowToEntry);
+  } finally {
+    db.close();
+  }
 }
 
 export function findByName(name: string): DestinationEntry | undefined {
-  const row = getInboundDb().prepare('SELECT * FROM destinations WHERE name = ?').get(name) as DestRow | undefined;
-  return row ? rowToEntry(row) : undefined;
+  const db = openInboundDb();
+  try {
+    const row = db.prepare('SELECT * FROM destinations WHERE name = ?').get(name) as DestRow | undefined;
+    return row ? rowToEntry(row) : undefined;
+  } finally {
+    db.close();
+  }
 }
 
 /**
@@ -60,16 +76,20 @@ export function findByRouting(
   platformId: string | null | undefined,
 ): DestinationEntry | undefined {
   if (!channelType || !platformId) return undefined;
-  const db = getInboundDb();
-  const row =
-    channelType === 'agent'
-      ? (db
-          .prepare("SELECT * FROM destinations WHERE type = 'agent' AND agent_group_id = ?")
-          .get(platformId) as DestRow | undefined)
-      : (db
-          .prepare("SELECT * FROM destinations WHERE type = 'channel' AND channel_type = ? AND platform_id = ?")
-          .get(channelType, platformId) as DestRow | undefined);
-  return row ? rowToEntry(row) : undefined;
+  const db = openInboundDb();
+  try {
+    const row =
+      channelType === 'agent'
+        ? (db
+            .prepare("SELECT * FROM destinations WHERE type = 'agent' AND agent_group_id = ?")
+            .get(platformId) as DestRow | undefined)
+        : (db
+            .prepare("SELECT * FROM destinations WHERE type = 'channel' AND channel_type = ? AND platform_id = ?")
+            .get(channelType, platformId) as DestRow | undefined);
+    return row ? rowToEntry(row) : undefined;
+  } finally {
+    db.close();
+  }
 }
 
 /**

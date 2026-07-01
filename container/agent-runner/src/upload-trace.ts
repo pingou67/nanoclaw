@@ -20,6 +20,8 @@ import type { MessageInRow } from './db/messages-in.js';
 /**
  * Narrow check for /upload-trace — the runner handles this command directly
  * (no LLM turn). Admin-gated by the host router before it reaches the container.
+ * Accepts both `/upload-trace` and `!upload-trace`: Mattermost swallows every
+ * `/`-command client-side, so runner commands must also work in the `!`-form.
  */
 export function isUploadTraceCommand(msg: MessageInRow): boolean {
   let text = '';
@@ -28,7 +30,8 @@ export function isUploadTraceCommand(msg: MessageInRow): boolean {
   } catch {
     return false; // non-JSON content is never a command
   }
-  return text.toLowerCase().startsWith('/upload-trace');
+  const t = text.toLowerCase();
+  return t.startsWith('/upload-trace') || t.startsWith('!upload-trace');
 }
 
 /** Newest Claude Code transcript jsonl (the current session). */
@@ -59,7 +62,11 @@ function newestTranscript(): string | null {
 }
 
 function curl(args: string[], input?: string): { ok: boolean; out: string } {
-  const r = spawnSync('curl', args, { input, encoding: 'utf-8' });
+  // The runner is single-threaded: a hung connection here would block the
+  // poll loop until the host reaps the container as stale. --max-time caps
+  // the transfer; the spawnSync timeout is a slightly wider backstop in case
+  // curl itself wedges.
+  const r = spawnSync('curl', ['--max-time', '120', ...args], { input, encoding: 'utf-8', timeout: 130_000 });
   return { ok: r.status === 0, out: (r.stdout ?? '') + (r.stderr ?? '') };
 }
 

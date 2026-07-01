@@ -183,10 +183,32 @@ export class AgyProvider implements AgentProvider {
           spawnEnv = { ...process.env, HOME: fakeHome };
         }
 
+        // Declared BEFORE the spawn so the 'error' listener below never hits
+        // a temporal-dead-zone reference (spawn errors can fire during the
+        // awaits of the session-id resolution block).
+        let resultText = '';
+        let lastContent = '';
+        let rawBuffer = '';
+        let processFinished = false;
+        const progressQueue: string[] = [];
+        let wakeProgress: (() => void) | null = null;
+
+        // detached: own process group, so abort() can kill agy AND its
+        // children (MCP stdio servers, plugin helpers) via process.kill(-pid)
+        // instead of orphaning them.
         activeProc = spawn('agy', args, {
           cwd: input.cwd,
           stdio: ['ignore', 'pipe', 'pipe'],
-          env: spawnEnv
+          env: spawnEnv,
+          detached: true,
+        });
+        // Without an 'error' listener a spawn failure (ENOENT, E2BIG on an
+        // oversized --prompt argv) emits an unhandled 'error' event and
+        // crashes the whole agent-runner mid-session.
+        activeProc.on('error', (err) => {
+          log(`agy spawn error: ${err.message}`);
+          processFinished = true;
+          wakeProgress?.();
         });
 
         // Resolve conversation ID if we had to fall back
@@ -222,13 +244,6 @@ export class AgyProvider implements AgentProvider {
         const brainDir = path.join(process.env.HOME || '/root', '.gemini', 'antigravity-cli', 'brain', resolvedSessionId);
         fs.mkdirSync(brainDir, { recursive: true });
 
-        let resultText = '';
-        let lastContent = '';
-        let rawBuffer = '';
-        let processFinished = false;
-        const progressQueue: string[] = [];
-        let wakeProgress: (() => void) | null = null;
-
         // transcript.jsonl is CUMULATIVE per conversation: on a continuation it
         // already holds every PRIOR turn's PLANNER_RESPONSE (content + tool_calls).
         // Start tailing from its current END so this turn doesn't replay old
@@ -256,15 +271,30 @@ export class AgyProvider implements AgentProvider {
           }
           if (!resolvedTranscriptFile) return;
 
-          const stat = fs.statSync(resolvedTranscriptFile);
+          let stat: fs.Stats;
+          try {
+            stat = fs.statSync(resolvedTranscriptFile);
+          } catch {
+            // agy rotated/removed the transcript mid-turn — an uncaught throw
+            // inside the setInterval callback would crash the whole runner.
+            // Forget the path; the next tick re-resolves the candidates.
+            resolvedTranscriptFile = null;
+            lastReadBytes = 0;
+            return;
+          }
           // Defensive: if agy rewrote/truncated the file, restart from the top.
           if (stat.size < lastReadBytes) lastReadBytes = 0;
           if (stat.size > lastReadBytes) {
-            const fd = fs.openSync(resolvedTranscriptFile, 'r');
-            const buffer = Buffer.alloc(stat.size - lastReadBytes);
-            fs.readSync(fd, buffer, 0, buffer.length, lastReadBytes);
-            fs.closeSync(fd);
-            
+            let buffer: Buffer;
+            try {
+              const fd = fs.openSync(resolvedTranscriptFile, 'r');
+              buffer = Buffer.alloc(stat.size - lastReadBytes);
+              fs.readSync(fd, buffer, 0, buffer.length, lastReadBytes);
+              fs.closeSync(fd);
+            } catch {
+              return; // transient read failure — retry next tick
+            }
+
             rawBuffer += buffer.toString('utf-8');
             lastReadBytes = stat.size;
             
@@ -310,8 +340,13 @@ export class AgyProvider implements AgentProvider {
         }
 
         clearInterval(tailInterval);
+
+        // Aborted (!stop / !bg-cancel): drop the partial output — yielding a
+        // result here would deliver it to the channel right after the
+        // "⏹ Arrêté" acknowledgement (and queue it as a bg result).
+        if (aborted) return;
         readTranscript();
-        
+
         // Use the explicit transcript content if available to avoid echoing history from stdout
         yield { type: 'result', text: lastContent || resultText || null };
       }
@@ -329,8 +364,14 @@ export class AgyProvider implements AgentProvider {
       events: gen(),
       abort: () => {
         aborted = true;
-        if (activeProc) {
-          activeProc.kill('SIGKILL');
+        if (activeProc?.pid) {
+          // Kill the whole process group (spawned detached) so agy's own
+          // children (MCP stdio servers…) don't survive as orphans.
+          try {
+            process.kill(-activeProc.pid, 'SIGKILL');
+          } catch {
+            activeProc.kill('SIGKILL');
+          }
         }
         kick();
       }
