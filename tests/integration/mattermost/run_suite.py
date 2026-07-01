@@ -713,7 +713,9 @@ def scenario_live_status(label: str, channel_id: str, require_mention: bool) -> 
     replies = http_get("/__test/replies")
     edits = http_get("/__test/edits")
     created = any("🔧" in r.get("message", "") for r in replies)
-    finalized = any("✅ Terminé" in e.get("message", "") for e in edits)
+    # The finalize marker is italicized: `✅ _Terminé en Xs, N actions_` —
+    # match both with and without the markdown underscore.
+    finalized = any("Terminé" in e.get("message", "") and "✅" in e.get("message", "") for e in edits)
     return Result(name, created and finalized, f"🔧create={created} ✅finalize={finalized} edits={len(edits)}")
 
 

@@ -82,6 +82,7 @@ interface MmPost {
   type?: string;
   root_id?: string;
   file_ids?: string[];
+  create_at?: number;
 }
 
 interface MmFileInfo {
@@ -115,7 +116,11 @@ async function convertOfficeToPdf(
 ): Promise<{ name: string; mimeType: string; data: Buffer } | null> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nc-office-'));
   const profileDir = path.join(tmpDir, 'profile');
-  const inputPath = path.join(tmpDir, originalName);
+  // The filename is uploader-controlled (echoed by /files/<id>/info) — a name
+  // like `../../x.docx` would otherwise be a host-side path-traversal write.
+  const base = path.basename(originalName).replace(/[\\/]/g, '_');
+  const safeName = base === '' || base === '.' || base === '..' ? `document${path.extname(originalName)}` : base;
+  const inputPath = path.join(tmpDir, safeName);
   fs.writeFileSync(inputPath, input);
 
   try {
@@ -132,7 +137,7 @@ async function convertOfficeToPdf(
       ],
       { timeout: 60_000 },
     );
-    const pdfName = originalName.replace(/\.[^.]+$/, '.pdf');
+    const pdfName = safeName.replace(/\.[^.]+$/, '.pdf');
     const pdfPath = path.join(tmpDir, pdfName);
     if (!fs.existsSync(pdfPath)) {
       log.warn('Mattermost: libreoffice produced no PDF', { originalName });
@@ -223,6 +228,13 @@ function createAdapter(): ChannelAdapter | null {
   // Key: platformId, Value: root_id from latest inbound
   const pendingRootIdByPlatform = new Map<string, string | undefined>();
 
+  // Serialization chain for inbound WS 'posted' events (see the handler).
+  let handlePostedChain: Promise<void> = Promise.resolve();
+  // Newest post.create_at we've processed — reconnect catch-up fetches
+  // everything after this so messages posted during a WS gap aren't lost.
+  let lastPostCreateAt = 0;
+  let hadFirstConnect = false;
+
   async function api(method: string, urlPath: string, body?: unknown): Promise<unknown> {
     const res = await fetch(`${cfg!.url}/api/v4${urlPath}`, {
       method,
@@ -241,6 +253,12 @@ function createAdapter(): ChannelAdapter | null {
 
   async function downloadFile(fileId: string): Promise<{ name: string; mimeType: string; data: Buffer }> {
     const info = (await api('GET', `/files/${fileId}/info`)) as MmFileInfo;
+    // Attachments are fully buffered + base64-encoded into the inbound DB row
+    // (×1.33) — an unbounded download can OOM the single host process.
+    const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+    if (typeof info.size === 'number' && info.size > MAX_ATTACHMENT_BYTES) {
+      throw new Error(`attachment too large (${info.size} bytes > ${MAX_ATTACHMENT_BYTES})`);
+    }
     const res = await fetch(`${cfg!.url}/api/v4/files/${fileId}`, {
       headers: { Authorization: `Bearer ${cfg!.token}` },
     });
@@ -564,18 +582,32 @@ function createAdapter(): ChannelAdapter | null {
         connected = true;
         reconnectDelay = 1000;
         log.info('Mattermost WS ready');
+        // After a RECONNECT (not the first connect), fetch every post created
+        // while the socket was down — Mattermost has no server-side replay,
+        // so without this the gap's messages are silently lost.
+        if (hadFirstConnect && lastPostCreateAt > 0) {
+          handlePostedChain = handlePostedChain
+            .then(() => catchUpMissedPosts(lastPostCreateAt))
+            .catch((err) => {
+              log.warn('Mattermost: reconnect catch-up failed', { err: (err as Error).message });
+            });
+        }
+        hadFirstConnect = true;
         return;
       }
 
       if (msg.event !== 'posted') return;
-      // Surface async failures from handlePosted — without this catch a
-      // throw inside (e.g. a Mattermost API error during attachment
-      // download, or a malformed JSON in data.mentions) would silently
-      // reject the void'd promise and we'd never know why a single
-      // message went missing.
-      handlePosted(msg.data ?? {}).catch((err) => {
-        log.warn('Mattermost: handlePosted threw', { err: (err as Error).message });
-      });
+      // Serialize handlePosted calls: concurrent processing lets a fast
+      // message overtake a slow one (attachment download + libreoffice
+      // conversion), inverting the conversation order in messages_in and
+      // clobbering pendingRootIdByPlatform with the wrong thread. The catch
+      // also surfaces async failures — without it a throw inside would
+      // silently reject the void'd promise.
+      handlePostedChain = handlePostedChain
+        .then(() => handlePosted(msg.data ?? {}))
+        .catch((err) => {
+          log.warn('Mattermost: handlePosted threw', { err: (err as Error).message });
+        });
     });
 
     sock.on('close', (code) => {
@@ -592,12 +624,50 @@ function createAdapter(): ChannelAdapter | null {
     });
   }
 
+  /**
+   * Fetch and route every post created after `sinceMs` in the channels we
+   * know about (configured channels + already-registered DMs). Called after
+   * a WS reconnect — the gap's posts never arrive via the socket. Duplicate
+   * boundary posts are harmless: the router skips already-inserted ids.
+   */
+  async function catchUpMissedPosts(sinceMs: number): Promise<void> {
+    const channelIds = new Set<string>([...channelConfigById.keys(), ...registeredDms]);
+    for (const chId of channelIds) {
+      try {
+        const res = (await api('GET', `/channels/${chId}/posts?since=${sinceMs}`)) as {
+          order?: string[];
+          posts?: Record<string, MmPost>;
+        };
+        const order = res.order ?? [];
+        if (order.length === 0) continue;
+        // `order` is newest-first — replay chronologically.
+        for (const postId of [...order].reverse()) {
+          const p = res.posts?.[postId];
+          if (!p || (p.create_at ?? 0) <= sinceMs) continue;
+          log.info('Mattermost: replaying post missed during WS gap', { postId, channelId: chId });
+          await handlePosted({
+            post: JSON.stringify(p),
+            channel_type: registeredDms.has(chId) ? 'D' : 'O',
+          });
+        }
+      } catch (err) {
+        log.warn('Mattermost: catch-up fetch failed for channel', { chId, err: (err as Error).message });
+      }
+    }
+  }
+
   async function handlePosted(data: Record<string, unknown>): Promise<void> {
     let post: MmPost;
     try {
       post = JSON.parse(data.post as string) as MmPost;
     } catch {
       return;
+    }
+
+    // Advance the reconnect catch-up watermark for every post seen (our own
+    // included — they're skipped below but must still move the boundary).
+    if (typeof post.create_at === 'number' && post.create_at > lastPostCreateAt) {
+      lastPostCreateAt = post.create_at;
     }
 
     // Skip our own messages and system posts
@@ -779,8 +849,9 @@ function createAdapter(): ChannelAdapter | null {
         mmChannelId = channelIdByFolder.get(parsed.folder);
       }
       if (!mmChannelId) {
-        log.warn('Mattermost: no Mattermost channel id for platformId', { platformId });
-        return undefined;
+        // Throw, don't return undefined — the caller marks undefined as
+        // delivered (delivery.ts), which silently loses the message.
+        throw new Error(`Mattermost: no Mattermost channel id for platformId ${platformId}`);
       }
 
       // Dispatch edit / reaction / delete operations before normal text delivery.
@@ -807,8 +878,10 @@ function createAdapter(): ChannelAdapter | null {
           });
           return content.messageId;
         } catch (err) {
+          // Re-throw so the host's delivery retry path handles it — returning
+          // undefined would mark the operation delivered when nothing happened.
           log.error('Mattermost: edit failed', { err: (err as Error).message, postId });
-          return undefined;
+          throw err;
         }
       }
       if (operation === 'reaction' && typeof content.messageId === 'string' && typeof content.emoji === 'string') {
@@ -826,7 +899,7 @@ function createAdapter(): ChannelAdapter | null {
           return content.messageId;
         } catch (err) {
           log.error('Mattermost: reaction failed', { err: (err as Error).message, postId });
-          return undefined;
+          throw err;
         }
       }
       if (operation === 'delete' && typeof content.messageId === 'string') {
@@ -836,7 +909,7 @@ function createAdapter(): ChannelAdapter | null {
           return content.messageId;
         } catch (err) {
           log.error('Mattermost: delete failed', { err: (err as Error).message, postId });
-          return undefined;
+          throw err;
         }
       }
 
@@ -848,10 +921,12 @@ function createAdapter(): ChannelAdapter | null {
       }
 
       // Use the last seen root_id for this platformId so threaded conversations
-      // stay in their thread. Cleared on use to avoid pinning unrelated top-level
-      // replies into the same thread.
+      // stay in their thread. Deliberately NOT cleared on use: a turn can emit
+      // several outbound posts (live-status 🔧 post first, then the actual
+      // reply, then more chunks) and all of them belong in the thread. The
+      // entry is overwritten (or unset) by the next inbound message, so
+      // unrelated later replies don't get pinned into a stale thread.
       const rootId = pendingRootIdByPlatform.get(platformId);
-      pendingRootIdByPlatform.delete(platformId);
 
       // Upload file attachments first to obtain file_ids; Mattermost requires
       // them on the post itself (no edit-with-files round-trip needed).
@@ -896,8 +971,10 @@ function createAdapter(): ChannelAdapter | null {
         })) as { id: string };
         return post.id;
       } catch (err) {
+        // Throw so a transient API failure (502 during a Mattermost restart…)
+        // lands in the delivery retry path instead of being marked delivered.
         log.error('Mattermost: deliver failed', { err: (err as Error).message, platformId });
-        return undefined;
+        throw err;
       }
     },
 

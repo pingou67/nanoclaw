@@ -51,6 +51,10 @@ function socketPath(): string {
 function createAdapter(): ChannelAdapter {
   let server: net.Server | null = null;
   let client: net.Socket | null = null;
+  // Every open connection, not just the chat-slot client — server.close()
+  // waits for ALL sockets, so an idle routed/one-shot connection left open
+  // would hang host shutdown forever. Destroyed wholesale in teardown().
+  const openSockets = new Set<net.Socket>();
 
   const adapter: ChannelAdapter = {
     name: 'cli',
@@ -98,6 +102,16 @@ function createAdapter(): ChannelAdapter {
         }
         client = null;
       }
+      // Destroy every open connection so server.close() below can't hang on
+      // an idle client that never disconnects.
+      for (const socket of openSockets) {
+        try {
+          socket.destroy();
+        } catch {
+          // swallow — teardown is best-effort
+        }
+      }
+      openSockets.clear();
       if (server) {
         await new Promise<void>((resolve) => {
           server!.close(() => resolve());
@@ -136,6 +150,7 @@ function createAdapter(): ChannelAdapter {
   };
 
   function handleConnection(socket: net.Socket, config: ChannelSetup): void {
+    openSockets.add(socket);
     // Defer the chat-slot swap until we see the first line — if it turns out
     // to be a routed (`to`-bearing) one-shot, we leave the existing chat
     // client in place. Only plain chat connections participate in supersede.
@@ -169,6 +184,7 @@ function createAdapter(): ChannelAdapter {
     });
 
     socket.on('close', () => {
+      openSockets.delete(socket);
       if (client === socket) client = null;
       if (claimedChatSlot) log.info('CLI client disconnected');
     });

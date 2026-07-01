@@ -148,6 +148,7 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
   let state: SqliteStateAdapter;
   let setupConfig: ChannelSetup;
   let gatewayAbort: AbortController | null = null;
+  let localWebhookServer: http.Server | null = null;
 
   async function messageToInbound(
     message: ChatMessage,
@@ -336,7 +337,12 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         gatewayAbort = new AbortController();
 
         // Start local HTTP server to receive forwarded Gateway events (including interactions)
-        const webhookUrl = await startLocalWebhookServer(gatewayAdapter, setupConfig, config.botToken);
+        const { url: webhookUrl, server: webhookSrv } = await startLocalWebhookServer(
+          gatewayAdapter,
+          setupConfig,
+          config.botToken,
+        );
+        localWebhookServer = webhookSrv;
 
         // Exponential backoff capped at 1h. Without this, an unrecoverable
         // failure (e.g., TokenInvalid) restarts ~10×/sec and Discord's
@@ -357,34 +363,51 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
             24 * 60 * 60 * 1000,
             gatewayAbort!.signal,
             webhookUrl,
-          ).then(() => {
-            // startGatewayListener resolves immediately with a Response;
-            // the actual work is in the listenerPromise passed to waitUntil
-            if (!listenerPromise) return;
-            const reschedule = (err?: unknown) => {
+          )
+            .then(() => {
+              // startGatewayListener resolves immediately with a Response;
+              // the actual work is in the listenerPromise passed to waitUntil
+              if (!listenerPromise) return;
+              const reschedule = (err?: unknown) => {
+                if (gatewayAbort?.signal.aborted) return;
+                const ranForMs = Date.now() - startedAt;
+                if (ranForMs > 5 * 60 * 1000) consecutiveFailures = 0;
+                else consecutiveFailures++;
+                const delayMs = Math.min(60 * 60 * 1000, 2 ** consecutiveFailures * 1000);
+                if (err) {
+                  log.error('Gateway listener error, retrying', {
+                    adapter: adapter.name,
+                    err,
+                    consecutiveFailures,
+                    delayMs,
+                  });
+                } else {
+                  log.info('Gateway listener expired, restarting', {
+                    adapter: adapter.name,
+                    consecutiveFailures,
+                    delayMs,
+                  });
+                }
+                setTimeout(startGateway, delayMs);
+              };
+              listenerPromise.then(() => reschedule()).catch(reschedule);
+            })
+            .catch((err: unknown) => {
+              // Initial startGatewayListener call rejected before the
+              // reschedule closure was installed — without this catch the
+              // gateway would die permanently on a boot-time failure. Same
+              // backoff math as reschedule.
               if (gatewayAbort?.signal.aborted) return;
-              const ranForMs = Date.now() - startedAt;
-              if (ranForMs > 5 * 60 * 1000) consecutiveFailures = 0;
-              else consecutiveFailures++;
+              consecutiveFailures++;
               const delayMs = Math.min(60 * 60 * 1000, 2 ** consecutiveFailures * 1000);
-              if (err) {
-                log.error('Gateway listener error, retrying', {
-                  adapter: adapter.name,
-                  err,
-                  consecutiveFailures,
-                  delayMs,
-                });
-              } else {
-                log.info('Gateway listener expired, restarting', {
-                  adapter: adapter.name,
-                  consecutiveFailures,
-                  delayMs,
-                });
-              }
+              log.error('Gateway listener failed to start, retrying', {
+                adapter: adapter.name,
+                err,
+                consecutiveFailures,
+                delayMs,
+              });
               setTimeout(startGateway, delayMs);
-            };
-            listenerPromise.then(() => reschedule()).catch(reschedule);
-          });
+            });
         };
         startGateway();
         log.info('Gateway listener started', { adapter: adapter.name });
@@ -406,15 +429,22 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
       const tid = threadId ?? platformId;
       const content = message.content as Record<string, unknown>;
 
+      // Inbound message ids get a `:<agent_group_id>` suffix from the
+      // router's fan-out namespacing (see router.ts messageIdForAgent) —
+      // strip it before handing the id back to the adapter (mirrors the
+      // Mattermost adapter's unwrapPostId). Outbound platform ids have no
+      // suffix and pass through untouched.
+      const unwrapMessageId = (raw: string): string => raw.replace(/:ag-[^:]*$/, '');
+
       if (content.operation === 'edit' && content.messageId) {
-        await adapter.editMessage(tid, content.messageId as string, {
+        await adapter.editMessage(tid, unwrapMessageId(content.messageId as string), {
           markdown: transformText((content.text as string) || (content.markdown as string) || ''),
         });
         return;
       }
 
       if (content.operation === 'reaction' && content.messageId && content.emoji) {
-        await adapter.addReaction(tid, content.messageId as string, content.emoji as string);
+        await adapter.addReaction(tid, unwrapMessageId(content.messageId as string), content.emoji as string);
         return;
       }
 
@@ -548,6 +578,14 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
 
     async teardown() {
       gatewayAbort?.abort();
+      if (localWebhookServer) {
+        const srv = localWebhookServer;
+        localWebhookServer = null;
+        // Drop any lingering keep-alive connections from the gateway
+        // forwarder so close() doesn't hang shutdown.
+        srv.closeAllConnections?.();
+        await new Promise<void>((resolve) => srv.close(() => resolve()));
+      }
       await chat.shutdown();
       log.info('Chat SDK bridge shut down', { adapter: adapter.name });
     },
@@ -596,7 +634,7 @@ function startLocalWebhookServer(
   adapter: GatewayAdapter,
   setupConfig: ChannelSetup,
   botToken?: string,
-): Promise<string> {
+): Promise<{ url: string; server: http.Server }> {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
       const chunks: Buffer[] = [];
@@ -620,7 +658,7 @@ function startLocalWebhookServer(
       const addr = server.address() as { port: number };
       const url = `http://127.0.0.1:${addr.port}/webhook`;
       log.info('Local webhook server started', { port: addr.port });
-      resolve(url);
+      resolve({ url, server });
     });
   });
 }

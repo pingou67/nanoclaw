@@ -12,9 +12,15 @@ const SETUP_RETRY_DELAYS_MS = [2000, 5000, 10000];
 
 /** Duck-type check — adapters that throw an Error with `name === 'NetworkError'`
  * (Chat SDK's `@chat-adapter/shared.NetworkError` and similar) get a retry on
- * setup. Avoids depending on `@chat-adapter/shared` at trunk level. */
+ * setup. Avoids depending on `@chat-adapter/shared` at trunk level.
+ * Native `fetch` failures throw `TypeError: fetch failed` (with the real
+ * cause in `err.cause`) — the prod-critical native adapters (Mattermost)
+ * use fetch directly, so those must count as network errors too, otherwise
+ * a DNS/connect blip at boot leaves the adapter dead until restart. */
 function isNetworkError(err: unknown): err is Error {
-  return err instanceof Error && err.name === 'NetworkError';
+  if (!(err instanceof Error)) return false;
+  if (err.name === 'NetworkError') return true;
+  return err instanceof TypeError && /fetch failed|network|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/i.test(err.message);
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -85,8 +91,10 @@ export function createChannelDeliveryAdapter(): ChannelDeliveryAdapter {
     ): Promise<string | undefined> {
       const adapter = getChannelAdapterExact(instance ?? channelType);
       if (!adapter) {
-        log.warn('No adapter for channel type', { channelType, instance });
-        return;
+        // Throw — returning undefined makes the caller mark the message
+        // delivered (silent permanent loss). Throwing drops it into the
+        // delivery retry path, as the docstring above promises.
+        throw new Error(`No adapter for channel type ${channelType} (instance: ${instance ?? 'default'})`);
       }
       return adapter.deliver(platformId, threadId, { kind, content: JSON.parse(content), files });
     },
