@@ -167,16 +167,23 @@ export function getMessageForRetry(
 }
 
 export function syncProcessingAcks(inDb: Database.Database, outDb: Database.Database): void {
-  const completed = outDb
-    .prepare("SELECT message_id FROM processing_ack WHERE status IN ('completed', 'failed')")
-    .all() as Array<{ message_id: string }>;
+  const acked = outDb
+    .prepare("SELECT message_id, status FROM processing_ack WHERE status IN ('completed', 'failed')")
+    .all() as Array<{ message_id: string; status: 'completed' | 'failed' }>;
 
-  if (completed.length === 0) return;
+  if (acked.length === 0) return;
 
-  const updateStmt = inDb.prepare("UPDATE messages_in SET status = 'completed' WHERE id = ? AND status != 'completed'");
+  // Mirror the container's terminal ack verbatim: a 'failed' ack must land as
+  // 'failed' (same status markMessageFailed writes), not be collapsed into
+  // 'completed' — that would erase the failure signal. Both statuses are
+  // terminal: countDueMessages and the container's pending query gate on
+  // 'pending', so neither is ever re-processed.
+  const updateStmt = inDb.prepare(
+    "UPDATE messages_in SET status = ? WHERE id = ? AND status NOT IN ('completed', 'failed')",
+  );
   inDb.transaction(() => {
-    for (const { message_id } of completed) {
-      updateStmt.run(message_id);
+    for (const { message_id, status } of acked) {
+      updateStmt.run(status, message_id);
     }
   })();
 }

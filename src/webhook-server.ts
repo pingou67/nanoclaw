@@ -159,6 +159,13 @@ function ensureServer(): void {
     }
   });
 
+  // Bind failures (EADDRINUSE, EACCES, …) must not crash the host — the
+  // webhook server just stays unstarted and webhook adapters are unreachable
+  // until the port conflict is resolved and the host restarts.
+  server.on('error', (err) => {
+    log.error('Webhook server error — webhook adapters unreachable', { port, err });
+  });
+
   server.listen(port, '0.0.0.0', () => {
     log.info('Webhook server started', { port, adapters: [...routes.keys()] });
   });

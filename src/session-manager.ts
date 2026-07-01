@@ -379,11 +379,11 @@ export function openOutboundDbRw(agentGroupId: string, sessionId: string): Datab
  * loop picks it up. Used by the command gate to send denial responses
  * without waking a container.
  *
- * Needs the read-write open — the readonly handle the delivery poll uses
- * can't INSERT. This is a host-side write to the container-owned outbound.db,
- * but it's safe even with a container running: both sides open with DELETE
- * journal + busy_timeout, and the even host seq stays out of the container's
- * odd-seq space.
+ * Needs the read-write open — per openOutboundDbRw's caveat, that is only
+ * strictly safe when no container is running. The deny-path callers (command
+ * gate) accept the residual risk of racing a live container: both sides open
+ * with DELETE journal + busy_timeout, and the even host seq stays out of the
+ * container's odd-seq space.
  */
 export function writeOutboundDirect(
   agentGroupId: string,
@@ -397,12 +397,29 @@ export function writeOutboundDirect(
     content: string;
   },
 ): void {
+  // Seq parity: the host owns EVEN seqs, the container odd, across BOTH
+  // session files (shared per-session namespace). MAX(seq)+2 would inherit
+  // the parity of the last writer — after a container (odd) write the host
+  // would emit an odd seq. Mirror nextEvenSeq (src/db/session-db.ts) / the
+  // container's odd-seq writeMessageOut: max across messages_out AND
+  // messages_in (read-only on inbound here), rounded up to the next even.
+  let maxInSeq = 0;
+  const inDb = openInboundDb(agentGroupId, sessionId);
+  try {
+    maxInSeq = (inDb.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM messages_in').get() as { m: number }).m;
+  } finally {
+    inDb.close();
+  }
+
   const db = openOutboundDbRw(agentGroupId, sessionId);
   try {
+    const maxOutSeq = (db.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM messages_out').get() as { m: number }).m;
+    const maxSeq = Math.max(maxInSeq, maxOutSeq);
+    const seq = maxSeq < 2 ? 2 : maxSeq + 2 - (maxSeq % 2);
     db.prepare(
       `INSERT OR IGNORE INTO messages_out (id, seq, timestamp, kind, platform_id, channel_type, thread_id, content)
-       VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 2 FROM messages_out), datetime('now'), ?, ?, ?, ?, ?)`,
-    ).run(message.id, message.kind, message.platformId, message.channelType, message.threadId, message.content);
+       VALUES (?, ?, datetime('now'), ?, ?, ?, ?, ?)`,
+    ).run(message.id, seq, message.kind, message.platformId, message.channelType, message.threadId, message.content);
   } finally {
     db.close();
   }

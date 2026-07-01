@@ -29,11 +29,16 @@ export function gateCommand(content: string, userId: string | null, agentGroupId
     text = content.trim();
   }
 
-  if (!text.startsWith('/')) return { action: 'pass' };
+  if (!text.startsWith('/') && !text.startsWith('!')) return { action: 'pass' };
 
-  const command = text.split(/\s/)[0].toLowerCase();
+  const raw = text.split(/\s/)[0].toLowerCase();
+  // The `!` forms exist because Mattermost swallows `/`-commands client-side
+  // (see container/agent-runner/src/formatter.ts). Gate them like their `/`
+  // equivalents — otherwise `!clear` etc. reach the runner ungated. Runner
+  // commands that aren't in the admin set (`!stop`, `!bg`, `!help`, …) pass.
+  const command = raw.startsWith('!') ? `/${raw.slice(1)}` : raw;
 
-  if (FILTERED_COMMANDS.has(command)) return { action: 'filter' };
+  if (raw.startsWith('/') && FILTERED_COMMANDS.has(command)) return { action: 'filter' };
 
   if (ADMIN_COMMANDS.has(command)) {
     if (isAdmin(userId, agentGroupId)) {

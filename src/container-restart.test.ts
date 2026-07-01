@@ -26,7 +26,7 @@ vi.mock('./db/sessions.js', () => ({
 const mockWriteSessionMessage = vi.fn();
 vi.mock('./session-manager.js', () => ({
   writeSessionMessage: (...args: unknown[]) => mockWriteSessionMessage(...args),
-  openInboundDb: () => ({}),
+  openInboundDb: () => ({ close: () => {} }),
 }));
 
 const mockCountDueMessages = vi.fn((..._args: unknown[]) => 0);

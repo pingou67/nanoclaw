@@ -303,7 +303,7 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
     const scopeOk = engages && (!senderScopeGate || senderScopeGate(event, userId, mg, agent).allowed);
 
     if (engages && accessOk && scopeOk) {
-      await deliverToAgent(agent, agentGroup, mg, event, userId, adapter?.supportsThreads === true, true);
+      await safeDeliverToAgent(agent, agentGroup, mg, event, userId, adapter?.supportsThreads === true, true);
       engagedCount++;
 
       // Mention-sticky: ask the adapter to subscribe the thread so the
@@ -334,7 +334,7 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
       // message (which also stages their attachments to disk via
       // writeSessionMessage → extractAttachmentFiles) is exactly what the
       // gate is meant to prevent.
-      await deliverToAgent(agent, agentGroup, mg, event, userId, adapter?.supportsThreads === true, false);
+      await safeDeliverToAgent(agent, agentGroup, mg, event, userId, adapter?.supportsThreads === true, false);
       accumulatedCount++;
     } else {
       log.debug('Message not engaged for agent (drop policy)', {
@@ -410,6 +410,35 @@ function evaluateEngage(
     }
     default:
       return false;
+  }
+}
+
+/**
+ * deliverToAgent with per-agent fault isolation: one agent's failure must not
+ * abort fan-out to the remaining wired agents. A duplicate messages_in
+ * primary key means this platform message id was already routed to this
+ * agent's session (platform redelivery) — benign, skip quietly.
+ */
+async function safeDeliverToAgent(
+  agent: MessagingGroupAgent,
+  agentGroup: AgentGroup,
+  mg: MessagingGroup,
+  event: InboundEvent,
+  userId: string | null,
+  adapterSupportsThreads: boolean,
+  wake: boolean,
+): Promise<void> {
+  try {
+    await deliverToAgent(agent, agentGroup, mg, event, userId, adapterSupportsThreads, wake);
+  } catch (err) {
+    if ((err as { code?: string }).code === 'SQLITE_CONSTRAINT_PRIMARYKEY') {
+      log.debug('Message already routed to agent, skipping', {
+        agentGroupId: agent.agent_group_id,
+        messageId: event.message.id,
+      });
+    } else {
+      log.error('Fan-out delivery to agent failed', { agentGroupId: agent.agent_group_id, err });
+    }
   }
 }
 

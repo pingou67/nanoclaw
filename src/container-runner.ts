@@ -3,8 +3,9 @@
  * Spawns agent containers with session folder + agent group folder mounts.
  * The container runs the v2 agent-runner which polls the session DB.
  */
-import { ChildProcess, execSync, spawn } from 'child_process';
+import { ChildProcess, execFileSync, execSync, spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import { OneCLI } from '@onecli-sh/sdk';
@@ -24,7 +25,13 @@ import {
 import { materializeContainerJson } from './container-config.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { updateContainerConfigScalars } from './db/container-configs.js';
-import { CONTAINER_RUNTIME_BIN, hostGatewayArgs, readonlyMountArgs, stopContainer } from './container-runtime.js';
+import {
+  CONTAINER_RUNTIME_BIN,
+  forceKillContainer,
+  hostGatewayArgs,
+  readonlyMountArgs,
+  stopContainer,
+} from './container-runtime.js';
 import { EGRESS_NETWORK, egressNetworkArgs, ensureEgressNetwork } from './egress-lockdown.js';
 import { composeGroupClaudeMd } from './claude-md-compose.js';
 import { getAgentGroup } from './db/agent-groups.js';
@@ -222,7 +229,13 @@ async function spawnContainer(session: Session): Promise<void> {
 /** Kill a container for a session. */
 export function killContainer(sessionId: string, reason: string, onExit?: () => void): void {
   const entry = activeContainers.get(sessionId);
-  if (!entry) return;
+  if (!entry) {
+    // Container already gone (idle-exited between request and apply) — the
+    // "after exit" condition already holds, so fire the callback now instead
+    // of silently dropping it (self-mod respawn/on_wake depends on it).
+    onExit?.();
+    return;
+  }
 
   if (onExit) {
     entry.process.once('close', onExit);
@@ -232,7 +245,21 @@ export function killContainer(sessionId: string, reason: string, onExit?: () => 
   try {
     stopContainer(entry.containerName);
   } catch {
-    entry.process.kill('SIGKILL');
+    // Do NOT SIGKILL entry.process here: that kills the local `docker run`
+    // client, not the container — 'close' would fire, the host would mark
+    // the session stopped, and a respawn would double-write the session DBs
+    // while the real container keeps running. `docker kill` targets the
+    // actual container; if even that fails (daemon unresponsive) keep the
+    // entry so a later sweep retries instead of desyncing state.
+    try {
+      forceKillContainer(entry.containerName);
+    } catch (err) {
+      log.error('Container kill failed — keeping entry for retry', {
+        sessionId,
+        containerName: entry.containerName,
+        err: (err as Error).message,
+      });
+    }
   }
 }
 
@@ -468,7 +495,24 @@ async function buildContainerArgs(
     args.push('-e', `NANOCLAW_LIVE_STATUS_DISABLED=${process.env.NANOCLAW_LIVE_STATUS_DISABLED}`);
   }
 
+  // Per-group env from container_configs.env — the canonical place for
+  // per-group provider config (see CLAUDE.md). Injected generically so
+  // `ncl groups config env-set` works for EVERY provider (claude included),
+  // not only those whose host-side contribution forwards a whitelist.
+  if (containerConfig.env) {
+    const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+    for (const [key, value] of Object.entries(containerConfig.env)) {
+      if (!ENV_KEY_RE.test(key)) {
+        log.warn('Skipping per-group env var with invalid key', { key });
+        continue;
+      }
+      args.push('-e', `${key}=${value}`);
+    }
+  }
+
   // Provider-contributed env vars (e.g. XDG_DATA_HOME, OPENCODE_*, NO_PROXY).
+  // Pushed after the per-group map — docker uses the last -e occurrence, so
+  // the provider's computed merge wins on duplicated keys.
   if (providerContribution.env) {
     for (const [key, value] of Object.entries(providerContribution.env)) {
       args.push('-e', `${key}=${value}`);
@@ -571,6 +615,16 @@ export async function buildAgentGroupImage(agentGroupId: string): Promise<void> 
     throw new Error('No packages to install. Use install_packages first.');
   }
 
+  // Defense in depth: the request paths (self-mod request.ts, ncl
+  // config add-package) validate too, but these names get interpolated
+  // into Dockerfile RUN lines executed as root — never trust the DB row.
+  const APT_RE = /^[a-z0-9][a-z0-9._+-]*$/;
+  const NPM_RE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+  const badApt = aptPackages.find((p) => !APT_RE.test(p));
+  if (badApt) throw new Error(`Invalid apt package name in container config: ${badApt}`);
+  const badNpm = npmPackages.find((p) => !NPM_RE.test(p));
+  if (badNpm) throw new Error(`Invalid npm package name in container config: ${badNpm}`);
+
   let dockerfile = `FROM ${CONTAINER_IMAGE}\nUSER root\n`;
   if (aptPackages.length > 0) {
     dockerfile += `RUN apt-get update && apt-get install -y ${aptPackages.join(' ')} && rm -rf /var/lib/apt/lists/*\n`;
@@ -589,17 +643,21 @@ export async function buildAgentGroupImage(agentGroupId: string): Promise<void> 
 
   log.info('Building per-agent-group image', { agentGroupId, imageTag, apt: aptPackages, npm: npmPackages });
 
-  // Write Dockerfile to temp file and build
-  const tmpDockerfile = path.join(DATA_DIR, `Dockerfile.${agentGroupId}`);
+  // Build from an EMPTY temp context: the Dockerfile has no COPY/ADD, and
+  // using DATA_DIR as context would ship the central DB and every session DB
+  // to the docker daemon on each build. execFileSync (argv, no shell) so the
+  // tag/path are never shell-interpreted.
+  const buildDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nc-build-'));
+  const tmpDockerfile = path.join(buildDir, 'Dockerfile');
   fs.writeFileSync(tmpDockerfile, dockerfile);
   try {
-    execSync(`${CONTAINER_RUNTIME_BIN} build -t ${imageTag} -f ${tmpDockerfile} .`, {
-      cwd: DATA_DIR,
+    execFileSync(CONTAINER_RUNTIME_BIN, ['build', '-t', imageTag, '-f', tmpDockerfile, '.'], {
+      cwd: buildDir,
       stdio: 'pipe',
       timeout: 900_000,
     });
   } finally {
-    fs.unlinkSync(tmpDockerfile);
+    fs.rmSync(buildDir, { recursive: true, force: true });
   }
 
   // Store the image tag in the DB

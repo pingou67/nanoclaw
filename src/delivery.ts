@@ -127,7 +127,13 @@ async function pollActive(): Promise<void> {
   try {
     const sessions = getRunningSessions();
     for (const session of sessions) {
-      await deliverSessionMessages(session);
+      // Per-session isolation: one session's drain failure (e.g. a corrupt
+      // DB) must not starve delivery for the remaining sessions.
+      try {
+        await deliverSessionMessages(session);
+      } catch (err) {
+        log.error('Active delivery failed for session', { sessionId: session.id, err });
+      }
     }
   } catch (err) {
     log.error('Active delivery poll error', { err });
@@ -142,7 +148,12 @@ async function pollSweep(): Promise<void> {
   try {
     const sessions = getActiveSessions();
     for (const session of sessions) {
-      await deliverSessionMessages(session);
+      // Same per-session isolation as pollActive.
+      try {
+        await deliverSessionMessages(session);
+      } catch (err) {
+        log.error('Sweep delivery failed for session', { sessionId: session.id, err });
+      }
     }
   } catch (err) {
     log.error('Sweep delivery poll error', { err });
@@ -169,12 +180,18 @@ async function drainSession(session: Session): Promise<void> {
   if (!agentGroup) return;
 
   let outDb: Database.Database;
-  let inDb: Database.Database;
   try {
     outDb = openOutboundDb(agentGroup.id, session.id);
-    inDb = openInboundDb(agentGroup.id, session.id);
   } catch {
     return; // DBs might not exist yet
+  }
+
+  let inDb: Database.Database;
+  try {
+    inDb = openInboundDb(agentGroup.id, session.id);
+  } catch {
+    outDb.close(); // don't leak the outbound handle when the inbound open fails
+    return;
   }
 
   try {
@@ -247,17 +264,21 @@ async function deliverMessage(
   session: Session,
   inDb: Database.Database,
 ): Promise<string | undefined> {
-  if (!deliveryAdapter) {
-    log.warn('No delivery adapter configured, dropping message', { id: msg.id });
-    return;
-  }
-
   const content = JSON.parse(msg.content);
 
-  // System actions — handle internally (schedule_task, cancel_task, etc.)
+  // System actions — handle internally (schedule_task, cancel_task, etc.).
+  // Ordered before the adapter check: system actions never touch the channel
+  // adapter, so they must not be blocked when none is configured.
   if (msg.kind === 'system') {
     await handleSystemAction(content, session, inDb);
     return;
+  }
+
+  // Everything past this point is user- or agent-bound. Throwing (vs. the
+  // old silent return, which the caller treated as success and marked
+  // delivered) lands the message in the retry → mark-failed path.
+  if (!deliveryAdapter) {
+    throw new Error(`no delivery adapter configured — cannot deliver message ${msg.id}`);
   }
 
   // Agent-to-agent — route to target session via the agent-to-agent module.

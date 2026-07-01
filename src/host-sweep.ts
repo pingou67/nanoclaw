@@ -146,7 +146,13 @@ async function sweep(): Promise<void> {
   try {
     const sessions = getActiveSessions();
     for (const session of sessions) {
-      await sweepSession(session);
+      // Per-session isolation: one session's failure (e.g. a corrupt DB)
+      // must not abort the sweep for the remaining sessions.
+      try {
+        await sweepSession(session);
+      } catch (err) {
+        log.error('Host sweep failed for session', { sessionId: session.id, err });
+      }
     }
   } catch (err) {
     log.error('Host sweep error', { err });
