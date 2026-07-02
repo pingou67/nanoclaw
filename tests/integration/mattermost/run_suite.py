@@ -55,6 +55,19 @@ WAIT_REPLY_SEC = 90
 WAIT_REUSE_SEC = 30
 NANOCLAW_BOOT_SEC = 30  # max wait for "Mattermost WS ready"
 
+# ---------------------------- installed skills --------------------------------
+# The suite must stay green after every nanoclaw update, whatever the set of
+# installed skills. Skill presence is detected by the file its install copies
+# in; scenarios that exercise an absent skill are SKIPPED (passing), never
+# failed. The whole suite is the /add-mattermost skill's E2E — without the
+# adapter there is nothing to test at all.
+MATTERMOST_INSTALLED = (ROOT / "src" / "channels" / "mattermost.ts").exists()
+OPENCODE_INSTALLED = (ROOT / "src" / "providers" / "opencode.ts").exists()
+
+
+def skip_result(name: str, skill: str) -> "Result":
+    return Result(name, True, f"SKIP — skill {skill} non installé", skipped=True)
+
 # Channel id mapping in mock_mm.py — keep in sync with mock_mm.CHANNELS
 CHANNELS = {
     "main":      ("ch-main",      True),   # requireMention=True
@@ -310,12 +323,13 @@ def wait_for_mock_ready(timeout: int = 10) -> None:
 # ----------------------------- scenarios -------------------------------------
 
 class Result:
-    def __init__(self, name: str, passed: bool, detail: str = ""):
+    def __init__(self, name: str, passed: bool, detail: str = "", skipped: bool = False):
         self.name = name
         self.passed = passed
         self.detail = detail
+        self.skipped = skipped
     def __str__(self):
-        sign = "✓" if self.passed else "✗"
+        sign = "⤼" if self.skipped else ("✓" if self.passed else "✗")
         return f"{sign} {self.name}{f' — {self.detail}' if self.detail else ''}"
 
 
@@ -738,6 +752,8 @@ def scenario_provider_switch() -> Result:
     throwaway ag-e2e_switch group only — never a production group."""
     name = "provider switch opencode→claude (continuity)"
     group, folder, ch = "ag-e2e_switch", "e2e_switch", "ch-e2e-switch"
+    if not OPENCODE_INSTALLED:
+        return skip_result(name, "add-opencode")
     env = any_opencode_env()
     if not env:
         return Result(name, False, "no opencode group to copy env from — cannot test opencode leg")
@@ -790,9 +806,15 @@ def run_provider_matrix() -> list[Result]:
         out.append(_relabel(scenario_channel_text(label, ch_id, req, f"OK-MX-{label.upper()}"),
                             f"matrix {tag} / text"))
         out.append(_relabel(scenario_tool_use(label, ch_id, req), f"matrix {tag} / tool-use"))
-    both = {"claude", "opencode"}.issubset(set(seen.keys()))
-    out.append(Result("matrix provider coverage", both,
-                      f"covered {sorted(seen.keys())}" + ("" if both else " — MISSING a provider")))
+    # Coverage expectation follows the INSTALLED providers: claude ships in
+    # trunk; opencode only counts when /add-opencode is installed. An absent
+    # skill is a SKIP, not a missing provider.
+    expected = {"claude"} | ({"opencode"} if OPENCODE_INSTALLED else set())
+    covered = expected.issubset(set(seen.keys()))
+    detail = f"covered {sorted(seen.keys())}" + ("" if covered else f" — MISSING {sorted(expected - set(seen.keys()))}")
+    out.append(Result("matrix provider coverage", covered, detail))
+    if not OPENCODE_INSTALLED:
+        out.append(skip_result("matrix opencode leg", "add-opencode"))
     return out
 
 
@@ -838,6 +860,12 @@ def main() -> int:
     print(f"== Mattermost adapter v2 E2E suite ==")
     print(f"Project root: {ROOT}")
     print(f"Live config:  {LIVE_CONFIG}")
+
+    if not MATTERMOST_INSTALLED:
+        print("\n⤼ SKIP — skill add-mattermost non installé (src/channels/mattermost.ts absent).")
+        print("  Cette suite est le test E2E du skill add-mattermost ; rien à tester sans lui.")
+        print("  Installer : /add-mattermost (fetch depuis la branche `channels` d'origin).")
+        return 0
 
     if not LIVE_CONFIG.exists() and not BACKUP_CONFIG.exists():
         print(f"ERROR: neither {LIVE_CONFIG} nor {BACKUP_CONFIG} exists — nothing to back up.", file=sys.stderr)
@@ -925,9 +953,10 @@ def main() -> int:
     print("RESULTS")
     print("=" * 60)
     passed = sum(1 for r in results if r.passed)
+    skipped = sum(1 for r in results if r.skipped)
     for r in results:
         print(f"  {r}")
-    print(f"\n{passed}/{len(results)} passed")
+    print(f"\n{passed}/{len(results)} passed" + (f" ({skipped} skipped)" if skipped else ""))
     return 0 if passed == len(results) else 1
 
 

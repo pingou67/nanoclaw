@@ -12,6 +12,28 @@ If you ran `pnpm run build` and the build failed, this checklist tells you what 
 
 ---
 
+## §0. Skills du fork — vérification automatique (2026-07-02)
+
+Les modules mattermost/opencode/agy + rtk/opencode-memory/vikunja sont
+**skill-owned** (voir README.md, carte skills vs reliquat) — leurs sections
+historiques ci-dessous (§3, §4, §5 pour Mattermost) sont couvertes
+automatiquement :
+
+```bash
+pnpm exec tsx scripts/skills-sync.ts check   # payload en phase + reach-ins présents
+pnpm test                                    # inclut scripts/skills-sync.test.ts (même check)
+```
+
+- Un `✗ [missing-line]` = l'update a écrasé une ligne barrel / une dep / un
+  ARG Dockerfile → re-suivre le SKILL.md du skill concerné (étapes idempotentes).
+- Un `✗ [branch-drift]` = l'update a modifié un fichier skill-owned (rebase
+  d'un fix upstream ?) → arbitrer, puis `skills-sync sync <skill>`.
+- Un skill **non installé** doit sortir `✓ … (non installé — installable)` —
+  c'est la garantie « les skills marchent après chaque màj même non installés ».
+- La suite E2E (§13) skippe d'elle-même les scénarios des skills absents.
+
+---
+
 ## Quick health check (one-liner)
 
 ```bash

@@ -279,6 +279,19 @@ Four types of skills. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full taxono
 | `/init-onecli` | Install OneCLI Agent Vault and migrate `.env` credentials |
 | `/migrate-memory` | Carry a group's agent memory across a provider switch (operator-run, both directions) |
 
+### Fork-local skills (this install)
+
+The fork's own additions are distributed as skills too, installable on a clean upstream. Their canonical payload lives on module branches of **origin** (`channels`, `providers`) or in the skill's `resources/`; the installed tree copy is canonical day-to-day and `scripts/skills-sync.ts` mirrors it back (`sync <skill>` after editing a skill-owned file; `check` runs inside `pnpm test` via `scripts/skills-sync.test.ts` and goes red on any drift, including after an upstream update). Map + reliquat: [docs/local-patches/README.md](docs/local-patches/README.md).
+
+| Skill | What it adds |
+|-------|--------------|
+| `/add-mattermost` | Native Mattermost adapter + E2E harness (`tests/integration/mattermost/`, skill-aware skips) |
+| `/add-opencode` | OpenCode provider (fork-patched: per-query SSE, plugins, tool-progress, `summarize.ts`) |
+| `/add-agy` | Google Antigravity (Gemini) provider |
+| `/add-rtk` | rtk token-compression (claude hook, opencode plugin, agy rules file) |
+| `/add-opencode-memory` | `memory_*` tools for opencode groups (shim, no runtime npm install) |
+| `/add-vikunja` | Vikunja task-management MCP server |
+
 ## Contributing
 
 Before creating a PR, adding a skill, or preparing any contribution, you MUST read [CONTRIBUTING.md](CONTRIBUTING.md). It covers accepted change types, the four skill types and their guidelines, `SKILL.md` format rules, and the pre-submission checklist.
