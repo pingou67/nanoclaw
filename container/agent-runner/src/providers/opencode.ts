@@ -173,7 +173,17 @@ function buildOpenCodeConfig(options: ProviderOptions): Record<string, unknown> 
   // JSON array of npm package names), passed by the host via the group's
   // `env` field. Namespaced under NANOCLAW_ to avoid clashing with any
   // OPENCODE_* env var the opencode binary might add in the future.
-  const plugins = parsePluginEnv(process.env.NANOCLAW_OPENCODE_PLUGINS);
+  //
+  // Names with a local shim in opencode's GLOBAL plugin dir (mounted from
+  // container/opencode-plugins/ by the host provider contribution) are
+  // dropped from config.plugin: the shim auto-loads as a file, while keeping
+  // the name in config.plugin would make opencode npm-install it at every
+  // boot — which crashes under the OneCLI proxy (upstream @npmcli/agent bug
+  // in Bun: anomalyco/opencode#21327). The shims self-gate on the same env
+  // var, so dropping the name here doesn't disable the opt-in.
+  const plugins = parsePluginEnv(process.env.NANOCLAW_OPENCODE_PLUGINS).filter(
+    (name) => !fs.existsSync(`/home/node/.config/opencode/plugin/${name}.js`),
+  );
 
   return {
     ...(model ? { model } : {}),
