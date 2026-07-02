@@ -15,7 +15,14 @@ Install [rtk](https://github.com/rtk-ai/rtk) — a CLI proxy delivering 60–90%
 - **Mount**: `src/container-runner.ts` mounts `~/.local/bin/rtk` RO at `/usr/local/bin/rtk` in EVERY container when the host file exists (global, provider-agnostic — same pattern as the OAuth credential mount). Do not use `additional_mounts` for this: `validateAdditionalMounts` rejects absolute containerPaths (everything lands under `/workspace/extra/`, off the PATH).
 - **Per-provider wiring**:
   - **claude** — `PreToolUse` hook (`rtk hook claude`, matcher `Bash`) in each group's `data/v2-sessions/<gid>/.claude-shared/settings.json`. Merged, never clobbering existing hooks (PreCompact etc.).
-  - **opencode** — shared plugin `container/opencode-plugins/rtk.js`, mounted RO at `/home/node/.config/opencode/plugin` (opencode's global plugin dir) by the host provider contribution in `src/providers/opencode.ts`. The plugin shells the command through `rtk hook claude` and rewrites `output.args.command`. Note: rtk's stats land under `XDG_DATA_HOME=/opencode-xdg/rtk/` in these containers.
+  - **opencode** — shared plugin `container/opencode-plugins/rtk.js`, mounted RO at `/home/node/.config/opencode/plugin` (opencode's global plugin dir) by the host provider contribution in `src/providers/opencode.ts` (shipped by `/add-opencode` — required for this leg). The plugin shells the command through `rtk hook claude` and rewrites `output.args.command`. Note: rtk's stats land under `XDG_DATA_HOME=/opencode-xdg/rtk/` in these containers. The plugin's canonical payload is `resources/rtk.js` in this skill dir; install/repair with:
+
+    ```bash
+    mkdir -p container/opencode-plugins
+    cp .claude/skills/add-rtk/resources/rtk.js container/opencode-plugins/rtk.js
+    ```
+
+    After editing the installed copy, mirror it back with `pnpm exec tsx scripts/skills-sync.ts sync add-rtk` (`pnpm test` fails on drift — manifest: `skill-sync.json`).
   - **agy / codex** — rules file (prompt-level), rtk's official tier for these agents (see [supported-agents.md](https://github.com/rtk-ai/rtk/blob/master/docs/guide/getting-started/supported-agents.md)). For agy: `rtk init --agent antigravity` generates `.agents/rules/antigravity-rtk-rules.md`; install it into the group workspace at `groups/<folder>/.agents/rules/`. Antigravity reads `.agents/rules/` as custom instructions. NOT transparent — relies on the model following the rule. Transparent rewriting is blocked upstream: Antigravity's PreToolUse hook is decision-only (agy ignores the `overwrite` field of PreToolHookResult — see rtk-ai/rtk#2093 and the Google bug report linked there). If both get fixed, switch to `rtk hook antigravity`.
 - **Updates**: systemd user timer `nanoclaw-rtk-update.timer` (daily 09:15) runs `~/.nanoclaw-rtk-update/check.sh`: compares installed version to the latest GitHub release, downloads the musl build, verifies sha256 against `checksums.txt`, replaces the binary atomically, and notifies the Mattermost DM (reuses `~/.nanoclaw-upstream-watch/post.js`). Running containers keep the old inode; every new spawn gets the new version. `FORCE=1` to test a full cycle.
 

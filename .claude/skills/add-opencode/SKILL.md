@@ -24,6 +24,7 @@ If all of the following are already present, skip to **Configuration**:
 - `@opencode-ai/sdk` in `container/agent-runner/package.json`
 - `ARG OPENCODE_VERSION` and `"opencode-ai@${OPENCODE_VERSION}"` in `container/Dockerfile`
 - `src/opencode-dockerfile.test.ts` (the Dockerfile install guard)
+- `container/agent-runner/src/providers/summarize.ts` (live-status tool summaries, shipped with this skill)
 
 Missing pieces — continue below. All steps are idempotent; re-running is safe.
 
@@ -43,7 +44,14 @@ git show origin/providers:container/agent-runner/src/providers/opencode.ts      
 git show origin/providers:container/agent-runner/src/providers/mcp-to-opencode.ts       > container/agent-runner/src/providers/mcp-to-opencode.ts
 git show origin/providers:container/agent-runner/src/providers/mcp-to-opencode.test.ts  > container/agent-runner/src/providers/mcp-to-opencode.test.ts
 git show origin/providers:container/agent-runner/src/providers/opencode.factory.test.ts > container/agent-runner/src/providers/opencode.factory.test.ts
+git show origin/providers:container/agent-runner/src/providers/summarize.ts              > container/agent-runner/src/providers/summarize.ts
+git show origin/providers:container/agent-runner/src/providers/summarize.test.ts         > container/agent-runner/src/providers/summarize.test.ts
+git show origin/providers:container/agent-runner/src/providers/opencode.plugins.test.ts       > container/agent-runner/src/providers/opencode.plugins.test.ts
+git show origin/providers:container/agent-runner/src/providers/opencode.timeout.test.ts       > container/agent-runner/src/providers/opencode.timeout.test.ts
+git show origin/providers:container/agent-runner/src/providers/opencode.tool-progress.test.ts > container/agent-runner/src/providers/opencode.tool-progress.test.ts
 ```
+
+`summarize.ts` formats one-line tool-call summaries for the live-status feature; it ships with this skill because the opencode provider consumes it (the fork's claude provider imports it too — see the fork note at the end).
 
 Also copy the two barrel-registration guards — one per tree. These import the real provider barrels and assert `opencode` is registered, so they go red the moment a barrel import line is deleted or drifts:
 
@@ -253,3 +261,14 @@ Extra MCP servers still come from **`NANOCLAW_MCP_SERVERS`** / `container_config
 The registration and Dockerfile guards in step 7 verify the wiring. To confirm an end-to-end round-trip, set `agent_provider = 'opencode'` (or `"provider": "opencode"` in the group's `container.json`) on a test group, register the matching provider key in OneCLI, and send a message. A clean exchange returns the model's reply with no `Unknown provider: opencode` error and no UUID/session warnings in the logs.
 
 To remove this provider, see [REMOVE.md](REMOVE.md).
+
+## Fork note (pingou67/nanoclaw) — patched module + maintenance
+
+On this fork the `providers` branch of **origin** carries a locally patched OpenCode module (upstream base + fork delta). Highlights of the delta:
+
+- **Per-query SSE subscription** on a refcounted shared runtime — concurrent foreground/background queries no longer steal each other's events; `abort()` targets its own opencode session only.
+- **Progress events per ToolPart** (feeds the live-status post), via the shared `summarize.ts` — also imported by the fork's patched claude provider (reliquat patch; on clean upstream, claude does not import it).
+- **`config.plugin` shim filter**: plugin names with a local shim in `/home/node/.config/opencode/plugin/<name>.js` are dropped from `config.plugin`, so opencode does not npm-install them at boot (crashes under the OneCLI proxy — upstream bug `@npmcli/agent`/Bun, anomalyco/opencode#21327). Shims are shipped by `/add-rtk` and `/add-opencode-memory`.
+- **Host contribution extras** (`src/providers/opencode.ts`): RO mount of the shared plugin dir `container/opencode-plugins` at opencode's global plugin dir, per-group env (`OPENCODE_*`, `NANOCLAW_OPENCODE_PLUGINS`), `effort` scalar fallback.
+
+Maintenance: the installed tree copy is canonical. After editing a file this skill owns, run `pnpm exec tsx scripts/skills-sync.ts sync add-opencode` to mirror it to `origin/providers`. `pnpm test` (via `scripts/skills-sync.test.ts`) fails on any drift between tree, branch, barrels, dep pins and Dockerfile lines — the manifest is `skill-sync.json` in this directory.

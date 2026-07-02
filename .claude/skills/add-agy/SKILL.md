@@ -18,18 +18,60 @@ in the bind-mounted agent-runner tree.
 
 ## Install
 
-### Pre-flight
+### Pre-flight (idempotent)
 
-The provider source ships in trunk. If all of the following are present, skip
-to **Host auth**:
+If all of the following are present, skip to **Host auth**:
 
 - `src/providers/agy.ts`
 - `container/agent-runner/src/providers/agy.ts`
 - `import './agy.js';` in `src/providers/index.ts` and `container/agent-runner/src/providers/index.ts`
-- `src/providers/agy-registration.test.ts` + the two container test guards
+- `src/providers/agy-registration.test.ts` + the container guards
+  (`agy-registration.test.ts`, `agy.factory.test.ts`, `agy.memory.test.ts`)
+- `docs/agy-provider.md`
 
-Missing — copy them in from this repo's history (`git show <ref>:<path>`) and
-re-append the barrel import lines (idempotent).
+Missing pieces — continue below. Every step is safe to re-run.
+
+### 1. Fetch the providers branch
+
+The module lives on the `providers` branch of **this fork's origin**
+(pingou67/nanoclaw) — upstream has no agy provider.
+
+```bash
+git fetch origin providers
+```
+
+### 2. Copy the provider files (wholesale, skill-owned)
+
+```bash
+git show origin/providers:src/providers/agy.ts                                        > src/providers/agy.ts
+git show origin/providers:src/providers/agy-registration.test.ts                      > src/providers/agy-registration.test.ts
+git show origin/providers:container/agent-runner/src/providers/agy.ts                 > container/agent-runner/src/providers/agy.ts
+git show origin/providers:container/agent-runner/src/providers/agy-registration.test.ts > container/agent-runner/src/providers/agy-registration.test.ts
+git show origin/providers:container/agent-runner/src/providers/agy.factory.test.ts    > container/agent-runner/src/providers/agy.factory.test.ts
+git show origin/providers:container/agent-runner/src/providers/agy.memory.test.ts     > container/agent-runner/src/providers/agy.memory.test.ts
+git show origin/providers:docs/agy-provider.md                                        > docs/agy-provider.md
+```
+
+### 3. Append the self-registration imports
+
+One line at the end of each barrel — skip if already present.
+
+`src/providers/index.ts` and `container/agent-runner/src/providers/index.ts`:
+
+```typescript
+import './agy.js';
+```
+
+No dependency and no Dockerfile edit: the CLI binary is mounted from the
+host by the host contribution, and the provider source ships in the
+bind-mounted agent-runner tree.
+
+### Maintenance (fork model)
+
+The installed tree copy is canonical. After editing a file this skill owns,
+mirror it to the branch: `pnpm exec tsx scripts/skills-sync.ts sync add-agy`.
+`pnpm test` (via `scripts/skills-sync.test.ts`) goes red on tree↔branch drift or
+a deleted barrel line — the manifest is `skill-sync.json` in this directory.
 
 ### Host auth (the non-trivial part)
 
