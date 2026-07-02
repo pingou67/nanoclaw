@@ -1,0 +1,15 @@
+#!/bin/sh
+# rtk shim — intercepte aws au niveau shell (agy n'a pas de hook de réécriture).
+# Garde anti-récursion : quand rtk relance aws, on retire le dossier shims du
+# PATH et on exec le vrai binaire.
+if [ -n "$RTK_SHIM_GUARD" ]; then
+  PATH="${PATH#/opt/rtk-shims:}"
+  export PATH
+  exec aws "$@"
+fi
+if ! command -v /usr/local/bin/rtk >/dev/null 2>&1; then
+  PATH="${PATH#/opt/rtk-shims:}"
+  export PATH
+  exec aws "$@"
+fi
+RTK_SHIM_GUARD=1 exec /usr/local/bin/rtk aws "$@"

@@ -1,0 +1,15 @@
+#!/bin/sh
+# rtk shim — intercepte npx au niveau shell (agy n'a pas de hook de réécriture).
+# Garde anti-récursion : quand rtk relance npx, on retire le dossier shims du
+# PATH et on exec le vrai binaire.
+if [ -n "$RTK_SHIM_GUARD" ]; then
+  PATH="${PATH#/opt/rtk-shims:}"
+  export PATH
+  exec npx "$@"
+fi
+if ! command -v /usr/local/bin/rtk >/dev/null 2>&1; then
+  PATH="${PATH#/opt/rtk-shims:}"
+  export PATH
+  exec npx "$@"
+fi
+RTK_SHIM_GUARD=1 exec /usr/local/bin/rtk npx "$@"

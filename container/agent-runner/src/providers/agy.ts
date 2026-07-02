@@ -183,6 +183,15 @@ export class AgyProvider implements AgentProvider {
           spawnEnv = { ...process.env, HOME: fakeHome };
         }
 
+        // rtk PATH shims — Antigravity's PreToolUse hook is decision-only
+        // (allow/deny/ask, no tool-input rewrite), so rtk interception happens
+        // at the shell level instead: /opt/rtk-shims shadows git/docker/… and
+        // execs `rtk <cmd>` with a recursion guard. Prepend only for the agy
+        // process tree so the rest of the agent-runner keeps a clean PATH.
+        if (fs.existsSync('/opt/rtk-shims')) {
+          spawnEnv = { ...spawnEnv, PATH: `/opt/rtk-shims:${spawnEnv.PATH ?? process.env.PATH ?? ''}` };
+        }
+
         // Declared BEFORE the spawn so the 'error' listener below never hits
         // a temporal-dead-zone reference (spawn errors can fire during the
         // awaits of the session-id resolution block).

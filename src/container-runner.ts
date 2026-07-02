@@ -393,6 +393,14 @@ export function buildMounts(
   const rtkBin = path.join(os.homedir(), '.local', 'bin', 'rtk');
   if (fs.existsSync(rtkBin)) {
     mounts.push({ hostPath: rtkBin, containerPath: '/usr/local/bin/rtk', readonly: true });
+
+    // PATH shims for providers without a tool-input-rewrite hook (agy —
+    // Antigravity's PreToolUse is decision-only). Mounted everywhere; only
+    // takes effect where a provider prepends /opt/rtk-shims to its PATH.
+    const rtkShims = path.join(projectRoot, 'container', 'rtk-shims');
+    if (fs.existsSync(rtkShims)) {
+      mounts.push({ hostPath: rtkShims, containerPath: '/opt/rtk-shims', readonly: true });
+    }
   }
 
   // Additional mounts from container config
