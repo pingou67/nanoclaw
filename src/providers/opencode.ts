@@ -94,8 +94,18 @@ registerProviderContainerConfig('opencode', (ctx) => {
   const plugins = ctx.groupEnv.NANOCLAW_OPENCODE_PLUGINS ?? ctx.hostEnv.NANOCLAW_OPENCODE_PLUGINS;
   if (plugins) env.NANOCLAW_OPENCODE_PLUGINS = plugins;
 
+  // Shared opencode plugins (e.g. the rtk token-compression rewrite) — mounted
+  // RO at opencode's GLOBAL plugin dir (~/.config/opencode/plugin with the
+  // container HOME=/home/node and XDG_CONFIG_HOME unset), so they load for
+  // every session regardless of the server cwd.
+  const mounts = [{ hostPath: opencodeDir, containerPath: '/opencode-xdg', readonly: false }];
+  const sharedPluginDir = path.join(process.cwd(), 'container', 'opencode-plugins');
+  if (fs.existsSync(sharedPluginDir)) {
+    mounts.push({ hostPath: sharedPluginDir, containerPath: '/home/node/.config/opencode/plugin', readonly: true });
+  }
+
   return {
-    mounts: [{ hostPath: opencodeDir, containerPath: '/opencode-xdg', readonly: false }],
+    mounts,
     env,
   };
 });

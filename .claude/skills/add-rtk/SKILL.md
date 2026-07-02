@@ -1,143 +1,45 @@
 ---
 name: add-rtk
-description: Install rtk token-compression proxy into agent containers. Routes Bash tool calls through rtk for 60–90% token savings on dev commands (git, cargo, pytest, docker, kubectl, etc.).
+description: Install rtk token-compression proxy into agent containers. Routes Bash tool calls through rtk for 60–90% token savings on dev commands (git, cargo, pytest, docker, kubectl, etc.). Works for all providers (claude hook, opencode plugin, agy/codex instructions).
 ---
 
 # Add rtk
 
-Install [rtk](https://github.com/rtk-ai/rtk) — a CLI proxy delivering 60–90% token savings on common dev commands (git, cargo, pytest, docker, kubectl, etc.) — and wire it transparently into agent containers via the Claude Code `PreToolUse` hook.
+Install [rtk](https://github.com/rtk-ai/rtk) — a CLI proxy delivering 60–90% token savings on common dev commands (git, cargo, pytest, docker, kubectl, etc.) — and wire it transparently into every agent container, whatever the provider.
 
-## What this sets up
+> **Note (2026-07-02)** — This install already has rtk fully wired (all providers + auto-update timer). This skill documents the architecture; re-run individual steps only to repair or extend.
 
-- `rtk` binary at `~/.local/bin/rtk` on the host
-- `~/.local/bin/rtk` mounted read-only at `/usr/local/bin/rtk` inside the target agent group's containers
-- `PreToolUse` hook in the agent group's `settings.json` so every Bash call is automatically filtered through rtk — no CLAUDE.md instructions needed
+## Architecture
 
-## Step 1 — Install rtk on the host
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
-```
-
-If the script put the binary elsewhere, move it:
-
-```bash
-find ~/.local ~/.cargo/bin ~/bin -name rtk 2>/dev/null
-mv "$(which rtk 2>/dev/null)" ~/.local/bin/rtk
-```
-
-Verify:
-
-```bash
-~/.local/bin/rtk --version
-chmod +x ~/.local/bin/rtk   # if needed
-```
-
-## Step 2 — Identify the target agent group
-
-```bash
-ncl groups list
-```
-
-Note the group ID (e.g. `ag-1776342942165-ptgddd`). Repeat Steps 3–5 for each group.
-
-## Step 3 — Mount rtk into the container config
-
-`additional_mounts` is a JSON array column on `container_configs`. Read the current value, merge in the rtk entry, and write the merged array back.
-
-Read current mounts first:
-
-```bash
-pnpm exec tsx scripts/q.ts data/v2.db \
-  "SELECT additional_mounts FROM container_configs WHERE agent_group_id = '<group-id>'"
-```
-
-Build the merged array: keep every existing entry, drop any entry whose `containerPath` is `/usr/local/bin/rtk` (so re-running replaces rather than duplicates), then add the rtk entry:
-
-```json
-{"hostPath":"/home/<user>/.local/bin/rtk","containerPath":"/usr/local/bin/rtk","readonly":true}
-```
-
-Write the merged array back:
-
-```bash
-pnpm exec tsx scripts/q.ts data/v2.db \
-  "UPDATE container_configs SET additional_mounts = '<merged-json>' WHERE agent_group_id = '<group-id>'"
-```
-
-Verify:
-
-```bash
-pnpm exec tsx scripts/q.ts data/v2.db \
-  "SELECT additional_mounts FROM container_configs WHERE agent_group_id = '<group-id>'"
-```
-
-## Step 4 — Add the PreToolUse hook to settings.json
-
-Each agent group has a `settings.json` at:
-
-```
-data/v2-sessions/<group-id>/.claude-shared/settings.json
-```
-
-This file is mounted at `/home/node/.claude/settings.json` inside the container and is read by Claude Code for hooks, env, and model config.
-
-Add the `PreToolUse` entry with `jq`. This drops any existing rtk Bash hook first, then appends a fresh one, so it is safe to re-run without creating duplicates:
-
-```bash
-SETTINGS="data/v2-sessions/<group-id>/.claude-shared/settings.json"
-
-jq '.hooks.PreToolUse = ((.hooks.PreToolUse // [])
-      | map(select((.hooks // []) | any(.command == "rtk hook claude") | not)))
-    + [{"matcher":"Bash","hooks":[{"type":"command","command":"rtk hook claude"}]}]' \
-  "$SETTINGS" > /tmp/rtk-settings.json && mv /tmp/rtk-settings.json "$SETTINGS"
-```
-
-## Step 5 — Restart the container
-
-```bash
-ncl groups restart --id <group-id>
-```
+- **Binary**: the official **musl static build** from GitHub releases lives at `~/.local/bin/rtk`. Do NOT copy a brew/linuxbrew binary there — it links against `/home/linuxbrew/...` libs that don't exist in the container image.
+- **Mount**: `src/container-runner.ts` mounts `~/.local/bin/rtk` RO at `/usr/local/bin/rtk` in EVERY container when the host file exists (global, provider-agnostic — same pattern as the OAuth credential mount). Do not use `additional_mounts` for this: `validateAdditionalMounts` rejects absolute containerPaths (everything lands under `/workspace/extra/`, off the PATH).
+- **Per-provider wiring**:
+  - **claude** — `PreToolUse` hook (`rtk hook claude`, matcher `Bash`) in each group's `data/v2-sessions/<gid>/.claude-shared/settings.json`. Merged, never clobbering existing hooks (PreCompact etc.).
+  - **opencode** — shared plugin `container/opencode-plugins/rtk.js`, mounted RO at `/home/node/.config/opencode/plugin` (opencode's global plugin dir) by the host provider contribution in `src/providers/opencode.ts`. The plugin shells the command through `rtk hook claude` and rewrites `output.args.command`. Note: rtk's stats land under `XDG_DATA_HOME=/opencode-xdg/rtk/` in these containers.
+  - **agy / codex** — no pre-tool hook mechanism; instruction-based. Add a short section to the group's memory/instructions file telling the model to prefix dev commands with `rtk ` (for agy: `CLAUDE.local.md`, read via the `.agents/AGENTS.md` symlink).
+- **Updates**: systemd user timer `nanoclaw-rtk-update.timer` (daily 09:15) runs `~/.nanoclaw-rtk-update/check.sh`: compares installed version to the latest GitHub release, downloads the musl build, verifies sha256 against `checksums.txt`, replaces the binary atomically, and notifies the Mattermost DM (reuses `~/.nanoclaw-upstream-watch/post.js`). Running containers keep the old inode; every new spawn gets the new version. `FORCE=1` to test a full cycle.
 
 ## Verify
 
-Confirm the binary is executable inside the container so a missing or non-executable mount surfaces immediately rather than as a silent hook failure:
-
 ```bash
-docker exec "$(docker ps --filter "name=<group-id>" --format '{{.Names}}' | head -1)" rtk --version
-```
+# Binary + hook inside a running container
+docker exec <container> rtk --version
+docker exec <container> sh -c 'echo "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git log\"}}" | rtk hook claude'
 
-Then ask the agent to run `git status` or any other supported command. rtk intercepts it silently. Check savings with:
+# Claude group: hook present?
+jq '.hooks.PreToolUse' data/v2-sessions/<gid>/.claude-shared/settings.json
 
-```bash
-~/.local/bin/rtk gain
+# OpenCode: plugin loaded? (look for "loading plugin ... rtk.js")
+grep -i plugin data/v2-sessions/<gid>/<sid>/opencode-xdg/opencode/log/*.log
+
+# Update timer
+systemctl --user list-timers nanoclaw-rtk-update.timer
+tail ~/.nanoclaw-rtk-update/update.log
 ```
 
 ## Troubleshooting
 
-### `rtk: command not found` inside the container
-
-Mount wasn't applied or container wasn't restarted:
-
-```bash
-pnpm exec tsx scripts/q.ts data/v2.db \
-  "SELECT additional_mounts FROM container_configs WHERE agent_group_id = '<group-id>'"
-# Look for entry with /usr/local/bin/rtk
-ncl groups restart --id <group-id>
-```
-
-### Hook not firing
-
-Verify the hook is in `settings.json`:
-
-```bash
-jq '.hooks.PreToolUse' data/v2-sessions/<group-id>/.claude-shared/settings.json
-```
-
-If missing, re-run Step 4.
-
-### Binary won't execute — permission denied
-
-```bash
-chmod +x ~/.local/bin/rtk
-```
+- **`rtk: command not found` in container** — `~/.local/bin/rtk` missing on host, or host not restarted since the container-runner patch. Check `docker inspect <container>` for the `/usr/local/bin/rtk` mount.
+- **Binary won't run in container (`no such file or directory` on exec)** — wrong build (brew/glibc-linuxbrew). Reinstall the `rtk-x86_64-unknown-linux-musl.tar.gz` release build to `~/.local/bin/rtk`.
+- **Claude hook not firing** — re-add the PreToolUse entry to the group's settings.json (see Verify) and respawn the container.
+- **OpenCode commands not rewritten** — check the opencode log for plugin load errors; the plugin fails open (original command runs untouched).

@@ -386,6 +386,15 @@ export function buildMounts(
     mounts.push({ hostPath: skillsSrc, containerPath: '/app/skills', readonly: true });
   }
 
+  // rtk token-compression proxy — mounted RO on the PATH for every group,
+  // whatever the provider (claude hook, opencode plugin, agy/codex par
+  // instructions). Present only if the host has the container-grade (musl)
+  // binary at ~/.local/bin/rtk, kept current by the nanoclaw-rtk-update timer.
+  const rtkBin = path.join(os.homedir(), '.local', 'bin', 'rtk');
+  if (fs.existsSync(rtkBin)) {
+    mounts.push({ hostPath: rtkBin, containerPath: '/usr/local/bin/rtk', readonly: true });
+  }
+
   // Additional mounts from container config
   if (containerConfig.additionalMounts && containerConfig.additionalMounts.length > 0) {
     const validated = validateAdditionalMounts(containerConfig.additionalMounts, agentGroup.name);
