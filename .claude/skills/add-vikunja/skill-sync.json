@@ -1,0 +1,8 @@
+{
+  "installedMarker": "container/agent-runner/src/mcp-servers/vikunja/server.ts",
+  "resources": [
+    { "from": "resources/server.ts", "to": "container/agent-runner/src/mcp-servers/vikunja/server.ts" },
+    { "from": "resources/test-live.ts", "to": "container/agent-runner/src/mcp-servers/vikunja/test-live.ts" },
+    { "from": "resources/mcp-servers-README.md", "to": "container/agent-runner/src/mcp-servers/README.md" }
+  ]
+}

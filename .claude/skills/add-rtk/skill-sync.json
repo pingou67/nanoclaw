@@ -1,0 +1,4 @@
+{
+  "installedMarker": "container/opencode-plugins/rtk.js",
+  "resources": [{ "from": "resources/rtk.js", "to": "container/opencode-plugins/rtk.js" }]
+}

@@ -1,0 +1,17 @@
+{
+  "installedMarker": "src/providers/agy.ts",
+  "branch": "providers",
+  "branchPaths": [
+    "container/agent-runner/src/providers/agy.ts",
+    "container/agent-runner/src/providers/agy.factory.test.ts",
+    "container/agent-runner/src/providers/agy.memory.test.ts",
+    "container/agent-runner/src/providers/agy-registration.test.ts",
+    "src/providers/agy.ts",
+    "src/providers/agy-registration.test.ts",
+    "docs/agy-provider.md"
+  ],
+  "requiredLines": [
+    { "file": "src/providers/index.ts", "contains": "import './agy.js';" },
+    { "file": "container/agent-runner/src/providers/index.ts", "contains": "import './agy.js';" }
+  ]
+}

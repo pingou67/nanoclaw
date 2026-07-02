@@ -1,0 +1,26 @@
+{
+  "installedMarker": "src/providers/opencode.ts",
+  "branch": "providers",
+  "branchPaths": [
+    "container/agent-runner/src/providers/opencode.ts",
+    "container/agent-runner/src/providers/mcp-to-opencode.ts",
+    "container/agent-runner/src/providers/mcp-to-opencode.test.ts",
+    "container/agent-runner/src/providers/opencode.factory.test.ts",
+    "container/agent-runner/src/providers/opencode-registration.test.ts",
+    "container/agent-runner/src/providers/opencode.plugins.test.ts",
+    "container/agent-runner/src/providers/opencode.timeout.test.ts",
+    "container/agent-runner/src/providers/opencode.tool-progress.test.ts",
+    "container/agent-runner/src/providers/summarize.ts",
+    "container/agent-runner/src/providers/summarize.test.ts",
+    "src/providers/opencode.ts",
+    "src/providers/opencode-registration.test.ts",
+    "src/opencode-dockerfile.test.ts"
+  ],
+  "requiredLines": [
+    { "file": "src/providers/index.ts", "contains": "import './opencode.js';" },
+    { "file": "container/agent-runner/src/providers/index.ts", "contains": "import './opencode.js';" },
+    { "file": "container/agent-runner/package.json", "contains": "\"@opencode-ai/sdk\":" },
+    { "file": "container/Dockerfile", "contains": "ARG OPENCODE_VERSION" },
+    { "file": "container/Dockerfile", "contains": "opencode-ai@${OPENCODE_VERSION}" }
+  ]
+}

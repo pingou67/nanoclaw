@@ -1,0 +1,7 @@
+{
+  "installedMarker": "container/opencode-plugins/opencode-claude-memory.js",
+  "resources": [
+    { "from": "resources/opencode-claude-memory.js", "to": "container/opencode-plugins/opencode-claude-memory.js" }
+  ],
+  "requiredLines": [{ "file": "container/cli-tools.json", "contains": "opencode-claude-memory" }]
+}

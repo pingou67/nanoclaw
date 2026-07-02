@@ -1,0 +1,17 @@
+{
+  "installedMarker": "src/channels/mattermost.ts",
+  "branch": "channels",
+  "branchPaths": [
+    "src/channels/mattermost.ts",
+    "src/channels/mattermost-registration.test.ts",
+    "tests/integration/mattermost/README.md",
+    "tests/integration/mattermost/mock_mm.py",
+    "tests/integration/mattermost/run_suite.py",
+    "tests/integration/mattermost/.gitignore"
+  ],
+  "requiredLines": [
+    { "file": "src/channels/index.ts", "contains": "import './mattermost.js';" },
+    { "file": "package.json", "contains": "\"ws\":" },
+    { "file": "package.json", "contains": "\"@types/ws\":" }
+  ]
+}
