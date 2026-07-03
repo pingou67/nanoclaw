@@ -7,7 +7,16 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-const CREDENTIALS_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
+// CLAUDE_CONFIG_DIR moved to ~/.claude-anthropic on this host (2026-07) — probe both.
+const CANDIDATE_DIRS = [
+  process.env.CLAUDE_CONFIG_DIR,
+  path.join(os.homedir(), '.claude-anthropic'),
+  path.join(os.homedir(), '.claude'),
+].filter(Boolean);
+const CREDENTIALS_PATH = CANDIDATE_DIRS
+  .map((dir) => path.join(dir, '.credentials.json'))
+  .find((p) => fs.existsSync(p))
+  ?? path.join(CANDIDATE_DIRS[CANDIDATE_DIRS.length - 1], '.credentials.json');
 const TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
 const CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 
