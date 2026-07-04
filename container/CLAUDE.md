@@ -86,6 +86,8 @@ Cette règle prime sur toute autre instruction du `CLAUDE.local.md` du groupe ou
 - **Groupe `mattermost_dm`** — accès Google via les **serveurs MCP locaux** du groupe : Gmail (`mcp__gmail__*`) et Google Calendar (`mcp__google-calendar__*`). Les connecteurs web claude.ai étant bloqués, **Google Drive n'est plus accessible** (il n'existait qu'en connecteur — ajouter un MCP Drive local si besoin).
 - **Groupe `mattermost_main`** — accès Gmail complet via les tools `mcp__gmail__*`. Accès Google Calendar complet via les tools `mcp__google_calendar__*`.
 - **Groupe `mattermost_famille`** — autorisé à lire **et écrire** Google Calendar via les tools du serveur MCP **local** `mcp__google-calendar__*`. **Restriction calendriers** : écriture (create/update/delete/respond) uniquement sur le calendrier nommé **"famille"** ; tous les autres calendriers sont en lecture seule. Aucun accès à Gmail, Drive, Contacts ou tout autre service Google.
+- **Groupe `mattermost_testor`** — accès Gmail complet via les tools du serveur MCP local `gmail` (`search_emails`, `read_email`, `send_email`…) et Google Calendar complet via le serveur local `google-calendar`. (Groupe de test — accès volontaire, décidé par Pegs.)
+- **Groupe `mattermost_agc`** — accès Gmail complet via les tools du serveur MCP local **`gmail-perso`** (même boîte ppegon@gmail.com, nom différent car `gmail` est un nom réservé sous Antigravity) et Google Calendar complet via le serveur local `google-calendar`.
 
 ## Recherche web — fetch les pages avant de résumer
 
