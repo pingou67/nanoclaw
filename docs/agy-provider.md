@@ -98,6 +98,18 @@ probes on the host: `agy plugin list`, `agy plugin import gemini`,
 > to its MCP handshake from a throwaway container with that mount. Warm
 > startup is ~2 s.
 
+> ⚠️ **MCP servers run with cwd = the group dir** (`/workspace/agent`). Any
+> server that probes its *current directory* at startup can break protocol —
+> e.g. `@gongrzhe/server-gmail-autoauth-mcp` prints
+> `OAuth keys found in current directory, copied to global config.` on
+> **stdout** when `gcp-oauth.keys.json` sits in the cwd, which corrupts the
+> MCP handshake (`calling "initialize": invalid character 'O'`). Keep
+> credential files in a **subdirectory** of the group dir (e.g.
+> `google-oauth/`) and point the server's env at the full paths — the cwd
+> probe only checks the directory root. Debugging tip: reproduce with the
+> same cwd as prod; the failure is invisible when testing from another
+> directory.
+
 ## Per-container MCP isolation
 
 `~/.gemini` is a **shared host mount** — every agy group's container mounts the
