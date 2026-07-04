@@ -77,6 +77,14 @@ probes on the host: `agy plugin list`, `agy plugin import gemini`,
 > (`echo` → `Echo: <msg>`, or `imap_list_folders` → real folders), never by
 > asking "do you have tool X".
 
+> ⚠️ **Reserved server names**: Antigravity silently skips an MCP server named
+> `gmail` — the import succeeds, no error is logged, but the server is never
+> launched (no `<HOME>/.gemini/antigravity-cli/mcp/gmail/` schema-cache dir
+> appears) and its tools never reach the model. Presumably a collision with
+> Antigravity's built-in Google integrations. Rename the key (e.g.
+> `gmail-perso`) and it works. Observed on agy 2026-07; if a server's tools
+> are mysteriously absent, check the `mcp/<name>/` cache dir and try renaming.
+
 ## Per-container MCP isolation
 
 `~/.gemini` is a **shared host mount** — every agy group's container mounts the
