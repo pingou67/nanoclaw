@@ -85,6 +85,19 @@ probes on the host: `agy plugin list`, `agy plugin import gemini`,
 > `gmail-perso`) and it works. Observed on agy 2026-07; if a server's tools
 > are mysteriously absent, check the `mcp/<name>/` cache dir and try renaming.
 
+> ⚠️ **npx servers vs the MCP startup timeout**: agy's per-server startup
+> window is short (≈10 s). An `npx -y <pkg>` server whose package must be
+> downloaded cold (fresh container, empty npx cache — heavy deps like
+> `googleapis` take >10 s through the proxy) gets marked
+> `server name <x> failed to load`, with whatever it printed on stderr quoted
+> as the "error" (typically the harmless UNDICI proxy warning). The npx cache
+> defaults to the agy fake HOME in container `/tmp` — wiped at every respawn,
+> so the failure recurs. Fix: point the cache at a persisted mount in the
+> server's env, e.g. `"npm_config_cache": "/home/node/.claude/.npm-cache"`
+> (the group's `.claude-shared`), and pre-warm it once by running the package
+> to its MCP handshake from a throwaway container with that mount. Warm
+> startup is ~2 s.
+
 ## Per-container MCP isolation
 
 `~/.gemini` is a **shared host mount** — every agy group's container mounts the
