@@ -1,6 +1,6 @@
 ---
 name: add-opencode-memory
-description: Add persistent Claude Code-compatible memory to OpenCode agent groups via the opencode-claude-memory plugin (memory_save/list/search/read/delete tools). Loaded through a local shim — no runtime npm install, works behind the OneCLI proxy. Requires /add-opencode.
+description: Add persistent Claude Code-compatible memory to agent groups — opencode groups via the opencode-claude-memory plugin (local shim, no runtime npm install, works behind the OneCLI proxy; requires /add-opencode), other providers (agy, claude) via a bundled stdio MCP server exposing the same memory_* tools on the same Markdown store.
 ---
 
 # Add opencode-claude-memory
@@ -57,6 +57,54 @@ ncl groups restart --id <agent-group-id>
 
 Memories persist on the host under `data/v2-sessions/<gid>/.claude-shared/projects/-workspace-group/memory/` — they survive container respawns and are Claude Code-format compatible (useful for provider switches, see `/migrate-memory`).
 
+## Variant for non-opencode providers (agy, claude) — MCP server
+
+The opencode plugin mechanism only exists for the opencode provider. For any
+other provider, the same memory store is exposed through a bundled **stdio MCP
+server** (`memory_index/list/read/search/save/delete` tools, same file format,
+same limits — a group can even switch providers and keep its memories).
+
+### Install
+
+```bash
+mkdir -p container/agent-runner/src/mcp-servers/memory
+cp .claude/skills/add-opencode-memory/resources/memory-mcp-server.ts \
+   container/agent-runner/src/mcp-servers/memory/server.ts
+```
+
+No rebuild: the server runs with bun from the bind-mounted agent-runner tree
+and resolves `@modelcontextprotocol/sdk` + `zod` from `/app/node_modules`
+(both are existing agent-runner deps).
+
+### Enable per group
+
+Add the MCP entry (via `ncl groups config add-mcp-server` or SQL `json_patch`):
+
+```json
+{"memory": {"command": "bun", "args": ["run", "/app/src/mcp-servers/memory/server.ts"],
+ "env": {"MEMORY_DIR": "/home/node/.claude/projects/-workspace-group/memory"}}}
+```
+
+`MEMORY_DIR` points into the group's `.claude-shared` mount — the exact
+directory the opencode plugin uses, so both variants share one store. Then
+`ncl groups restart --id <gid>`.
+
+**agy caveat**: Antigravity strips the nanoclaw-only `instructions` key from
+extensions, so tell the agent about the tools in the group's `CLAUDE.local.md`
+(consult `memory_index` at conversation start, save durable facts with
+`memory_save`).
+
+### Validate
+
+Ask the group's agent to call `memory_index` (empty store on first run), then
+to save + re-read a note. Files land on the host under
+`data/v2-sessions/<gid>/.claude-shared/projects/-workspace-group/memory/`.
+
 ## Maintenance (fork model)
 
-Canonical payload: `resources/opencode-claude-memory.js` here, mirrored from the installed copy with `pnpm exec tsx scripts/skills-sync.ts sync add-opencode-memory`. Manifest: `skill-sync.json`.
+Canonical payloads: `resources/opencode-claude-memory.js` (mirror of
+`container/opencode-plugins/opencode-claude-memory.js`) and
+`resources/memory-mcp-server.ts` (mirror of
+`container/agent-runner/src/mcp-servers/memory/server.ts`), refreshed with
+`pnpm exec tsx scripts/skills-sync.ts sync add-opencode-memory`. Manifest:
+`skill-sync.json`.
