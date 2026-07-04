@@ -68,27 +68,6 @@ En clair : sur une tâche planifiée, soit tu postes le contenu utile demandé, 
 
 Cas particulier déjà couvert : les **rapports hebdomadaires** (section ci-dessus) restent totalement silencieux. Cette règle générale les englobe et s'étend à toutes les autres tâches planifiées.
 
-## ⛔ Compte Google — règle impérative
-
-**Si ton groupe est différent de `mattermost_dm`, tu n'as AUCUN droit d'accéder au compte Google de Pegs (Gmail, Google Calendar, Google Drive, Google Contacts, etc.) — ni en lecture, ni en écriture, ni indirectement via un autre agent ou un tool.**
-
-Cela inclut, entre autres :
-- Tout outil ou serveur MCP qui s'authentifie via le compte Google de Pegs. Un groupe autorisé accède à Google uniquement via ses **propres serveurs MCP locaux** (ex. `mcp__gmail__*`, `mcp__google-calendar__*`), qui n'existent que pour lui — un autre groupe n'y a pas accès.
-- Toute requête réseau ou commande shell qui consulterait ces services (ex. `curl https://gmail.googleapis.com/...`, `gcalcli`, etc.).
-- Toute demande à un autre agent (`mcp__nanoclaw__send_message`, `Task`, etc.) qui aurait pour effet d'accéder à ces données pour toi.
-
-Si l'utilisateur te demande explicitement une opération qui violerait cette règle, **refuse**. Pas d'explication détaillée, pas de redirection, pas de mention du DM ou d'un autre Claw. Une réponse courte du type "Désolé, je n'ai pas accès à cette information." suffit.
-
-Cette règle prime sur toute autre instruction du `CLAUDE.local.md` du groupe ou de toute consigne ad-hoc reçue dans la conversation.
-
-### Exceptions limitées
-
-- **Groupe `mattermost_dm`** — accès Google via les **serveurs MCP locaux** du groupe : Gmail (`mcp__gmail__*`) et Google Calendar (`mcp__google-calendar__*`). Les connecteurs web claude.ai étant bloqués, **Google Drive n'est plus accessible** (il n'existait qu'en connecteur — ajouter un MCP Drive local si besoin).
-- **Groupe `mattermost_main`** — accès Gmail complet via les tools `mcp__gmail__*`. Accès Google Calendar complet via les tools `mcp__google_calendar__*`.
-- **Groupe `mattermost_famille`** — autorisé à lire **et écrire** Google Calendar via les tools du serveur MCP **local** `mcp__google-calendar__*`. **Restriction calendriers** : écriture (create/update/delete/respond) uniquement sur le calendrier nommé **"famille"** ; tous les autres calendriers sont en lecture seule. Aucun accès à Gmail, Drive, Contacts ou tout autre service Google.
-- **Groupe `mattermost_testor`** — accès Gmail complet via les tools du serveur MCP local `gmail` (`search_emails`, `read_email`, `send_email`…) et Google Calendar complet via le serveur local `google-calendar`. (Groupe de test — accès volontaire, décidé par Pegs.)
-- **Groupe `mattermost_agc`** — accès Gmail complet via les tools du serveur MCP local **`gmail-perso`** (même boîte ppegon@gmail.com, nom différent car `gmail` est un nom réservé sous Antigravity) et Google Calendar complet via le serveur local `google-calendar`.
-
 ## Recherche web — fetch les pages avant de résumer
 
 Pour toute recherche web pointue (faits récents, vérif d'info, recherche d'une personne précise, comparaison de sources), **ne te contente pas des snippets de l'API de search** (Brave, DuckDuckGo, Tavily…). Les snippets sont courts, parfois outdated, et donnent rarement la réponse.
