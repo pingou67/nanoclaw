@@ -59,12 +59,24 @@ export function findClaudeCredentials(): string | null {
 export function classifyClaudeExpiry(expiresAt: number, now: number): HealthCheck {
   const minLeft = Math.round((expiresAt - now) / 60_000);
   if (minLeft <= 0) {
-    return { name: 'claude-oauth', status: 'error', detail: `token expiré depuis ${-minLeft} min — les containers Claude vont répondre 401` };
+    return {
+      name: 'claude-oauth',
+      status: 'error',
+      detail: `token expiré depuis ${-minLeft} min — les containers Claude vont répondre 401`,
+    };
   }
   if (minLeft < 90) {
-    return { name: 'claude-oauth', status: 'warn', detail: `token expire dans ${minLeft} min — le timer claude-token-refresh doit tourner avant` };
+    return {
+      name: 'claude-oauth',
+      status: 'warn',
+      detail: `token expire dans ${minLeft} min — le timer claude-token-refresh doit tourner avant`,
+    };
   }
-  return { name: 'claude-oauth', status: 'ok', detail: `token valide ${Math.round(minLeft / 60)} h ${minLeft % 60} min` };
+  return {
+    name: 'claude-oauth',
+    status: 'ok',
+    detail: `token valide ${Math.round(minLeft / 60)} h ${minLeft % 60} min`,
+  };
 }
 
 function checkClaudeOauth(): HealthCheck {
@@ -108,7 +120,11 @@ function checkTimerUnit(unit: string): Promise<HealthCheck> {
         if (result === 'success' || result === '') {
           resolve({ name: `timer:${unit}`, status: 'ok', detail: `dernier run OK (${lastRun})` });
         } else {
-          resolve({ name: `timer:${unit}`, status: 'error', detail: `dernier run: ${result} (exit=${props['ExecMainStatus'] ?? '?'}, ${lastRun})` });
+          resolve({
+            name: `timer:${unit}`,
+            status: 'error',
+            detail: `dernier run: ${result} (exit=${props['ExecMainStatus'] ?? '?'}, ${lastRun})`,
+          });
         }
       },
     );
@@ -130,7 +146,11 @@ function checkOneCli(): Promise<HealthCheck> {
       resolve({ name: 'onecli-ui', status: 'warn', detail: 'timeout sur 127.0.0.1:10254' });
     });
     req.on('error', (err) => {
-      resolve({ name: 'onecli-ui', status: 'error', detail: `injoignable: ${(err as NodeJS.ErrnoException).code ?? err.message}` });
+      resolve({
+        name: 'onecli-ui',
+        status: 'error',
+        detail: `injoignable: ${(err as NodeJS.ErrnoException).code ?? err.message}`,
+      });
     });
   });
 }
@@ -179,7 +199,11 @@ function checkMcpCredentialFiles(): HealthCheck[] {
     checks.push(
       fs.existsSync(agyToken)
         ? { name: 'agy-oauth', status: 'ok', detail: 'token Antigravity présent' }
-        : { name: 'agy-oauth', status: 'error', detail: `token Antigravity absent (${agyToken}) — les groupes agy ne peuvent pas s'authentifier` },
+        : {
+            name: 'agy-oauth',
+            status: 'error',
+            detail: `token Antigravity absent (${agyToken}) — les groupes agy ne peuvent pas s'authentifier`,
+          },
     );
   }
   return checks;
@@ -193,7 +217,10 @@ function sumRtkDb(dbPath: string): { commands: number; saved: number } | null {
   try {
     const db = new Database(dbPath, { readonly: true, fileMustExist: true });
     try {
-      const row = db.prepare('SELECT count(*) AS n, coalesce(sum(saved_tokens),0) AS saved FROM commands').get() as { n: number; saved: number };
+      const row = db.prepare('SELECT count(*) AS n, coalesce(sum(saved_tokens),0) AS saved FROM commands').get() as {
+        n: number;
+        saved: number;
+      };
       return { commands: row.n, saved: row.saved };
     } finally {
       db.close();
@@ -275,7 +302,10 @@ export function collectSessionRuntime(): SessionRuntime[] {
       try {
         const db = new Database(outboundPath, { readonly: true, fileMustExist: true });
         try {
-          const rows = db.prepare("SELECT key, value FROM session_state").all() as Array<{ key: string; value: string }>;
+          const rows = db.prepare('SELECT key, value FROM session_state').all() as Array<{
+            key: string;
+            value: string;
+          }>;
           const state = new Map(rows.map((r) => [r.key, r.value]));
           let bgJobs: SessionRuntime['bg_jobs'] = [];
           try {
@@ -309,7 +339,12 @@ function checkE2eMarker(): HealthCheck {
   const marker = path.resolve(process.cwd(), 'logs', 'e2e-last-run.json');
   if (!fs.existsSync(marker)) return { name: 'e2e-last-run', status: 'info', detail: 'aucun run E2E enregistré' };
   try {
-    const m = JSON.parse(fs.readFileSync(marker, 'utf-8')) as { timestamp: string; passed: number; failed: number; skipped?: number };
+    const m = JSON.parse(fs.readFileSync(marker, 'utf-8')) as {
+      timestamp: string;
+      passed: number;
+      failed: number;
+      skipped?: number;
+    };
     const ageDays = Math.floor((Date.now() - Date.parse(m.timestamp)) / 86_400_000);
     const summary = `${m.passed} ✓ / ${m.failed} ✗${m.skipped ? ` / ${m.skipped} ⤼` : ''}, il y a ${ageDays} j`;
     return { name: 'e2e-last-run', status: m.failed > 0 ? 'warn' : 'ok', detail: summary };
@@ -342,6 +377,31 @@ function refreshSkillsSync(): void {
 /* Entry points                                                        */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Flag sessions whose persisted continuations don't include the group's
+ * CURRENT provider while older providers' ones linger. Benign by design
+ * (provider switching is lossless), but it's the fingerprint to look at
+ * when a switched group answers "Model not found" — the documented fix is
+ * purging the stale `continuation:<provider>` row.
+ */
+export function checkContinuationMismatches(runtimes: SessionRuntime[]): HealthCheck[] {
+  const checks: HealthCheck[] = [];
+  for (const rt of runtimes) {
+    if (rt.continuations.length === 0) continue;
+    const config = getContainerConfig(rt.agent_group_id);
+    const provider = (config?.provider ?? 'claude').toLowerCase();
+    const current = `continuation:${provider}`;
+    if (!rt.continuations.includes(current)) {
+      checks.push({
+        name: `continuation:${rt.agent_group_id}`,
+        status: 'info',
+        detail: `pas de continuation pour le provider courant (${provider}) mais ${rt.continuations.join(', ')} présente(s) — normal après un switch ; à purger si « Model not found »`,
+      });
+    }
+  }
+  return checks;
+}
+
 export async function collectHealth(): Promise<HealthCheck[]> {
   refreshSkillsSync(); // async fire-and-forget, served from cache
   const [timers, onecli] = await Promise.all([Promise.all(TIMER_UNITS.map(checkTimerUnit)), checkOneCli()]);
@@ -353,12 +413,16 @@ export async function collectHealth(): Promise<HealthCheck[]> {
     collectRtkSavings(),
     checkE2eMarker(),
     skillsSyncCache,
+    ...checkContinuationMismatches(collectSessionRuntime()),
   ];
   // The dashboard package has no API route for custom snapshot keys (and no
   // upstream PR by design), so also persist the latest result locally —
   // `cat data/health.json` gives the same view without the browser.
   try {
-    fs.writeFileSync(path.join(DATA_DIR, 'health.json'), JSON.stringify({ timestamp: new Date().toISOString(), checks }, null, 2));
+    fs.writeFileSync(
+      path.join(DATA_DIR, 'health.json'),
+      JSON.stringify({ timestamp: new Date().toISOString(), checks }, null, 2),
+    );
   } catch {
     /* best effort */
   }
