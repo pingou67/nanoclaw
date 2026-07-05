@@ -73,15 +73,25 @@ export function stopDashboardPusher(): void {
  * No-ops (and says so) when DASHBOARD_SECRET is unset.
  */
 export async function startDashboard(): Promise<void> {
-  const env = readEnvFile(['DASHBOARD_SECRET', 'DASHBOARD_PORT']);
+  const env = readEnvFile(['DASHBOARD_SECRET', 'DASHBOARD_PORT', 'DASHBOARD_WRITE_SECRET']);
   const secret = process.env.DASHBOARD_SECRET || env.DASHBOARD_SECRET;
   const port = parseInt(process.env.DASHBOARD_PORT || env.DASHBOARD_PORT || '3100', 10);
   if (!secret) {
     log.info('Dashboard disabled (no DASHBOARD_SECRET)');
     return;
   }
+  // Fork extension: bounded write actions (see src/dashboard-actions.ts).
+  // Guarded by a DEDICATED write secret — unset means the dashboard stays
+  // strictly read-only, whatever the package patch supports.
+  const writeSecret = process.env.DASHBOARD_WRITE_SECRET || env.DASHBOARD_WRITE_SECRET;
+  const { handleDashboardAction } = await import('./dashboard-actions.js');
   const { startDashboard: startServer } = await import('@nanoco/nanoclaw-dashboard');
-  startServer({ port, secret });
+  startServer({
+    port,
+    secret,
+    ...(writeSecret ? { writeSecret, onAction: handleDashboardAction } : {}),
+  } as Parameters<typeof startServer>[0]);
+  if (!writeSecret) log.info('Dashboard en lecture seule (pas de DASHBOARD_WRITE_SECRET)');
   startDashboardPusher({ port, secret, intervalMs: 60000 });
 }
 

@@ -31,6 +31,90 @@ index 326434d184af3d5496de61b07c79bca0ceff7e7f..5265f81cdb7462baa197447f2dfc5c9d
          if (path === '/dashboard/logs')
              return html(res, logsPage());
          if (path === '/') {
+diff --git a/dist/server.js b/dist/server.js
+index f616ef5adfe7763270aa56d9685c1843819202de..25b84cac3c8cef2331b97ccca67877dfbb696c10 100644
+--- a/dist/server.js
++++ b/dist/server.js
+@@ -9,12 +9,16 @@ import { dispatch } from './router.js';
+ const DEFAULT_PORT = 3100;
+ let server = null;
+ let dashboardSecret = null;
++let writeSecret = null;
++let actionHandler = null;
+ export function getDashboardSecret() {
+     return dashboardSecret;
+ }
+ export function startDashboard(config = {}) {
+     const port = config.port || DEFAULT_PORT;
+     dashboardSecret = config.secret || null;
++    writeSecret = config.writeSecret || null;
++    actionHandler = config.onAction || null;
+     if (!dashboardSecret) {
+         console.warn('[dashboard] Starting without secret — endpoints are unauthenticated');
+     }
+@@ -31,7 +35,7 @@ export function startDashboard(config = {}) {
+             return;
+         }
+         // Auth check for /api/* routes (endpoints with their own auth are excluded)
+-        const selfAuthed = ['/api/ingest', '/api/logs', '/api/logs/push'];
++        const selfAuthed = ['/api/ingest', '/api/logs', '/api/logs/push', '/api/actions'];
+         if (path.startsWith('/api/') && !selfAuthed.includes(path) && dashboardSecret) {
+             const auth = req.headers.authorization;
+             if (!auth || auth !== `Bearer ${dashboardSecret}`) {
+@@ -50,6 +54,12 @@ export function startDashboard(config = {}) {
+             await handleLogPush(req, res);
+             return;
+         }
++        // Write actions — NanoClaw fork addition, guarded by a DEDICATED
++        // write secret (never the read secret). 403 when writes are disabled.
++        if (path === '/api/actions' && method === 'POST') {
++            await handleAction(req, res);
++            return;
++        }
+         // Log SSE stream — browser connects here
+         if (path === '/api/logs' && method === 'GET') {
+             handleLogStream(req, res);
+@@ -124,6 +134,40 @@ async function handleLogPush(req, res) {
+         res.end(JSON.stringify({ error: 'Invalid JSON' }));
+     }
+ }
++async function handleAction(req, res) {
++    if (!writeSecret || !actionHandler) {
++        res.writeHead(403, { 'Content-Type': 'application/json' });
++        res.end(JSON.stringify({ ok: false, message: 'Write actions disabled (no write secret configured)' }));
++        return;
++    }
++    const auth = req.headers.authorization;
++    if (!auth || auth !== `Bearer ${writeSecret}`) {
++        res.writeHead(401, { 'Content-Type': 'application/json' });
++        res.end(JSON.stringify({ ok: false, message: 'Unauthorized (write token)' }));
++        return;
++    }
++    const chunks = [];
++    let size = 0;
++    for await (const chunk of req) {
++        size += chunk.length;
++        if (size > 4096) {
++            res.writeHead(413, { 'Content-Type': 'application/json' });
++            res.end(JSON.stringify({ ok: false, message: 'Payload too large' }));
++            return;
++        }
++        chunks.push(chunk);
++    }
++    try {
++        const data = JSON.parse(Buffer.concat(chunks).toString());
++        const result = await actionHandler(data);
++        res.writeHead(200, { 'Content-Type': 'application/json' });
++        res.end(JSON.stringify(result));
++    }
++    catch (err) {
++        res.writeHead(400, { 'Content-Type': 'application/json' });
++        res.end(JSON.stringify({ ok: false, message: 'Invalid request: ' + (err && err.message || err) }));
++    }
++}
+ function handleLogStream(req, res) {
+     // Auth check — read token from query param since SSE can't set headers
+     if (dashboardSecret) {
 diff --git a/dist/ui/layout.js b/dist/ui/layout.js
 index 36b957573fba3d5046e9b50f844aefb9fde486e8..b0f86eb262455d04f6809d095198b907cb92e9d7 100644
 --- a/dist/ui/layout.js
@@ -45,10 +129,10 @@ index 36b957573fba3d5046e9b50f844aefb9fde486e8..b0f86eb262455d04f6809d095198b907
  const CSS = `
 diff --git a/dist/ui/pages/agents.js b/dist/ui/pages/agents.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..c685c30faf018df2161616829e4d18b65722e0a6
+index 0000000000000000000000000000000000000000..f54cffa23c3e4e53383f4e0b201e2ca423c55d9c
 --- /dev/null
 +++ b/dist/ui/pages/agents.js
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,154 @@
 +/**
 + * Agents page — NanoClaw fork addition (pnpm patch, not upstream).
 + * Per-channel recap of agent characteristics: provider/model, trigger,
@@ -59,6 +143,10 @@ index 0000000000000000000000000000000000000000..c685c30faf018df2161616829e4d18b6
 +import { layout } from '../layout.js';
 +export function agentsPage() {
 +    return layout('Agents', '/dashboard/agents', `
++    <style>
++      #content button { background:#1e2a35; color:#7eb8da; border:1px solid #2a3a4a; border-radius:4px; padding:5px 8px; margin:1px; font-size:12px; cursor:pointer; }
++      #content button:hover { background:#253545; }
++    </style>
 +    <h2 class="page-title">Agents par channel</h2>
 +    <div id="summary" class="cards"><div class="loading">Loading...</div></div>
 +    <h3 class="section-title">Caractéristiques &amp; droits d'accès</h3>
@@ -86,7 +174,7 @@ index 0000000000000000000000000000000000000000..c685c30faf018df2161616829e4d18b6
 +          document.getElementById('content').innerHTML = '<div class="loading">No data yet</div>';
 +        } else {
 +          let html = '<table><tr><th>Channel</th><th>Agent group</th><th>Provider / Modèle</th>' +
-+            '<th>Déclenchement</th><th>MCP actifs</th><th>Droits d\\'accès</th></tr>';
++            '<th>Déclenchement</th><th>MCP actifs</th><th>Droits d\\'accès</th><th>Actions</th></tr>';
 +          for (const r of rows) {
 +            const provColor = r.provider === 'claude' ? 'blue' : r.provider === 'opencode' ? 'green' : r.provider === 'agy' ? 'purple' : 'gray';
 +            const mcp = (r.mcp || []).map(m => badge(m, 'gray')).join(' ') || '<span style="color:#555">-</span>';
@@ -104,6 +192,7 @@ index 0000000000000000000000000000000000000000..c685c30faf018df2161616829e4d18b6
 +              '<td style="font-size:12px;color:#888">' + esc(r.engage) + '</td>' +
 +              '<td>' + mcp + '</td>' +
 +              '<td>' + rights + '</td>' +
++              '<td style="white-space:nowrap">' + actionsCell(r) + '</td>' +
 +              '</tr>';
 +          }
 +          html += '</table>';
@@ -127,6 +216,70 @@ index 0000000000000000000000000000000000000000..c685c30faf018df2161616829e4d18b6
 +        document.getElementById('content').innerHTML = '<div class="loading">Error: ' + esc(e.message) + '</div>';
 +      }
 +    })();
++
++    // --- Write actions (bounded: effort / model / thinking / live / restart) ---
++    const EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
++    const THINKING = ['', 'adaptive', 'enabled', 'disabled', 'none'];
++    function sel(id, options, current, labelPrefix) {
++      return '<select id="' + id + '" style="margin:1px">' + options.map(o =>
++        '<option value="' + o + '"' + (o === (current || '') ? ' selected' : '') + '>' +
++        (o === '' ? labelPrefix + ': défaut' : o) + '</option>').join('') + '</select>';
++    }
++    function actionsCell(r) {
++      const k = encodeURIComponent(r.agentGroupId);
++      return sel('eff-' + k, EFFORTS, r.effort, 'effort') +
++        sel('thk-' + k, THINKING, r.thinking, 'thinking') +
++        '<input id="mdl-' + k + '" value="' + esc(r.model === '(défaut)' ? '' : r.model) + '" placeholder="modèle" style="width:110px;margin:1px;background:#1a1a1a;color:#e0e0e0;border:1px solid #2a2a2a;border-radius:4px;padding:5px">' +
++        '<button onclick="applyConfig(\'' + k + '\')">Appliquer</button>' +
++        '<button onclick="doAction(\'' + k + '\', \'restart-group\')">Restart</button>' +
++        '<button onclick="doAction(\'' + k + '\', \'toggle-live\')">Live</button>' +
++        '<span id="st-' + k + '" style="font-size:11px;color:#888;margin-left:4px"></span>';
++    }
++    function writeToken(reset) {
++      if (reset) localStorage.removeItem('dashWriteToken');
++      let t = localStorage.getItem('dashWriteToken');
++      if (!t) {
++        t = prompt('Token ÉCRITURE du dashboard (DASHBOARD_WRITE_SECRET) :') || '';
++        if (t) localStorage.setItem('dashWriteToken', t);
++      }
++      return t;
++    }
++    async function postAction(body) {
++      const t = writeToken(false);
++      if (!t) return { ok: false, message: 'pas de token écriture' };
++      const res = await fetch('/api/actions', {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + t },
++        body: JSON.stringify(body),
++      });
++      if (res.status === 401) { writeToken(true); return { ok: false, message: 'token écriture invalide (re-saisir)' }; }
++      return res.json();
++    }
++    window.doAction = async (k, action) => {
++      const gid = decodeURIComponent(k);
++      const st = document.getElementById('st-' + k);
++      st.textContent = '…';
++      const r = await postAction({ action, agentGroupId: gid });
++      st.textContent = (r.ok ? '✓ ' : '✗ ') + r.message;
++      st.style.color = r.ok ? '#4ade80' : '#f87171';
++    };
++    window.applyConfig = async (k) => {
++      const gid = decodeURIComponent(k);
++      const st = document.getElementById('st-' + k);
++      const fields = [
++        ['effort', document.getElementById('eff-' + k).value],
++        ['thinking', document.getElementById('thk-' + k).value],
++        ['model', document.getElementById('mdl-' + k).value.trim()],
++      ];
++      const msgs = [];
++      for (const [field, value] of fields) {
++        const r = await postAction({ action: 'set-config', agentGroupId: gid, field, value });
++        if (!r.ok) { msgs.push(field + ': ✗ ' + r.message); break; }
++        msgs.push(field + ' ✓');
++      }
++      st.textContent = msgs.join(' · ') + ' — restart pour appliquer';
++      st.style.color = '#facc15';
++    };
 +
 +    function cardHtml(label, value) {
 +      return '<div class="card"><div class="label">' + esc(label) + '</div><div class="value" style="font-size:20px">' + esc(String(value)) + '</div></div>';

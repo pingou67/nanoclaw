@@ -139,3 +139,14 @@ PR upstream :
   `patchedDependencies` (pnpm-workspace.yaml). ⚠ Au bump de version du
   paquet, le patch doit être re-porté (`pnpm patch @nanoco/nanoclaw-dashboard@<ver>`).
   Données servies par les clés snapshot `agents_recap`/`health` (fork).
+- **Actions d'écriture du dashboard** (2026-07-05) — sous-ensemble borné
+  piloté par `src/dashboard-actions.ts` (fork-owned, WHITELIST stricte :
+  effort/model/thinking, restart de groupe, toggle live via injection de la
+  commande `!live` en inbound — jamais env/mounts/cli_scope/rôles).
+  Gardé par un token DÉDIÉ `DASHBOARD_WRITE_SECRET` (.env, non commité) —
+  absent = dashboard strictement lecture seule ; le token lecture ne donne
+  jamais l'écriture. Audit : chaque action (acceptée ou refusée) émet une
+  ligne `[action]` dans les logs host, visible sur la page Logs du
+  dashboard. Le patch pnpm ajoute POST /api/actions (401/403/413) et les
+  contrôles UI sur la page Agents (token demandé au premier usage, stocké
+  en localStorage du navigateur).

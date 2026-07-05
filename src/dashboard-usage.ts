@@ -240,6 +240,8 @@ export function deriveAccessRights(config: {
 
 export interface RecapRow {
   channel: string;
+  /** Agent group id — needed by the dashboard write actions. */
+  agentGroupId: string;
   folder: string;
   provider: string;
   model: string;
@@ -275,6 +277,7 @@ export function buildAgentsRecapRows(): RecapRow[] {
       }
       rows.push({
         channel: mg.name ?? mg.id,
+        agentGroupId: group.id,
         folder: group.folder,
         provider: config?.provider || 'claude',
         model: config?.model || '(défaut)',
