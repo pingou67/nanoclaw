@@ -383,7 +383,7 @@ index 36b957573fba3d5046e9b50f844aefb9fde486e8..8e17ca95286798df75ed92d3a17730c0
      ${bodyHtml}
 diff --git a/dist/ui/pages/agents.js b/dist/ui/pages/agents.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..9f6b9509d60a8868982eb338c0492e1f0e138419
+index 0000000000000000000000000000000000000000..83052f0378cbe6c552a74de4e93bf7c114bc57ed
 --- /dev/null
 +++ b/dist/ui/pages/agents.js
 @@ -0,0 +1,166 @@
@@ -431,7 +431,7 @@ index 0000000000000000000000000000000000000000..9f6b9509d60a8868982eb338c0492e1f
 +            '<th>Déclenchement</th><th>MCP actifs</th><th>Droits d\\'accès</th><th>Actions</th></tr>';
 +          for (const r of rows) {
 +            const provColor = r.provider === 'claude' ? 'blue' : r.provider === 'opencode' ? 'green' : r.provider === 'agy' ? 'purple' : 'gray';
-+            const mcp = (r.mcp || []).map(m => badge(m, 'gray')).join(' ') || '<span style="color:#555">-</span>';
++            const mcp = (r.mcp || []).map(m => badge(m, 'gray')).join(' ') || '<span style="color:var(--faint)">-</span>';
 +            const rights = (r.rights || []).map(x => {
 +              const warn = x.indexOf('⚠') >= 0;
 +              const byInstr = x.indexOf('PAR INSTRUCTIONS') >= 0;
@@ -440,21 +440,21 @@ index 0000000000000000000000000000000000000000..9f6b9509d60a8868982eb338c0492e1f
 +              return byInstr
 +                ? '<span title="Règle suivie par le modèle (champ instructions du serveur MCP), PAS une barrière technique. Détail : ncl groups config get --id ' + esc(r.agentGroupId) + '">' + b + '</span>'
 +                : b;
-+            }).join(' ') || '<span style="color:#555">-</span>';
++            }).join(' ') || '<span style="color:var(--faint)">-</span>';
 +            html += '<tr>' +
 +              '<td style="font-weight:500">' + esc(r.channel) + '</td>' +
-+              '<td style="color:#888">' + esc(r.folder) + '</td>' +
++              '<td style="color:var(--muted)">' + esc(r.folder) + '</td>' +
 +              '<td>' + badge(r.provider, provColor) + ' <span style="font-size:12px">' + esc(r.model) + '</span>' +
 +                (r.effort ? ' ' + badge('effort ' + r.effort, 'blue') : '') +
 +                (r.thinking ? ' ' + badge('thinking ' + r.thinking, 'gray') : '') + '</td>' +
-+              '<td style="font-size:12px;color:#888">' + esc(r.engage) + '</td>' +
++              '<td style="font-size:12px;color:var(--muted)">' + esc(r.engage) + '</td>' +
 +              '<td>' + mcp + '</td>' +
 +              '<td>' + rights + '</td>' +
 +              '<td style="white-space:nowrap">' + actionsCell(r) + '</td>' +
 +              '</tr>';
 +          }
 +          html += '</table>';
-+          html += '<div style="font-size:12px;color:#888;margin:-12px 0 24px">' +
++          html += '<div style="font-size:12px;color:var(--muted);margin:-12px 0 24px">' +
 +            badge('restreint PAR INSTRUCTIONS', 'yellow') +
 +            ' = règle énoncée dans le champ <code>instructions</code> du serveur MCP et suivie par le modèle — ' +
 +            'ce n\u2019est <b>pas</b> une barrière technique. Détail : <code>ncl groups config get --id &lt;agent-group-id&gt;</code> ' +
@@ -496,7 +496,7 @@ index 0000000000000000000000000000000000000000..9f6b9509d60a8868982eb338c0492e1f
 +        '<button class="act" data-k="' + k + '" data-act="apply">Appliquer</button>' +
 +        '<button class="act" data-k="' + k + '" data-act="restart-group">Restart</button>' +
 +        '<button class="act" data-k="' + k + '" data-act="toggle-live">Live</button>' +
-+        '<span id="st-' + k + '" style="font-size:11px;color:#888;margin-left:4px"></span>';
++        '<span id="st-' + k + '" style="font-size:11px;color:var(--muted);margin-left:4px"></span>';
 +    }
 +    function writeToken(reset) {
 +      if (reset) localStorage.removeItem('dashWriteToken');
@@ -555,7 +555,7 @@ index 0000000000000000000000000000000000000000..9f6b9509d60a8868982eb338c0492e1f
 +}
 diff --git a/dist/ui/pages/jobs.js b/dist/ui/pages/jobs.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..70bb43688808ba003d9d6c4820a42e5df13d079d
+index 0000000000000000000000000000000000000000..fbd46cd3cdaa35cb5259bf2840b8b6d07c5cc52f
 --- /dev/null
 +++ b/dist/ui/pages/jobs.js
 @@ -0,0 +1,199 @@
@@ -585,7 +585,7 @@ index 0000000000000000000000000000000000000000..70bb43688808ba003d9d6c4820a42e5d
 +    <div id="bg"><div class="loading">Loading...</div></div>
 +    <h3 class="section-title">Tâches planifiées (pending / paused)</h3>
 +    <div class="detail-panel" id="addform">
-+      <div style="font-size:13px;color:#ccc;margin-bottom:8px">Ajouter une tâche</div>
++      <div style="font-size:13px;color:var(--heading);margin-bottom:8px">Ajouter une tâche</div>
 +      <select id="add-group"></select>
 +      <input id="add-when" type="datetime-local" title="Première échéance (heure locale)">
 +      <input id="add-cron" placeholder="cron 5 champs (vide = ponctuelle)" style="width:220px" title="ex: 0 18 * * 0">
@@ -593,7 +593,7 @@ index 0000000000000000000000000000000000000000..70bb43688808ba003d9d6c4820a42e5d
 +      <textarea id="add-prompt" placeholder="Prompt de la tâche…"></textarea>
 +      <br>
 +      <button class="jact" id="add-btn">Ajouter</button>
-+      <span id="add-st" style="font-size:12px;color:#888;margin-left:8px"></span>
++      <span id="add-st" style="font-size:12px;color:var(--muted);margin-left:8px"></span>
 +    </div>
 +    <div id="content"><div class="loading">Loading...</div></div>
 +    <script>
@@ -629,7 +629,7 @@ index 0000000000000000000000000000000000000000..70bb43688808ba003d9d6c4820a42e5d
 +            '<td>' + esc(Math.round((Date.now() - b.startedAt) / 1000) + 's') + '</td>' +
 +            '<td>' + esc(String(b.actions)) + '</td>' +
 +            '<td style="font-size:12px">' + esc(b.lastAction || '-') + '</td>' +
-+            '<td style="font-size:12px;color:#888">' + esc(b.prompt || '') + '</td>' +
++            '<td style="font-size:12px;color:var(--muted)">' + esc(b.prompt || '') + '</td>' +
 +            '</tr>';
 +        }
 +        document.getElementById('bg').innerHTML = bh + '</table>';
@@ -647,26 +647,26 @@ index 0000000000000000000000000000000000000000..70bb43688808ba003d9d6c4820a42e5d
 +          '<td>' + esc(j.agentGroupName || j.agentGroupId) + '</td>' +
 +          '<td>' + esc(j.processAfter ? new Date(j.processAfter).toLocaleString('fr-FR') : '-') +
 +            (overdue ? ' ' + badge('en retard', 'red') : '') + '</td>' +
-+          '<td>' + (j.recurrence ? badge(j.recurrence, 'purple') : '<span style="color:#555">ponctuelle</span>') + '</td>' +
++          '<td>' + (j.recurrence ? badge(j.recurrence, 'purple') : '<span style="color:var(--faint)">ponctuelle</span>') + '</td>' +
 +          '<td>' + badge(j.status, j.status === 'pending' ? 'green' : 'yellow') + '</td>' +
-+          '<td style="font-size:12px;color:#aaa">' + esc(j.prompt) +
-+            '<div style="font-size:10px;color:#555">' + esc(j.id) + '</div></td>' +
++          '<td style="font-size:12px;color:var(--text)">' + esc(j.prompt) +
++            '<div style="font-size:10px;color:var(--faint)">' + esc(j.id) + '</div></td>' +
 +          '<td style="white-space:nowrap">' +
 +            '<button class="jact" data-i="' + i + '" data-act="edit">' + (editIndex === i ? 'Fermer' : 'Modifier') + '</button>' +
 +            '<button class="jact" data-i="' + i + '" data-act="' + (j.status === 'paused' ? 'job-resume' : 'job-pause') + '">' +
 +              (j.status === 'paused' ? 'Reprendre' : 'Pause') + '</button>' +
 +            '<button class="jact danger" data-i="' + i + '" data-act="job-cancel">Supprimer</button>' +
-+            '<div id="jst-' + i + '" style="font-size:11px;color:#888"></div>' +
++            '<div id="jst-' + i + '" style="font-size:11px;color:var(--muted)"></div>' +
 +          '</td></tr>';
 +        if (editIndex === i) {
 +          html += '<tr class="jedit"><td colspan="6">' +
-+            '<div style="font-size:12px;color:#888;margin-bottom:6px">Édition de ' + esc(j.id) + '</div>' +
++            '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">Édition de ' + esc(j.id) + '</div>' +
 +            '<textarea id="ed-prompt">' + esc(j.promptFull || j.prompt) + '</textarea><br>' +
 +            'Échéance : <input id="ed-when" type="datetime-local" value="' + toLocalInput(j.processAfter) + '"> ' +
 +            'Cron : <input id="ed-cron" value="' + esc(j.recurrence || '') + '" placeholder="vide = ponctuelle" style="width:180px"> ' +
 +            '<button class="jact" data-i="' + i + '" data-act="save-edit">Enregistrer</button>' +
 +            '<button class="jact" data-i="' + i + '" data-act="edit">Annuler</button>' +
-+            '<span id="ed-st" style="font-size:11px;color:#888;margin-left:6px"></span>' +
++            '<span id="ed-st" style="font-size:11px;color:var(--muted);margin-left:6px"></span>' +
 +            '</td></tr>';
 +        }
 +      }
