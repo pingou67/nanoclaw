@@ -129,10 +129,10 @@ index f616ef5adfe7763270aa56d9685c1843819202de..671e169b85b1e39fa3d55cbc2728400b
      // Auth check — read token from query param since SSE can't set headers
      if (dashboardSecret) {
 diff --git a/dist/ui/layout.js b/dist/ui/layout.js
-index 36b957573fba3d5046e9b50f844aefb9fde486e8..142d1b6ca5ef682add0985acf78617cb60c94b5d 100644
+index 36b957573fba3d5046e9b50f844aefb9fde486e8..2673b0743e83e01b8ca5a6ba485c1c904e6e9418 100644
 --- a/dist/ui/layout.js
 +++ b/dist/ui/layout.js
-@@ -10,6 +10,8 @@ const NAV_ITEMS = [
+@@ -10,159 +10,121 @@ const NAV_ITEMS = [
      { href: '/dashboard/channels', label: 'Channels', icon: '&#8644;' },
      { href: '/dashboard/messages', label: 'Messages', icon: '&#9993;' },
      { href: '/dashboard/users', label: 'Users', icon: '&#9679;' },
@@ -141,9 +141,247 @@ index 36b957573fba3d5046e9b50f844aefb9fde486e8..142d1b6ca5ef682add0985acf78617cb
      { href: '/dashboard/logs', label: 'Logs', icon: '&#9776;' },
  ];
  const CSS = `
++  :root {
++    --bg: #0f0f0f; --panel: #1a1a1a; --panel-deep: #0a0a0a; --hover: #252525;
++    --border: #2a2a2a; --border-soft: #1e1e1e;
++    --text: #e0e0e0; --title: #fff; --heading: #ccc; --muted: #888; --faint: #555;
++    --link: #7eb8da; --nav-active-bg: #1e2a35;
++    --btn-bg: #1e2a35; --btn-border: #2a3a4a; --btn-hover: #253545;
++  }
++  [data-theme="light"] {
++    --bg: #f4f5f7; --panel: #ffffff; --panel-deep: #fbfbfc; --hover: #ededf0;
++    --border: #d8dade; --border-soft: #e8e9ec;
++    --text: #24292f; --title: #111; --heading: #333; --muted: #667; --faint: #99a;
++    --link: #1a6fa8; --nav-active-bg: #e2eefa;
++    --btn-bg: #e2eefa; --btn-border: #b9d4ea; --btn-hover: #d2e4f6;
++  }
+   * { margin: 0; padding: 0; box-sizing: border-box; }
+   body {
+     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+-    background: #0f0f0f;
+-    color: #e0e0e0;
++    background: var(--bg);
++    color: var(--text);
+     display: flex;
+     min-height: 100vh;
+   }
+-  a { color: #7eb8da; text-decoration: none; }
++  a { color: var(--link); text-decoration: none; }
+   a:hover { text-decoration: underline; }
+ 
+   /* Sidebar */
+   .sidebar {
+     width: 220px;
+-    background: #1a1a1a;
+-    border-right: 1px solid #2a2a2a;
++    background: var(--panel);
++    border-right: 1px solid var(--border);
+     padding: 20px 0;
+     flex-shrink: 0;
+     position: fixed;
+-    top: 0;
+-    left: 0;
+-    bottom: 0;
++    top: 0; left: 0; bottom: 0;
+     overflow-y: auto;
+   }
+-  .sidebar h1 {
+-    font-size: 16px;
+-    padding: 0 20px 16px;
+-    color: #fff;
+-    border-bottom: 1px solid #2a2a2a;
+-    margin-bottom: 8px;
+-  }
+-  .sidebar nav a {
+-    display: flex;
+-    align-items: center;
+-    gap: 10px;
+-    padding: 10px 20px;
+-    color: #999;
+-    font-size: 14px;
+-    transition: background 0.15s, color 0.15s;
+-  }
+-  .sidebar nav a:hover { background: #252525; color: #e0e0e0; text-decoration: none; }
+-  .sidebar nav a.active { background: #1e2a35; color: #7eb8da; border-right: 2px solid #7eb8da; }
++  .sidebar h1 { font-size: 16px; padding: 0 20px 16px; color: var(--title); border-bottom: 1px solid var(--border); margin-bottom: 8px; }
++  .sidebar nav a { display: flex; align-items: center; gap: 10px; padding: 10px 20px; color: var(--muted); font-size: 14px; transition: background 0.15s, color 0.15s; }
++  .sidebar nav a:hover { background: var(--hover); color: var(--text); text-decoration: none; }
++  .sidebar nav a.active { background: var(--nav-active-bg); color: var(--link); border-right: 2px solid var(--link); }
+   .sidebar nav a .icon { width: 18px; text-align: center; font-size: 12px; }
++  #theme-toggle { margin: 14px 20px 0; background: var(--btn-bg); color: var(--link); border: 1px solid var(--btn-border); border-radius: 4px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
++  #theme-toggle:hover { background: var(--btn-hover); }
+ 
+   /* Main */
+-  .main {
+-    margin-left: 220px;
+-    padding: 24px 32px;
+-    flex: 1;
+-    min-width: 0;
+-  }
+-  .page-title {
+-    font-size: 22px;
+-    font-weight: 600;
+-    margin-bottom: 20px;
+-    color: #fff;
+-  }
++  .main { margin-left: 220px; padding: 24px 32px; flex: 1; min-width: 0; }
++  .page-title { font-size: 22px; font-weight: 600; margin-bottom: 20px; color: var(--title); }
+ 
+   /* Cards */
+   .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+-  .card {
+-    background: #1a1a1a;
+-    border: 1px solid #2a2a2a;
+-    border-radius: 8px;
+-    padding: 16px;
+-  }
+-  .card .label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+-  .card .value { font-size: 28px; font-weight: 700; color: #fff; margin-top: 4px; }
+-  .card .sub { font-size: 12px; color: #666; margin-top: 4px; }
++  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
++  .card .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
++  .card .value { font-size: 28px; font-weight: 700; color: var(--title); margin-top: 4px; }
++  .card .sub { font-size: 12px; color: var(--faint); margin-top: 4px; }
+ 
+   /* Tables */
+   table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+-  th { text-align: left; padding: 10px 12px; font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #2a2a2a; }
+-  td { padding: 10px 12px; font-size: 13px; border-bottom: 1px solid #1e1e1e; }
+-  tr:hover td { background: #151515; }
++  th { text-align: left; padding: 10px 12px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
++  td { padding: 10px 12px; font-size: 13px; border-bottom: 1px solid var(--border-soft); }
++  tr:hover td { background: var(--hover); }
+ 
+   /* Badges */
+-  .badge {
+-    display: inline-block;
+-    padding: 2px 8px;
+-    border-radius: 4px;
+-    font-size: 11px;
+-    font-weight: 600;
+-    text-transform: uppercase;
+-  }
++  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+   .badge-green { background: #1a3a1a; color: #4ade80; }
+   .badge-yellow { background: #3a3a1a; color: #facc15; }
+   .badge-red { background: #3a1a1a; color: #f87171; }
+   .badge-blue { background: #1a2a3a; color: #7eb8da; }
+   .badge-gray { background: #2a2a2a; color: #999; }
+   .badge-purple { background: #2a1a3a; color: #c084fc; }
++  [data-theme="light"] .badge-green { background: #dcf5e0; color: #15803d; }
++  [data-theme="light"] .badge-yellow { background: #fdf3cf; color: #a16207; }
++  [data-theme="light"] .badge-red { background: #fde2e2; color: #b91c1c; }
++  [data-theme="light"] .badge-blue { background: #dcecf9; color: #1d6fa5; }
++  [data-theme="light"] .badge-gray { background: #e8e9ec; color: #556; }
++  [data-theme="light"] .badge-purple { background: #efe2fb; color: #7e22ce; }
+ 
+   /* Section headers */
+-  .section-title { font-size: 16px; font-weight: 600; margin: 24px 0 12px; color: #ccc; }
++  .section-title { font-size: 16px; font-weight: 600; margin: 24px 0 12px; color: var(--heading); }
+ 
+   /* Chart container */
+-  .chart-container { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 16px; margin-bottom: 24px; }
++  .chart-container { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 24px; }
+   .chart-bar-row { display: flex; align-items: center; gap: 8px; margin: 2px 0; }
+-  .chart-label { width: 40px; font-size: 11px; color: #888; text-align: right; }
++  .chart-label { width: 40px; font-size: 11px; color: var(--muted); text-align: right; }
+   .chart-bar { height: 20px; border-radius: 3px; min-width: 2px; transition: width 0.3s; }
+   .chart-bar-in { background: #3b82f6; }
+   .chart-bar-out { background: #22c55e; }
+-  .chart-value { font-size: 11px; color: #666; }
++  .chart-value { font-size: 11px; color: var(--faint); }
+ 
+   /* Log viewer */
+-  .log-container {
+-    background: #0a0a0a;
+-    border: 1px solid #2a2a2a;
+-    border-radius: 8px;
+-    padding: 12px;
+-    font-family: 'Cascadia Code', 'Fira Code', monospace;
+-    font-size: 12px;
+-    height: calc(100vh - 140px);
+-    overflow-y: auto;
+-    line-height: 1.6;
+-  }
++  .log-container { background: var(--panel-deep); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 12px; height: calc(100vh - 140px); overflow-y: auto; line-height: 1.6; }
+   .log-line { white-space: pre-wrap; word-break: break-all; }
+-  .log-line:hover { background: #151515; }
++  .log-line:hover { background: var(--hover); }
+ 
+   /* Detail panel */
+-  .detail-panel { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 20px; margin-bottom: 16px; }
++  .detail-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+   .detail-row { display: flex; gap: 8px; margin: 6px 0; }
+-  .detail-label { color: #888; min-width: 140px; font-size: 13px; }
+-  .detail-value { color: #e0e0e0; font-size: 13px; }
++  .detail-label { color: var(--muted); min-width: 140px; font-size: 13px; }
++  .detail-value { color: var(--text); font-size: 13px; }
+ 
+   /* Loading */
+-  .loading { color: #666; font-style: italic; padding: 20px; }
++  .loading { color: var(--faint); font-style: italic; padding: 20px; }
+ 
+-  /* Select */
+-  select {
+-    background: #1a1a1a;
+-    color: #e0e0e0;
+-    border: 1px solid #2a2a2a;
+-    border-radius: 4px;
+-    padding: 6px 10px;
+-    font-size: 13px;
+-  }
++  /* Inputs (global, thème-aware) */
++  select, input, textarea { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 6px 10px; font-size: 13px; }
+ 
+   /* Tabs */
+-  .tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 1px solid #2a2a2a; }
+-  .tab {
+-    padding: 8px 16px;
+-    font-size: 13px;
+-    color: #888;
+-    cursor: pointer;
+-    border-bottom: 2px solid transparent;
+-    transition: color 0.15s, border-color 0.15s;
+-  }
+-  .tab:hover { color: #e0e0e0; }
+-  .tab.active { color: #7eb8da; border-bottom-color: #7eb8da; }
++  .tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
++  .tab { padding: 8px 16px; font-size: 13px; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; transition: color 0.15s, border-color 0.15s; }
++  .tab:hover { color: var(--text); }
++  .tab.active { color: var(--link); border-bottom-color: var(--link); }
+ `;
+ export function layout(title, activePath, bodyHtml) {
+     const token = getDashboardSecret() || '';
+@@ -178,6 +140,14 @@ export function layout(title, activePath, bodyHtml) {
+   <title>${title} — NanoClaw Dashboard</title>
+   <style>${CSS}</style>
+   <script>
++    document.documentElement.dataset.theme = localStorage.getItem('dashTheme') || 'dark';
++    function toggleTheme() {
++      const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
++      document.documentElement.dataset.theme = next;
++      localStorage.setItem('dashTheme', next);
++      const b = document.getElementById('theme-toggle');
++      if (b) b.textContent = next === 'dark' ? '\u2600\ufe0f Th\u00e8me clair' : '\ud83c\udf19 Th\u00e8me sombre';
++    }
+     const TOKEN = document.querySelector('meta[name="dashboard-token"]')?.content || '';
+     async function api(path) {
+       const headers = {};
+@@ -228,6 +198,11 @@ export function layout(title, activePath, bodyHtml) {
+   <div class="sidebar">
+     <h1>NanoClaw</h1>
+     <nav>${navHtml}</nav>
++    <button id="theme-toggle" onclick="toggleTheme()"></button>
++    <script>
++      document.getElementById('theme-toggle').textContent =
++        document.documentElement.dataset.theme === 'dark' ? '\u2600\ufe0f Th\u00e8me clair' : '\ud83c\udf19 Th\u00e8me sombre';
++    </script>
+   </div>
+   <div class="main">
+     ${bodyHtml}
 diff --git a/dist/ui/pages/agents.js b/dist/ui/pages/agents.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..534c77c9c155f722884f1d910bf834b5df084fd9
+index 0000000000000000000000000000000000000000..3c5a1a93ff231437fb5445dfba37ca5044c08e35
 --- /dev/null
 +++ b/dist/ui/pages/agents.js
 @@ -0,0 +1,166 @@
@@ -158,8 +396,8 @@ index 0000000000000000000000000000000000000000..534c77c9c155f722884f1d910bf834b5
 +export function agentsPage() {
 +    return layout('Agents', '/dashboard/agents', `
 +    <style>
-+      #content button { background:#1e2a35; color:#7eb8da; border:1px solid #2a3a4a; border-radius:4px; padding:5px 8px; margin:1px; font-size:12px; cursor:pointer; }
-+      #content button:hover { background:#253545; }
++      #content button { background:var(--btn-bg); color:var(--link); border:1px solid var(--btn-border); border-radius:4px; padding:5px 8px; margin:1px; font-size:12px; cursor:pointer; }
++      #content button:hover { background:var(--btn-hover); }
 +    </style>
 +    <h2 class="page-title">Agents par channel</h2>
 +    <div id="summary" class="cards"><div class="loading">Loading...</div></div>
@@ -252,7 +490,7 @@ index 0000000000000000000000000000000000000000..534c77c9c155f722884f1d910bf834b5
 +      const k = encodeURIComponent(r.agentGroupId);
 +      return sel('eff-' + k, EFFORTS, r.effort, 'effort') +
 +        sel('thk-' + k, THINKING, r.thinking, 'thinking') +
-+        '<input id="mdl-' + k + '" value="' + esc(r.model === '(défaut)' ? '' : r.model) + '" placeholder="modèle" style="width:110px;margin:1px;background:#1a1a1a;color:#e0e0e0;border:1px solid #2a2a2a;border-radius:4px;padding:5px">' +
++        '<input id="mdl-' + k + '" value="' + esc(r.model === '(défaut)' ? '' : r.model) + '" placeholder="modèle" style="width:110px;margin:1px;padding:5px">' +
 +        '<button class="act" data-k="' + k + '" data-act="apply">Appliquer</button>' +
 +        '<button class="act" data-k="' + k + '" data-act="restart-group">Restart</button>' +
 +        '<button class="act" data-k="' + k + '" data-act="toggle-live">Live</button>' +
@@ -315,10 +553,10 @@ index 0000000000000000000000000000000000000000..534c77c9c155f722884f1d910bf834b5
 +}
 diff --git a/dist/ui/pages/jobs.js b/dist/ui/pages/jobs.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..dd6b3acac3e76361e2ee546764b072d0337896a6
+index 0000000000000000000000000000000000000000..8fa96187893d644da6d102d8e745e33331130fce
 --- /dev/null
 +++ b/dist/ui/pages/jobs.js
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,199 @@
 +/**
 + * Jobs page — NanoClaw fork addition (pnpm patch, not upstream).
 + * Scheduled tasks (cron/reminders) + running background jobs, with bounded
@@ -329,14 +567,15 @@ index 0000000000000000000000000000000000000000..dd6b3acac3e76361e2ee546764b072d0
 +export function jobsPage() {
 +    return layout('Jobs', '/dashboard/jobs', `
 +    <style>
-+      #addform input, #addform select, #addform textarea { background:#1a1a1a; color:#e0e0e0; border:1px solid #2a2a2a; border-radius:4px; padding:6px; font-size:13px; margin:2px; }
++      #addform input, #addform select, #addform textarea { margin:2px; }
 +      #addform textarea { width: 100%; min-height: 54px; }
-+      button.jact { background:#1e2a35; color:#7eb8da; border:1px solid #2a3a4a; border-radius:4px; padding:4px 8px; margin:1px; font-size:12px; cursor:pointer; }
-+      button.jact:hover { background:#253545; }
++      button.jact { background:var(--btn-bg); color:var(--link); border:1px solid var(--btn-border); border-radius:4px; padding:4px 8px; margin:1px; font-size:12px; cursor:pointer; }
++      button.jact:hover { background:var(--btn-hover); }
 +      button.jact.danger { color:#f87171; border-color:#4a2a2a; background:#2a1a1a; }
-+      tr.jedit td { background:#151b22; }
-+      tr.jedit textarea { width:100%; min-height:110px; background:#0f0f0f; color:#e0e0e0; border:1px solid #2a3a4a; border-radius:4px; padding:8px; font-size:13px; font-family:inherit; }
-+      tr.jedit input { background:#0f0f0f; color:#e0e0e0; border:1px solid #2a3a4a; border-radius:4px; padding:6px; font-size:13px; margin:2px; }
++      [data-theme="light"] button.jact.danger { color:#b91c1c; border-color:#f3c1c1; background:#fde2e2; }
++      tr.jedit td { background:var(--hover); }
++      tr.jedit textarea { width:100%; min-height:110px; padding:8px; font-family:inherit; }
++      tr.jedit input { margin:2px; }
 +    </style>
 +    <h2 class="page-title">Jobs</h2>
 +    <div id="summary" class="cards"><div class="loading">Loading...</div></div>

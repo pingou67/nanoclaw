@@ -199,7 +199,10 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
         return refuse(`tâche déjà supprimée/terminée (ou id inconnu): ${target.taskId}`, req);
       }
       cancelTask(db, target.taskId);
-      return done(`tâche ${target.taskId} supprimée`, `job-cancel ${target.taskId} group=${group.folder} (via dashboard)`);
+      return done(
+        `tâche ${target.taskId} supprimée`,
+        `job-cancel ${target.taskId} group=${group.folder} (via dashboard)`,
+      );
     }
 
     case 'job-pause':
