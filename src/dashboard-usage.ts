@@ -190,7 +190,10 @@ export interface ScheduledJob {
   status: string;
   processAfter: string | null;
   recurrence: string | null;
+  /** Truncated for table display. */
   prompt: string;
+  /** Full prompt (capped at 4000) — used by the dashboard's inline editor. */
+  promptFull: string;
 }
 
 /**
@@ -250,6 +253,7 @@ export function collectScheduledJobs(): ScheduledJob[] {
               processAfter: r.process_after,
               recurrence: r.recurrence,
               prompt: prompt.replace(/\s+/g, ' ').slice(0, 160),
+              promptFull: prompt.slice(0, 4000),
             });
           }
         } finally {

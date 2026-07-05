@@ -315,10 +315,10 @@ index 0000000000000000000000000000000000000000..534c77c9c155f722884f1d910bf834b5
 +}
 diff --git a/dist/ui/pages/jobs.js b/dist/ui/pages/jobs.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..6b7821f6a32e7bb49a5e37caec91a081e365e93f
+index 0000000000000000000000000000000000000000..dd6b3acac3e76361e2ee546764b072d0337896a6
 --- /dev/null
 +++ b/dist/ui/pages/jobs.js
-@@ -0,0 +1,174 @@
+@@ -0,0 +1,198 @@
 +/**
 + * Jobs page — NanoClaw fork addition (pnpm patch, not upstream).
 + * Scheduled tasks (cron/reminders) + running background jobs, with bounded
@@ -334,6 +334,9 @@ index 0000000000000000000000000000000000000000..6b7821f6a32e7bb49a5e37caec91a081
 +      button.jact { background:#1e2a35; color:#7eb8da; border:1px solid #2a3a4a; border-radius:4px; padding:4px 8px; margin:1px; font-size:12px; cursor:pointer; }
 +      button.jact:hover { background:#253545; }
 +      button.jact.danger { color:#f87171; border-color:#4a2a2a; background:#2a1a1a; }
++      tr.jedit td { background:#151b22; }
++      tr.jedit textarea { width:100%; min-height:110px; background:#0f0f0f; color:#e0e0e0; border:1px solid #2a3a4a; border-radius:4px; padding:8px; font-size:13px; font-family:inherit; }
++      tr.jedit input { background:#0f0f0f; color:#e0e0e0; border:1px solid #2a3a4a; border-radius:4px; padding:6px; font-size:13px; margin:2px; }
 +    </style>
 +    <h2 class="page-title">Jobs</h2>
 +    <div id="summary" class="cards"><div class="loading">Loading...</div></div>
@@ -354,6 +357,7 @@ index 0000000000000000000000000000000000000000..6b7821f6a32e7bb49a5e37caec91a081
 +    <div id="content"><div class="loading">Loading...</div></div>
 +    <script>
 +    let DATA = null;
++    let editIndex = -1;
 +    async function load() {
 +      DATA = await api('/api/jobs');
 +      render();
@@ -407,16 +411,33 @@ index 0000000000000000000000000000000000000000..6b7821f6a32e7bb49a5e37caec91a081
 +          '<td style="font-size:12px;color:#aaa">' + esc(j.prompt) +
 +            '<div style="font-size:10px;color:#555">' + esc(j.id) + '</div></td>' +
 +          '<td style="white-space:nowrap">' +
-+            '<button class="jact" data-i="' + i + '" data-act="edit">Modifier</button>' +
++            '<button class="jact" data-i="' + i + '" data-act="edit">' + (editIndex === i ? 'Fermer' : 'Modifier') + '</button>' +
 +            '<button class="jact" data-i="' + i + '" data-act="' + (j.status === 'paused' ? 'job-resume' : 'job-pause') + '">' +
 +              (j.status === 'paused' ? 'Reprendre' : 'Pause') + '</button>' +
 +            '<button class="jact danger" data-i="' + i + '" data-act="job-cancel">Supprimer</button>' +
 +            '<div id="jst-' + i + '" style="font-size:11px;color:#888"></div>' +
 +          '</td></tr>';
++        if (editIndex === i) {
++          html += '<tr class="jedit"><td colspan="6">' +
++            '<div style="font-size:12px;color:#888;margin-bottom:6px">Édition de ' + esc(j.id) + '</div>' +
++            '<textarea id="ed-prompt">' + esc(j.promptFull || j.prompt) + '</textarea><br>' +
++            'Échéance : <input id="ed-when" type="datetime-local" value="' + toLocalInput(j.processAfter) + '"> ' +
++            'Cron : <input id="ed-cron" value="' + esc(j.recurrence || '') + '" placeholder="vide = ponctuelle" style="width:180px"> ' +
++            '<button class="jact" data-i="' + i + '" data-act="save-edit">Enregistrer</button>' +
++            '<button class="jact" data-i="' + i + '" data-act="edit">Annuler</button>' +
++            '<span id="ed-st" style="font-size:11px;color:#888;margin-left:6px"></span>' +
++            '</td></tr>';
++        }
 +      }
 +      document.getElementById('content').innerHTML = html + '</table>';
 +    }
 +
++    function toLocalInput(iso) {
++      if (!iso) return '';
++      const d = new Date(iso);
++      const pad = n => String(n).padStart(2, '0');
++      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
++    }
 +    function writeToken(reset) {
 +      if (reset) localStorage.removeItem('dashWriteToken');
 +      let t = localStorage.getItem('dashWriteToken');
@@ -463,14 +484,17 @@ index 0000000000000000000000000000000000000000..6b7821f6a32e7bb49a5e37caec91a081
 +      const base = { agentGroupId: j.agentGroupId, sessionDir: j.sessionDir, taskId: j.id };
 +      let body = null;
 +      if (btn.dataset.act === 'edit') {
-+        const prompt = window.prompt('Prompt :', j.prompt);
-+        if (prompt === null) return;
-+        const when = window.prompt('Prochaine échéance (ISO, vide = inchangée) :', j.processAfter || '');
-+        if (when === null) return;
-+        const cron = window.prompt('Récurrence cron 5 champs (vide = ponctuelle) :', j.recurrence || '');
-+        if (cron === null) return;
-+        body = { action: 'job-update', ...base, prompt, recurrence: cron.trim() || null };
-+        if (when.trim()) body.processAfter = when.trim();
++        editIndex = editIndex === Number(btn.dataset.i) ? -1 : Number(btn.dataset.i);
++        render();
++        return;
++      } else if (btn.dataset.act === 'save-edit') {
++        const whenLocal = document.getElementById('ed-when').value;
++        body = {
++          action: 'job-update', ...base,
++          prompt: document.getElementById('ed-prompt').value,
++          recurrence: document.getElementById('ed-cron').value.trim() || null,
++        };
++        if (whenLocal) body.processAfter = new Date(whenLocal).toISOString();
 +      } else if (btn.dataset.act === 'job-cancel') {
 +        if (!confirm('Supprimer la tâche ' + j.id + ' ?')) return;
 +        body = { action: 'job-cancel', ...base };
@@ -481,7 +505,7 @@ index 0000000000000000000000000000000000000000..6b7821f6a32e7bb49a5e37caec91a081
 +      const r = await postAction(body);
 +      st.textContent = (r.ok ? '✓ ' : '✗ ') + r.message;
 +      st.style.color = r.ok ? '#4ade80' : '#f87171';
-+      if (r.ok) setTimeout(load, 800);
++      if (r.ok) { editIndex = -1; setTimeout(load, 800); }
 +    });
 +
 +    function cardHtml(label, value) {

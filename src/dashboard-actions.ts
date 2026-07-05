@@ -139,7 +139,9 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
         threadId: session.thread_id ?? null,
         content: JSON.stringify({ prompt }),
       });
-      audit(`job-add ${taskId} group=${group.folder} processAfter=${when} recurrence=${recurrence ?? '(ponctuelle)'} (via dashboard)`);
+      audit(
+        `job-add ${taskId} group=${group.folder} processAfter=${when} recurrence=${recurrence ?? '(ponctuelle)'} (via dashboard)`,
+      );
       return { ok: true, message: `tâche ${taskId} créée` };
     }
 
@@ -163,7 +165,9 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
       }
       const n = updateTask(openInboundDb(gid, target.sessionId), target.taskId, update);
       if (n === 0) return refuse(`tâche introuvable (ou plus pending/paused): ${target.taskId}`, req);
-      audit(`job-update ${target.taskId} group=${group.folder} champs=${Object.keys(update).join(',')} (via dashboard)`);
+      audit(
+        `job-update ${target.taskId} group=${group.folder} champs=${Object.keys(update).join(',')} (via dashboard)`,
+      );
       return { ok: true, message: `tâche mise à jour (${n} ligne(s))` };
     }
 
