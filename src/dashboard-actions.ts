@@ -16,11 +16,7 @@
 import { getAgentGroup } from './db/agent-groups.js';
 import { getSessionsByAgentGroup } from './db/sessions.js';
 import { getMessagingGroup } from './db/messaging-groups.js';
-import {
-  getContainerConfig,
-  updateContainerConfigScalars,
-  updateContainerConfigJson,
-} from './db/container-configs.js';
+import { getContainerConfig, updateContainerConfigScalars, updateContainerConfigJson } from './db/container-configs.js';
 import { restartAgentGroupContainers } from './container-restart.js';
 import { writeSessionMessage } from './session-manager.js';
 import { log } from './log.js';
@@ -64,7 +60,8 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
         if (value !== null && !EFFORTS.has(value)) return refuse(`effort invalide: ${value}`, req);
         updateContainerConfigScalars(gid, { effort: value });
       } else if (field === 'model') {
-        if (value !== null && !MODEL_RE.test(value)) return refuse('modèle invalide (1-120 chars, [A-Za-z0-9._:/-])', req);
+        if (value !== null && !MODEL_RE.test(value))
+          return refuse('modèle invalide (1-120 chars, [A-Za-z0-9._:/-])', req);
         updateContainerConfigScalars(gid, { model: value });
       } else if (field === 'thinking') {
         if (value !== null && !THINKING.has(value)) return refuse(`thinking invalide: ${value}`, req);
@@ -82,7 +79,8 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
       audit(`restart-group group=${group.folder} containers=${n} (via dashboard)`);
       return {
         ok: true,
-        message: n > 0 ? `${n} container(s) redémarré(s)` : 'aucun container actif — la config sera prise au prochain message',
+        message:
+          n > 0 ? `${n} container(s) redémarré(s)` : 'aucun container actif — la config sera prise au prochain message',
       };
     }
 

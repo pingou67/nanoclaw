@@ -129,10 +129,10 @@ index 36b957573fba3d5046e9b50f844aefb9fde486e8..b0f86eb262455d04f6809d095198b907
  const CSS = `
 diff --git a/dist/ui/pages/agents.js b/dist/ui/pages/agents.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..f54cffa23c3e4e53383f4e0b201e2ca423c55d9c
+index 0000000000000000000000000000000000000000..ea55d2959e801e32656f7cb4904677113428af44
 --- /dev/null
 +++ b/dist/ui/pages/agents.js
-@@ -0,0 +1,154 @@
+@@ -0,0 +1,157 @@
 +/**
 + * Agents page — NanoClaw fork addition (pnpm patch, not upstream).
 + * Per-channel recap of agent characteristics: provider/model, trigger,
@@ -230,9 +230,9 @@ index 0000000000000000000000000000000000000000..f54cffa23c3e4e53383f4e0b201e2ca4
 +      return sel('eff-' + k, EFFORTS, r.effort, 'effort') +
 +        sel('thk-' + k, THINKING, r.thinking, 'thinking') +
 +        '<input id="mdl-' + k + '" value="' + esc(r.model === '(défaut)' ? '' : r.model) + '" placeholder="modèle" style="width:110px;margin:1px;background:#1a1a1a;color:#e0e0e0;border:1px solid #2a2a2a;border-radius:4px;padding:5px">' +
-+        '<button onclick="applyConfig(\'' + k + '\')">Appliquer</button>' +
-+        '<button onclick="doAction(\'' + k + '\', \'restart-group\')">Restart</button>' +
-+        '<button onclick="doAction(\'' + k + '\', \'toggle-live\')">Live</button>' +
++        '<button class="act" data-k="' + k + '" data-act="apply">Appliquer</button>' +
++        '<button class="act" data-k="' + k + '" data-act="restart-group">Restart</button>' +
++        '<button class="act" data-k="' + k + '" data-act="toggle-live">Live</button>' +
 +        '<span id="st-' + k + '" style="font-size:11px;color:#888;margin-left:4px"></span>';
 +    }
 +    function writeToken(reset) {
@@ -255,31 +255,34 @@ index 0000000000000000000000000000000000000000..f54cffa23c3e4e53383f4e0b201e2ca4
 +      if (res.status === 401) { writeToken(true); return { ok: false, message: 'token écriture invalide (re-saisir)' }; }
 +      return res.json();
 +    }
-+    window.doAction = async (k, action) => {
++    document.addEventListener('click', async (ev) => {
++      const btn = ev.target.closest('button.act');
++      if (!btn) return;
++      const k = btn.dataset.k;
 +      const gid = decodeURIComponent(k);
 +      const st = document.getElementById('st-' + k);
 +      st.textContent = '…';
-+      const r = await postAction({ action, agentGroupId: gid });
-+      st.textContent = (r.ok ? '✓ ' : '✗ ') + r.message;
-+      st.style.color = r.ok ? '#4ade80' : '#f87171';
-+    };
-+    window.applyConfig = async (k) => {
-+      const gid = decodeURIComponent(k);
-+      const st = document.getElementById('st-' + k);
-+      const fields = [
-+        ['effort', document.getElementById('eff-' + k).value],
-+        ['thinking', document.getElementById('thk-' + k).value],
-+        ['model', document.getElementById('mdl-' + k).value.trim()],
-+      ];
-+      const msgs = [];
-+      for (const [field, value] of fields) {
-+        const r = await postAction({ action: 'set-config', agentGroupId: gid, field, value });
-+        if (!r.ok) { msgs.push(field + ': ✗ ' + r.message); break; }
-+        msgs.push(field + ' ✓');
++      st.style.color = '#888';
++      if (btn.dataset.act === 'apply') {
++        const fields = [
++          ['effort', document.getElementById('eff-' + k).value],
++          ['thinking', document.getElementById('thk-' + k).value],
++          ['model', document.getElementById('mdl-' + k).value.trim()],
++        ];
++        const msgs = [];
++        for (const [field, value] of fields) {
++          const r = await postAction({ action: 'set-config', agentGroupId: gid, field, value });
++          if (!r.ok) { msgs.push(field + ': ✗ ' + r.message); break; }
++          msgs.push(field + ' ✓');
++        }
++        st.textContent = msgs.join(' · ') + ' — restart pour appliquer';
++        st.style.color = '#facc15';
++      } else {
++        const r = await postAction({ action: btn.dataset.act, agentGroupId: gid });
++        st.textContent = (r.ok ? '✓ ' : '✗ ') + r.message;
++        st.style.color = r.ok ? '#4ade80' : '#f87171';
 +      }
-+      st.textContent = msgs.join(' · ') + ' — restart pour appliquer';
-+      st.style.color = '#facc15';
-+    };
++    });
 +
 +    function cardHtml(label, value) {
 +      return '<div class="card"><div class="label">' + esc(label) + '</div><div class="value" style="font-size:20px">' + esc(String(value)) + '</div></div>';
