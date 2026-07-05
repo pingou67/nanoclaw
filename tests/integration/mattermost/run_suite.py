@@ -957,6 +957,24 @@ def main() -> int:
     for r in results:
         print(f"  {r}")
     print(f"\n{passed}/{len(results)} passed" + (f" ({skipped} skipped)" if skipped else ""))
+
+    # Persist a last-run marker for the dashboard health collector
+    # (src/dashboard-health.ts reads logs/e2e-last-run.json). Best effort —
+    # a marker failure must never flip the suite's exit code.
+    try:
+        marker = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "passed": passed,
+            "failed": len(results) - passed,
+            "skipped": skipped,
+            "total": len(results),
+        }
+        marker_path = ROOT / "logs" / "e2e-last-run.json"
+        marker_path.parent.mkdir(exist_ok=True)
+        marker_path.write_text(json.dumps(marker))
+    except Exception:
+        pass
+
     return 0 if passed == len(results) else 1
 
 
