@@ -39,6 +39,21 @@ describe('deriveAccessRights', () => {
     expect(rights.some((r) => r.includes('nanoclaw'))).toBe(false);
   });
 
+  it('shows the [résumé: …] summary verbatim when present', () => {
+    const rights = deriveAccessRights({
+      mcp_servers: JSON.stringify({
+        'google-calendar': {
+          instructions: '[résumé: écriture = Famille uniquement ; lecture seule = les autres] Règle détaillée…',
+        },
+      }),
+      additional_mounts: '[]',
+      cli_scope: 'group',
+    });
+    expect(rights[0]).toBe(
+      'Google Calendar — écriture = Famille uniquement ; lecture seule = les autres (PAR INSTRUCTIONS, non garanti techniquement)',
+    );
+  });
+
   it('flags imap without its credentials mount', () => {
     const rights = deriveAccessRights({
       mcp_servers: JSON.stringify({ imap: {} }),

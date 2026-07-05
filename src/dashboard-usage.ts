@@ -214,11 +214,16 @@ export function deriveAccessRights(config: {
       rights.push('Gmail perso (complet)');
     } else if (name === 'google-calendar') {
       const instr = server.instructions ?? '';
-      rights.push(
-        /lecture seule|écriture/i.test(instr)
-          ? 'Google Calendar (restreint PAR INSTRUCTIONS — non garanti techniquement)'
-          : 'Google Calendar (complet)',
-      );
+      // Convention: instructions may start with `[résumé: …]` — a one-line
+      // human summary of the restriction, displayed verbatim in the recap.
+      const summary = instr.match(/^\[résumé:\s*([^\]]+)\]/)?.[1]?.trim();
+      if (summary) {
+        rights.push(`Google Calendar — ${summary} (PAR INSTRUCTIONS, non garanti techniquement)`);
+      } else if (/lecture seule|écriture/i.test(instr)) {
+        rights.push('Google Calendar (restreint PAR INSTRUCTIONS — non garanti techniquement)');
+      } else {
+        rights.push('Google Calendar (complet)');
+      }
     } else if (name === 'imap') {
       rights.push(hasImapMount ? 'Mail Unistra (imap)' : 'Mail Unistra (imap) ⚠ mount .imap-mcp absent');
     } else if (name === 'vikunja') {
