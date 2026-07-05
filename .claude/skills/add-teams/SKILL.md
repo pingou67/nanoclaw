@@ -121,15 +121,20 @@ useful for later maintenance (endpoint updates, RSC grants, secret rotation).
 
 ### Sign in to Microsoft 365
 
-The sign-in is cached locally and persists across CLI invocations, so this is
-safe to re-run. In an interactive terminal it opens a browser sign-in; on a
-headless box (SSH) it automatically falls back to printing a device code —
-open microsoft.com/devicelogin on any machine and enter it. If this step
-fails, run `pnpm exec teams login` by hand and watch its output, then re-run
-the skill.
+Every `teams` command is a separate process, so the sign-in must survive into
+the next one via the CLI's on-disk token cache. On Linux that cache needs the
+libsecret library — without it the session silently evaporates when the login
+process exits, and the create step fails with `AUTH_REQUIRED`. Install it
+first on Linux: `sudo apt-get install -y libsecret-1-0` (Debian/Ubuntu). The
+step below verifies persistence by re-reading the session from a fresh
+process after login. In an interactive terminal the login opens a browser;
+on a headless box (SSH) it prints a device code — open
+microsoft.com/devicelogin on any machine and enter it. If this step fails,
+run `pnpm exec teams login` then `pnpm exec teams status` by hand: status
+must say logged in, or the cache is not persisting.
 
 ```nc:run effect:step when:have_creds=no
-pnpm exec teams login && printf '=== NANOCLAW SETUP: TEAMS-LOGIN ===\nSTATUS: success\n=== END ===\n'
+pnpm exec teams login && pnpm exec teams status --json 2>/dev/null | grep -q '"loggedIn": true' && printf '=== NANOCLAW SETUP: TEAMS-LOGIN ===\nSTATUS: success\n=== END ===\n'
 ```
 
 ### Create the bot
@@ -312,13 +317,29 @@ pnpm exec tsx setup/channels/teams-manifest-build.ts --app-id YOUR_APP_ID --url 
 
 ## Troubleshooting
 
-### "Upload a custom app" is missing in Teams
+### "Upload a custom app" is missing / sideloading blocked
 
-Your tenant admin has disabled sideloading. Enable it in Teams Admin Center →
-**Teams apps** → **Setup policies** → **Global** → **Upload custom apps** = On.
+`pnpm exec teams status` shows whether sideloading is enabled at both tenant
+and user level; the login output prints the same check.
+
+- **Tenant level off**: Teams Admin Center → **Teams apps** → **Setup
+  policies** → **Global** → **Upload custom apps** = On.
+- **"Enabled for the tenant, but your user policy blocks it"**: the per-user
+  policy is the blocker — Teams Admin Center → **Users** → find the user →
+  **Policies** → **App setup policy** → assign one with **Upload custom
+  apps** = On. Policy changes can take a while to propagate.
+
 Free personal Teams does not support sideloading at all — use a Microsoft 365
-Business / EDU / developer tenant. `pnpm exec teams status` shows whether
-sideloading is enabled at both tenant and user level.
+Business / EDU / developer tenant.
+
+### Create fails immediately with `AUTH_REQUIRED` after a successful sign-in
+
+The sign-in didn't persist: each `teams` command is a separate process, and on
+Linux the token cache needs libsecret — without it the CLI silently falls back
+to an in-memory cache that dies with the login process. Symptom check:
+`pnpm exec teams status` says logged out right after a login succeeded. Fix:
+`sudo apt-get install -y libsecret-1-0` (Debian/Ubuntu), sign in again, confirm
+`teams status` shows logged in, then re-run this skill.
 
 ### Bot never receives messages
 
