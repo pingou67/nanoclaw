@@ -1,0 +1,134 @@
+diff --git a/dist/router.js b/dist/router.js
+index 326434d184af3d5496de61b07c79bca0ceff7e7f..5265f81cdb7462baa197447f2dfc5c9d4270b0f5 100644
+--- a/dist/router.js
++++ b/dist/router.js
+@@ -6,6 +6,7 @@ import { channelsPage } from './ui/pages/channels.js';
+ import { messagesPage } from './ui/pages/messages.js';
+ import { usersPage } from './ui/pages/users.js';
+ import { logsPage } from './ui/pages/logs.js';
++import { agentsPage } from './ui/pages/agents.js';
+ function json(res, data, status = 200) {
+     res.writeHead(status, { 'Content-Type': 'application/json' });
+     res.end(JSON.stringify(data));
+@@ -109,6 +110,11 @@ export async function dispatch(method, path, params, res) {
+             return json(res, { error: 'No data yet' }, 503);
+         return json(res, s.tokens);
+     }
++    if (method === 'GET' && path === '/api/agents-recap') {
++        if (!s)
++            return json(res, { error: 'No data yet' }, 503);
++        return json(res, { rows: s.agents_recap || [], health: s.health || [] });
++    }
+     if (method === 'GET' && path === '/api/context') {
+         if (!s)
+             return json(res, { error: 'No data yet' }, 503);
+@@ -128,6 +134,8 @@ export async function dispatch(method, path, params, res) {
+             return html(res, messagesPage());
+         if (path === '/dashboard/users')
+             return html(res, usersPage());
++        if (path === '/dashboard/agents')
++            return html(res, agentsPage());
+         if (path === '/dashboard/logs')
+             return html(res, logsPage());
+         if (path === '/') {
+diff --git a/dist/ui/layout.js b/dist/ui/layout.js
+index 36b957573fba3d5046e9b50f844aefb9fde486e8..b0f86eb262455d04f6809d095198b907cb92e9d7 100644
+--- a/dist/ui/layout.js
++++ b/dist/ui/layout.js
+@@ -10,6 +10,7 @@ const NAV_ITEMS = [
+     { href: '/dashboard/channels', label: 'Channels', icon: '&#8644;' },
+     { href: '/dashboard/messages', label: 'Messages', icon: '&#9993;' },
+     { href: '/dashboard/users', label: 'Users', icon: '&#9679;' },
++    { href: '/dashboard/agents', label: 'Agents', icon: '&#9819;' },
+     { href: '/dashboard/logs', label: 'Logs', icon: '&#9776;' },
+ ];
+ const CSS = `
+diff --git a/dist/ui/pages/agents.js b/dist/ui/pages/agents.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..cd992c42dca43e94515efea35b721e19382cc0d7
+--- /dev/null
++++ b/dist/ui/pages/agents.js
+@@ -0,0 +1,83 @@
++/**
++ * Agents page — NanoClaw fork addition (pnpm patch, not upstream).
++ * Per-channel recap of agent characteristics: provider/model, trigger,
++ * active MCP servers and derived access rights, plus the operational
++ * health checks. Data comes from the snapshot keys `agents_recap` and
++ * `health` pushed by the fork's dashboard pusher extensions.
++ */
++import { layout } from '../layout.js';
++export function agentsPage() {
++    return layout('Agents', '/dashboard/agents', `
++    <h2 class="page-title">Agents par channel</h2>
++    <div id="summary" class="cards"><div class="loading">Loading...</div></div>
++    <h3 class="section-title">Caractéristiques &amp; droits d'accès</h3>
++    <div id="content"><div class="loading">Loading...</div></div>
++    <h3 class="section-title">Santé opérationnelle</h3>
++    <div id="health"><div class="loading">Loading...</div></div>
++    <script>
++    (async () => {
++      try {
++        const data = await api('/api/agents-recap');
++        const rows = data.rows || [];
++        const health = data.health || [];
++
++        const providers = {};
++        for (const r of rows) providers[r.provider] = (providers[r.provider] || 0) + 1;
++        const bad = health.filter(h => h.status === 'warn' || h.status === 'error').length;
++        document.getElementById('summary').innerHTML = [
++          cardHtml('Channels', rows.length),
++          cardHtml('Providers', Object.entries(providers).map(([p, n]) => p + ' ×' + n).join(', ') || '-'),
++          cardHtml('Checks santé', health.length),
++          cardHtml('Anomalies', bad),
++        ].join('');
++
++        if (rows.length === 0) {
++          document.getElementById('content').innerHTML = '<div class="loading">No data yet</div>';
++        } else {
++          let html = '<table><tr><th>Channel</th><th>Agent group</th><th>Provider / Modèle</th>' +
++            '<th>Déclenchement</th><th>MCP actifs</th><th>Droits d\\'accès</th></tr>';
++          for (const r of rows) {
++            const provColor = r.provider === 'claude' ? 'blue' : r.provider === 'opencode' ? 'green' : r.provider === 'agy' ? 'purple' : 'gray';
++            const mcp = (r.mcp || []).map(m => badge(m, 'gray')).join(' ') || '<span style="color:#555">-</span>';
++            const rights = (r.rights || []).map(x => {
++              const warn = x.indexOf('⚠') >= 0;
++              const strong = x.indexOf('GLOBAL') >= 0 || x.indexOf('Mount RW') >= 0;
++              return badge(x, warn ? 'red' : strong ? 'yellow' : x.indexOf('restreint') >= 0 ? 'yellow' : 'green');
++            }).join(' ') || '<span style="color:#555">-</span>';
++            html += '<tr>' +
++              '<td style="font-weight:500">' + esc(r.channel) + '</td>' +
++              '<td style="color:#888">' + esc(r.folder) + '</td>' +
++              '<td>' + badge(r.provider, provColor) + ' <span style="font-size:12px">' + esc(r.model) + '</span></td>' +
++              '<td style="font-size:12px;color:#888">' + esc(r.engage) + '</td>' +
++              '<td>' + mcp + '</td>' +
++              '<td>' + rights + '</td>' +
++              '</tr>';
++          }
++          html += '</table>';
++          document.getElementById('content').innerHTML = html;
++        }
++
++        if (health.length === 0) {
++          document.getElementById('health').innerHTML = '<div class="loading">No health data</div>';
++        } else {
++          let hh = '<table><tr><th>Check</th><th>Statut</th><th>Détail</th></tr>';
++          for (const h of health) {
++            const color = h.status === 'ok' ? 'green' : h.status === 'warn' ? 'yellow' : h.status === 'error' ? 'red' : 'gray';
++            hh += '<tr><td style="font-weight:500">' + esc(h.name) + '</td>' +
++              '<td>' + badge(h.status, color) + '</td>' +
++              '<td style="font-size:12px">' + esc(h.detail) + '</td></tr>';
++          }
++          hh += '</table>';
++          document.getElementById('health').innerHTML = hh;
++        }
++      } catch (e) {
++        document.getElementById('content').innerHTML = '<div class="loading">Error: ' + esc(e.message) + '</div>';
++      }
++    })();
++
++    function cardHtml(label, value) {
++      return '<div class="card"><div class="label">' + esc(label) + '</div><div class="value" style="font-size:20px">' + esc(String(value)) + '</div></div>';
++    }
++    </script>
++  `);
++}

@@ -91,7 +91,14 @@ export function collectOpenCodeTokens(): TokenEntry[] {
              WHERE json_extract(data,'$.role') = 'assistant' AND json_extract(data,'$.modelID') IS NOT NULL
              GROUP BY 1`,
           )
-          .all() as Array<{ model: string; requests: number; input: number; output: number; cacheRead: number; cacheWrite: number }>;
+          .all() as Array<{
+          model: string;
+          requests: number;
+          input: number;
+          output: number;
+          cacheRead: number;
+          cacheWrite: number;
+        }>;
         for (const r of rows) {
           out.push({
             model: r.model,
@@ -139,7 +146,9 @@ export function collectOpenCodeContextWindows(): unknown[] {
              WHERE json_extract(data,'$.role') = 'assistant' AND json_extract(data,'$.tokens.input') IS NOT NULL
              ORDER BY time_created DESC LIMIT 1`,
           )
-          .get() as { model: string; input: number; output: number; cacheRead: number; cacheWrite: number; ts: number } | undefined;
+          .get() as
+          | { model: string; input: number; output: number; cacheRead: number; cacheWrite: number; ts: number }
+          | undefined;
         if (!r || !r.model) return;
         const ctx = (r.input || 0) + (r.cacheRead || 0) + (r.cacheWrite || 0);
         const max = maxContextForModel(r.model);
@@ -205,7 +214,11 @@ export function deriveAccessRights(config: {
       rights.push('Gmail perso (complet)');
     } else if (name === 'google-calendar') {
       const instr = server.instructions ?? '';
-      rights.push(/lecture seule|écriture/i.test(instr) ? 'Google Calendar (restreint — voir instructions)' : 'Google Calendar (complet)');
+      rights.push(
+        /lecture seule|écriture/i.test(instr)
+          ? 'Google Calendar (restreint — voir instructions)'
+          : 'Google Calendar (complet)',
+      );
     } else if (name === 'imap') {
       rights.push(hasImapMount ? 'Mail Unistra (imap)' : 'Mail Unistra (imap) ⚠ mount .imap-mcp absent');
     } else if (name === 'vikunja') {
@@ -225,50 +238,73 @@ export function deriveAccessRights(config: {
   return rights;
 }
 
-export function buildAgentsRecap(): string {
+export interface RecapRow {
+  channel: string;
+  folder: string;
+  provider: string;
+  model: string;
+  engage: string;
+  mcp: string[];
+  rights: string[];
+}
+
+/** Structured per-channel recap rows — pushed in the snapshot (`agents_recap`)
+ * for the patched dashboard "Agents" page, and rendered to markdown below. */
+export function buildAgentsRecapRows(): RecapRow[] {
   const groups = new Map(getAllAgentGroups().map((g) => [g.id, g]));
-  const lines: string[] = [
-    '# Agents par channel — récap généré',
-    '',
-    `_Généré par le dashboard pusher le ${new Date().toISOString()} — source de vérité : container_configs (DB centrale). Ne pas éditer._`,
-    '',
-    '| Channel | Agent group | Provider / Modèle | Déclenchement | MCP actifs | Droits d\'accès |',
-    '|---|---|---|---|---|---|',
-  ];
-  const rows: string[] = [];
+  const rows: RecapRow[] = [];
   for (const mg of getAllMessagingGroups()) {
     for (const wiring of getMessagingGroupAgents(mg.id)) {
       const group = groups.get(wiring.agent_group_id);
       if (!group) continue;
       const config = getContainerConfig(group.id);
-      const provider = config?.provider || 'claude';
-      const model = config?.model || '(défaut)';
       let mcpNames: string[] = [];
       try {
         mcpNames = Object.keys(JSON.parse(config?.mcp_servers || '{}')).filter((n) => n !== 'nanoclaw');
       } catch {
         /* ignore */
       }
-      const engage = wiring.engage_mode === 'mention' ? 'mention' : `pattern \`${wiring.engage_pattern ?? '.'}\``;
-      const rights = config
-        ? deriveAccessRights(config)
-        : [];
+      const rights = config ? deriveAccessRights(config) : [];
       // Home Assistant is file-based (assumed exception to the DB principle)
       if (fs.existsSync(path.resolve(process.cwd(), 'groups', group.folder, 'ha_credentials.json'))) {
         rights.push('Home Assistant (REST)');
       }
-      rows.push(
-        `| ${mg.name} | ${group.folder} | ${provider} / ${model} | ${engage} | ${mcpNames.join(', ') || '—'} | ${rights.join(' · ') || '—'} |`,
-      );
+      rows.push({
+        channel: mg.name ?? mg.id,
+        folder: group.folder,
+        provider: config?.provider || 'claude',
+        model: config?.model || '(défaut)',
+        engage: wiring.engage_mode === 'mention' ? 'mention' : `pattern ${wiring.engage_pattern ?? '.'}`,
+        mcp: mcpNames,
+        rights,
+      });
     }
   }
-  rows.sort();
-  lines.push(...rows);
+  rows.sort((a, b) => a.channel.localeCompare(b.channel));
+  return rows;
+}
+
+export function buildAgentsRecap(): string {
+  const lines: string[] = [
+    '# Agents par channel — récap généré',
+    '',
+    `_Généré par le dashboard pusher le ${new Date().toISOString()} — source de vérité : container_configs (DB centrale). Ne pas éditer._`,
+    '',
+    "| Channel | Agent group | Provider / Modèle | Déclenchement | MCP actifs | Droits d'accès |",
+    '|---|---|---|---|---|---|',
+  ];
+  for (const r of buildAgentsRecapRows()) {
+    lines.push(
+      `| ${r.channel} | ${r.folder} | ${r.provider} / ${r.model} | ${r.engage} | ${r.mcp.join(', ') || '—'} | ${r.rights.join(' · ') || '—'} |`,
+    );
+  }
   lines.push('');
   lines.push('Notes :');
   lines.push('- « Gmail perso » = compte ppegon@gmail.com, OAuth par groupe dans son dossier `groups/<folder>/`.');
   lines.push('- Les groupes agy (Gemini) ne remontent PAS de stats tokens (Antigravity ne les expose pas).');
-  lines.push("- Le détail des restrictions vit dans le champ `instructions` des serveurs MCP (`ncl groups config get`).");
+  lines.push(
+    '- Le détail des restrictions vit dans le champ `instructions` des serveurs MCP (`ncl groups config get`).',
+  );
   return lines.join('\n');
 }
 

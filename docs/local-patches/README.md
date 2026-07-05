@@ -131,3 +131,11 @@ PR upstream :
   documentée : agy/Antigravity n'expose aucun comptage de tokens.
   Trois retouches supplémentaires dans `dashboard-pusher.ts` (imports,
   entrées pré-agrégées `requests`, appel writeAgentsRecap).
+- **`patches/@nanoco__nanoclaw-dashboard@0.3.0.patch`** (pnpm patch,
+  2026-07-05) — page « Agents » ajoutée à l'UI du dashboard : entrée de nav,
+  route `/dashboard/agents` (+ API `/api/agents-recap`), rendu du récap par
+  channel (provider/modèle, déclenchement, MCP, droits en badges) et des
+  checks santé. Réappliqué automatiquement à chaque `pnpm install` via
+  `patchedDependencies` (pnpm-workspace.yaml). ⚠ Au bump de version du
+  paquet, le patch doit être re-porté (`pnpm patch @nanoco/nanoclaw-dashboard@<ver>`).
+  Données servies par les clés snapshot `agents_recap`/`health` (fork).

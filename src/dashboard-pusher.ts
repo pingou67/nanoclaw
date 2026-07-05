@@ -16,7 +16,12 @@ import { getAllUsers, getUser } from './modules/permissions/db/users.js';
 import { getUserRoles, getAdminsOfAgentGroup } from './modules/permissions/db/user-roles.js';
 import { getUserDmsForUser } from './modules/permissions/db/user-dms.js';
 import { collectHealth, collectSessionRuntime, healthLogLines } from './dashboard-health.js';
-import { collectOpenCodeTokens, collectOpenCodeContextWindows, writeAgentsRecap } from './dashboard-usage.js';
+import {
+  collectOpenCodeTokens,
+  collectOpenCodeContextWindows,
+  writeAgentsRecap,
+  buildAgentsRecapRows,
+} from './dashboard-usage.js';
 import { getActiveAdapters, getRegisteredChannelNames } from './channels/channel-registry.js';
 import { DATA_DIR, ASSISTANT_NAME } from './config.js';
 import { getDb } from './db/connection.js';
@@ -152,6 +157,7 @@ async function push(config: PusherConfig): Promise<void> {
     const health = await collectHealth();
     snapshot.health = health;
     snapshot.session_runtime = collectSessionRuntime();
+    snapshot.agents_recap = buildAgentsRecapRows();
     const lines = healthLogLines(health);
     if (lines.length > 0) postJson(config, '/api/logs/push', { lines });
   } catch (err) {
