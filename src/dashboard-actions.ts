@@ -18,7 +18,8 @@ import { getSessionsByAgentGroup } from './db/sessions.js';
 import { getMessagingGroup } from './db/messaging-groups.js';
 import { getContainerConfig, updateContainerConfigScalars, updateContainerConfigJson } from './db/container-configs.js';
 import { restartAgentGroupContainers } from './container-restart.js';
-import { writeSessionMessage } from './session-manager.js';
+import { writeSessionMessage, openInboundDb } from './session-manager.js';
+import { insertTask, updateTask, cancelTask, pauseTask, resumeTask } from './modules/scheduling/db.js';
 import { log } from './log.js';
 
 export interface DashboardActionRequest {
@@ -26,6 +27,12 @@ export interface DashboardActionRequest {
   agentGroupId?: string;
   field?: string;
   value?: string | null;
+  /** Job actions (job-add / job-update / job-cancel / job-pause / job-resume). */
+  sessionDir?: string;
+  taskId?: string;
+  prompt?: string;
+  processAfter?: string;
+  recurrence?: string | null;
 }
 
 export interface DashboardActionResult {
@@ -112,9 +119,100 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
       };
     }
 
+    case 'job-add': {
+      const prompt = (req.prompt ?? '').trim();
+      if (!prompt || prompt.length > 4000) return refuse('prompt requis (1-4000 caractères)', req);
+      const when = req.processAfter ?? '';
+      if (!when || Number.isNaN(Date.parse(when))) return refuse(`échéance invalide: ${when}`, req);
+      const recurrence = normalizeCron(req.recurrence);
+      if (recurrence === false) return refuse(`récurrence invalide (cron 5 champs attendu): ${req.recurrence}`, req);
+      const session = latestActiveSession(gid);
+      if (!session) return refuse('aucune session active pour ce groupe', req);
+      const mg = session.messaging_group_id ? getMessagingGroup(session.messaging_group_id) : undefined;
+      const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      insertTask(openInboundDb(gid, session.id), {
+        id: taskId,
+        processAfter: new Date(when).toISOString(),
+        recurrence,
+        platformId: mg?.platform_id ?? null,
+        channelType: mg?.channel_type ?? null,
+        threadId: session.thread_id ?? null,
+        content: JSON.stringify({ prompt }),
+      });
+      audit(`job-add ${taskId} group=${group.folder} processAfter=${when} recurrence=${recurrence ?? '(ponctuelle)'} (via dashboard)`);
+      return { ok: true, message: `tâche ${taskId} créée` };
+    }
+
+    case 'job-update': {
+      const target = requireTask(req);
+      if ('error' in target) return refuse(target.error, req);
+      const update: { prompt?: string; processAfter?: string; recurrence?: string | null } = {};
+      if (req.prompt !== undefined) {
+        const p = req.prompt.trim();
+        if (!p || p.length > 4000) return refuse('prompt invalide (1-4000 caractères)', req);
+        update.prompt = p;
+      }
+      if (req.processAfter !== undefined && req.processAfter !== '') {
+        if (Number.isNaN(Date.parse(req.processAfter))) return refuse(`échéance invalide: ${req.processAfter}`, req);
+        update.processAfter = new Date(req.processAfter).toISOString();
+      }
+      if (req.recurrence !== undefined) {
+        const recurrence = normalizeCron(req.recurrence);
+        if (recurrence === false) return refuse(`récurrence invalide: ${req.recurrence}`, req);
+        update.recurrence = recurrence;
+      }
+      const n = updateTask(openInboundDb(gid, target.sessionId), target.taskId, update);
+      if (n === 0) return refuse(`tâche introuvable (ou plus pending/paused): ${target.taskId}`, req);
+      audit(`job-update ${target.taskId} group=${group.folder} champs=${Object.keys(update).join(',')} (via dashboard)`);
+      return { ok: true, message: `tâche mise à jour (${n} ligne(s))` };
+    }
+
+    case 'job-cancel': {
+      const target = requireTask(req);
+      if ('error' in target) return refuse(target.error, req);
+      cancelTask(openInboundDb(gid, target.sessionId), target.taskId);
+      audit(`job-cancel ${target.taskId} group=${group.folder} (via dashboard)`);
+      return { ok: true, message: `tâche ${target.taskId} supprimée` };
+    }
+
+    case 'job-pause':
+    case 'job-resume': {
+      const target = requireTask(req);
+      if ('error' in target) return refuse(target.error, req);
+      const db = openInboundDb(gid, target.sessionId);
+      if (req.action === 'job-pause') pauseTask(db, target.taskId);
+      else resumeTask(db, target.taskId);
+      audit(`${req.action} ${target.taskId} group=${group.folder} (via dashboard)`);
+      return { ok: true, message: `tâche ${req.action === 'job-pause' ? 'mise en pause' : 'reprise'}` };
+    }
+
     default:
       return refuse(`action inconnue: ${req.action}`, req);
   }
+}
+
+/** Cron sanity: null/'' → null (one-shot); otherwise exactly 5 whitespace-separated fields. */
+function normalizeCron(raw: string | null | undefined): string | null | false {
+  if (raw === undefined || raw === null || raw.trim() === '') return null;
+  const c = raw.trim();
+  return /^\S+\s+\S+\s+\S+\s+\S+\s+\S+$/.test(c) ? c : false;
+}
+
+function latestActiveSession(gid: string) {
+  return getSessionsByAgentGroup(gid)
+    .filter((s) => s.status === 'active')
+    .sort((a, b) => (b.last_active ?? '').localeCompare(a.last_active ?? ''))[0];
+}
+
+/** Resolve and validate the (sessionDir, taskId) pair of a job action. */
+function requireTask(req: DashboardActionRequest): { sessionId: string; taskId: string } | { error: string } {
+  const sid = req.sessionDir ?? '';
+  const taskId = req.taskId ?? '';
+  if (!/^sess-[\w-]+$/.test(sid)) return { error: `sessionDir invalide: ${sid}` };
+  if (!/^[\w-]{1,80}$/.test(taskId)) return { error: `taskId invalide: ${taskId}` };
+  const session = getSessionsByAgentGroup(req.agentGroupId ?? '').find((s) => s.id === sid);
+  if (!session) return { error: `session ${sid} inconnue pour ce groupe` };
+  return { sessionId: sid, taskId };
 }
 
 /** Config summary used by the UI to prefill controls (read via /api/agents-recap). */

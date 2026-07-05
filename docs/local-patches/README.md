@@ -142,7 +142,7 @@ PR upstream :
 - **Actions d'écriture du dashboard** (2026-07-05) — sous-ensemble borné
   piloté par `src/dashboard-actions.ts` (fork-owned, WHITELIST stricte :
   effort/model/thinking, restart de groupe, toggle live via injection de la
-  commande `!live` en inbound — jamais env/mounts/cli_scope/rôles).
+  commande `!live` en inbound — jamais env/mounts/cli_scope/rôles), étendue le 2026-07-05 aux tâches planifiées : job-add/update/pause/resume/cancel via les primitives du module scheduling sur l'inbound.db (host = écrivain légitime), validation cron 5 champs + échéance ISO + prompt ≤ 4000.
   Gardé par un token DÉDIÉ `DASHBOARD_WRITE_SECRET` (.env, non commité) —
   absent = dashboard strictement lecture seule ; le token lecture ne donne
   jamais l'écriture. Audit : chaque action (acceptée ou refusée) émet une

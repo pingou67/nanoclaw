@@ -227,7 +227,13 @@ export function collectScheduledJobs(): ScheduledJob[] {
                WHERE kind = 'task' AND status IN ('pending', 'paused')
                ORDER BY process_after`,
             )
-            .all() as Array<{ id: string; status: string; process_after: string | null; recurrence: string | null; content: string }>;
+            .all() as Array<{
+            id: string;
+            status: string;
+            process_after: string | null;
+            recurrence: string | null;
+            content: string;
+          }>;
           for (const r of rows) {
             let prompt = '';
             try {

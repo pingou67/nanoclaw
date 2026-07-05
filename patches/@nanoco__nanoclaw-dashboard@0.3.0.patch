@@ -1,5 +1,5 @@
 diff --git a/dist/router.js b/dist/router.js
-index 326434d184af3d5496de61b07c79bca0ceff7e7f..e32bea5eae20508156aae910b0cee0afad0f12ff 100644
+index 326434d184af3d5496de61b07c79bca0ceff7e7f..2e06a4d1ffd6c6346bf248d56ba6ee3b6b9e51e6 100644
 --- a/dist/router.js
 +++ b/dist/router.js
 @@ -6,6 +6,8 @@ import { channelsPage } from './ui/pages/channels.js';
@@ -23,7 +23,7 @@ index 326434d184af3d5496de61b07c79bca0ceff7e7f..e32bea5eae20508156aae910b0cee0af
 +            const groupName = (s.agent_groups || []).find((g) => g.id === rt.agent_group_id)?.name;
 +            for (const b of (rt.bg_jobs || [])) bg.push({ ...b, agentGroupId: rt.agent_group_id, groupName });
 +        }
-+        return json(res, { scheduled: s.scheduled_jobs || [], bg });
++        return json(res, { scheduled: s.scheduled_jobs || [], bg, groups: (s.agent_groups || []).map((g) => ({ id: g.id, name: g.name })) });
 +    }
 +    if (method === 'GET' && path === '/api/agents-recap') {
 +        if (!s)
@@ -45,7 +45,7 @@ index 326434d184af3d5496de61b07c79bca0ceff7e7f..e32bea5eae20508156aae910b0cee0af
              return html(res, logsPage());
          if (path === '/') {
 diff --git a/dist/server.js b/dist/server.js
-index f616ef5adfe7763270aa56d9685c1843819202de..25b84cac3c8cef2331b97ccca67877dfbb696c10 100644
+index f616ef5adfe7763270aa56d9685c1843819202de..671e169b85b1e39fa3d55cbc2728400b71bee62c 100644
 --- a/dist/server.js
 +++ b/dist/server.js
 @@ -9,12 +9,16 @@ import { dispatch } from './router.js';
@@ -107,7 +107,7 @@ index f616ef5adfe7763270aa56d9685c1843819202de..25b84cac3c8cef2331b97ccca67877df
 +    let size = 0;
 +    for await (const chunk of req) {
 +        size += chunk.length;
-+        if (size > 4096) {
++        if (size > 16384) {
 +            res.writeHead(413, { 'Content-Type': 'application/json' });
 +            res.end(JSON.stringify({ ok: false, message: 'Payload too large' }));
 +            return;
@@ -315,86 +315,181 @@ index 0000000000000000000000000000000000000000..534c77c9c155f722884f1d910bf834b5
 +}
 diff --git a/dist/ui/pages/jobs.js b/dist/ui/pages/jobs.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..0f676e2c8ccd9eb2d9bf87181ebea1ba3d0122d4
+index 0000000000000000000000000000000000000000..6b7821f6a32e7bb49a5e37caec91a081e365e93f
 --- /dev/null
 +++ b/dist/ui/pages/jobs.js
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,174 @@
 +/**
 + * Jobs page — NanoClaw fork addition (pnpm patch, not upstream).
-+ * Two sections: scheduled tasks (cron/reminders, `kind='task'` rows in each
-+ * session's inbound.db) and currently-running background jobs (`bg_jobs`
-+ * persisted by the runner in session_state). Data comes from the snapshot
-+ * keys `scheduled_jobs` and `session_runtime` pushed by the fork pusher.
++ * Scheduled tasks (cron/reminders) + running background jobs, with bounded
++ * write actions (add / update / pause / resume / cancel) guarded by the
++ * dedicated write token — same mechanism as the Agents page.
 + */
 +import { layout } from '../layout.js';
 +export function jobsPage() {
 +    return layout('Jobs', '/dashboard/jobs', `
++    <style>
++      #addform input, #addform select, #addform textarea { background:#1a1a1a; color:#e0e0e0; border:1px solid #2a2a2a; border-radius:4px; padding:6px; font-size:13px; margin:2px; }
++      #addform textarea { width: 100%; min-height: 54px; }
++      button.jact { background:#1e2a35; color:#7eb8da; border:1px solid #2a3a4a; border-radius:4px; padding:4px 8px; margin:1px; font-size:12px; cursor:pointer; }
++      button.jact:hover { background:#253545; }
++      button.jact.danger { color:#f87171; border-color:#4a2a2a; background:#2a1a1a; }
++    </style>
 +    <h2 class="page-title">Jobs</h2>
 +    <div id="summary" class="cards"><div class="loading">Loading...</div></div>
 +    <h3 class="section-title">Jobs background en cours</h3>
 +    <div id="bg"><div class="loading">Loading...</div></div>
 +    <h3 class="section-title">Tâches planifiées (pending / paused)</h3>
++    <div class="detail-panel" id="addform">
++      <div style="font-size:13px;color:#ccc;margin-bottom:8px">Ajouter une tâche</div>
++      <select id="add-group"></select>
++      <input id="add-when" type="datetime-local" title="Première échéance (heure locale)">
++      <input id="add-cron" placeholder="cron 5 champs (vide = ponctuelle)" style="width:220px" title="ex: 0 18 * * 0">
++      <br>
++      <textarea id="add-prompt" placeholder="Prompt de la tâche…"></textarea>
++      <br>
++      <button class="jact" id="add-btn">Ajouter</button>
++      <span id="add-st" style="font-size:12px;color:#888;margin-left:8px"></span>
++    </div>
 +    <div id="content"><div class="loading">Loading...</div></div>
 +    <script>
-+    (async () => {
-+      try {
-+        const data = await api('/api/jobs');
-+        const jobs = data.scheduled || [];
-+        const bg = data.bg || [];
++    let DATA = null;
++    async function load() {
++      DATA = await api('/api/jobs');
++      render();
++    }
++    function render() {
++      const jobs = DATA.scheduled || [];
++      const bg = DATA.bg || [];
++      const recurring = jobs.filter(j => j.recurrence);
++      document.getElementById('summary').innerHTML = [
++        cardHtml('Bg en cours', bg.length),
++        cardHtml('Récurrentes', recurring.length),
++        cardHtml('Ponctuelles', jobs.length - recurring.length),
++        cardHtml('En pause', jobs.filter(j => j.status === 'paused').length),
++      ].join('');
 +
-+        const recurring = jobs.filter(j => j.recurrence);
-+        const oneShot = jobs.filter(j => !j.recurrence);
-+        document.getElementById('summary').innerHTML = [
-+          cardHtml('Bg en cours', bg.length),
-+          cardHtml('Récurrentes', recurring.length),
-+          cardHtml('Ponctuelles', oneShot.length),
-+          cardHtml('En pause', jobs.filter(j => j.status === 'paused').length),
-+        ].join('');
++      const groupSel = document.getElementById('add-group');
++      groupSel.innerHTML = (DATA.groups || []).map(g =>
++        '<option value="' + esc(g.id) + '">' + esc(g.name || g.id) + '</option>').join('');
 +
-+        if (bg.length === 0) {
-+          document.getElementById('bg').innerHTML = '<div class="loading">Aucun job background en cours</div>';
-+        } else {
-+          let bh = '<table><tr><th>Groupe</th><th>Job</th><th>Depuis</th><th>Actions</th><th>Dernière action</th><th>Prompt</th></tr>';
-+          for (const b of bg) {
-+            bh += '<tr>' +
-+              '<td>' + esc(b.groupName || b.agentGroupId) + '</td>' +
-+              '<td>' + badge(b.jobId, 'blue') + '</td>' +
-+              '<td>' + esc(Math.round((Date.now() - b.startedAt) / 1000) + 's') + '</td>' +
-+              '<td>' + esc(String(b.actions)) + '</td>' +
-+              '<td style="font-size:12px">' + esc(b.lastAction || '-') + '</td>' +
-+              '<td style="font-size:12px;color:#888">' + esc(b.prompt || '') + '</td>' +
-+              '</tr>';
-+          }
-+          bh += '</table>';
-+          document.getElementById('bg').innerHTML = bh;
++      if (bg.length === 0) {
++        document.getElementById('bg').innerHTML = '<div class="loading">Aucun job background en cours</div>';
++      } else {
++        let bh = '<table><tr><th>Groupe</th><th>Job</th><th>Depuis</th><th>Actions</th><th>Dernière action</th><th>Prompt</th></tr>';
++        for (const b of bg) {
++          bh += '<tr>' +
++            '<td>' + esc(b.groupName || b.agentGroupId) + '</td>' +
++            '<td>' + badge(b.jobId, 'blue') + '</td>' +
++            '<td>' + esc(Math.round((Date.now() - b.startedAt) / 1000) + 's') + '</td>' +
++            '<td>' + esc(String(b.actions)) + '</td>' +
++            '<td style="font-size:12px">' + esc(b.lastAction || '-') + '</td>' +
++            '<td style="font-size:12px;color:#888">' + esc(b.prompt || '') + '</td>' +
++            '</tr>';
 +        }
-+
-+        if (jobs.length === 0) {
-+          document.getElementById('content').innerHTML = '<div class="loading">Aucune tâche planifiée</div>';
-+        } else {
-+          let html = '<table><tr><th>Groupe</th><th>Prochaine échéance</th><th>Récurrence</th><th>Statut</th><th>Prompt</th></tr>';
-+          for (const j of jobs) {
-+            const overdue = j.processAfter && Date.parse(j.processAfter) < Date.now() - 120000;
-+            html += '<tr>' +
-+              '<td>' + esc(j.agentGroupName || j.agentGroupId) + '</td>' +
-+              '<td>' + esc(j.processAfter ? new Date(j.processAfter).toLocaleString('fr-FR') : '-') +
-+                (overdue ? ' ' + badge('en retard', 'red') : '') + '</td>' +
-+              '<td>' + (j.recurrence ? badge(j.recurrence, 'purple') : '<span style="color:#555">ponctuelle</span>') + '</td>' +
-+              '<td>' + badge(j.status, j.status === 'pending' ? 'green' : 'yellow') + '</td>' +
-+              '<td style="font-size:12px;color:#aaa">' + esc(j.prompt) + '</td>' +
-+              '</tr>';
-+          }
-+          html += '</table>';
-+          document.getElementById('content').innerHTML = html;
-+        }
-+      } catch (e) {
-+        document.getElementById('content').innerHTML = '<div class="loading">Error: ' + esc(e.message) + '</div>';
++        document.getElementById('bg').innerHTML = bh + '</table>';
 +      }
-+    })();
++
++      if (jobs.length === 0) {
++        document.getElementById('content').innerHTML = '<div class="loading">Aucune tâche planifiée</div>';
++        return;
++      }
++      let html = '<table><tr><th>Groupe</th><th>Prochaine échéance</th><th>Récurrence</th><th>Statut</th><th>Prompt</th><th>Actions</th></tr>';
++      for (let i = 0; i < jobs.length; i++) {
++        const j = jobs[i];
++        const overdue = j.processAfter && Date.parse(j.processAfter) < Date.now() - 120000;
++        html += '<tr>' +
++          '<td>' + esc(j.agentGroupName || j.agentGroupId) + '</td>' +
++          '<td>' + esc(j.processAfter ? new Date(j.processAfter).toLocaleString('fr-FR') : '-') +
++            (overdue ? ' ' + badge('en retard', 'red') : '') + '</td>' +
++          '<td>' + (j.recurrence ? badge(j.recurrence, 'purple') : '<span style="color:#555">ponctuelle</span>') + '</td>' +
++          '<td>' + badge(j.status, j.status === 'pending' ? 'green' : 'yellow') + '</td>' +
++          '<td style="font-size:12px;color:#aaa">' + esc(j.prompt) +
++            '<div style="font-size:10px;color:#555">' + esc(j.id) + '</div></td>' +
++          '<td style="white-space:nowrap">' +
++            '<button class="jact" data-i="' + i + '" data-act="edit">Modifier</button>' +
++            '<button class="jact" data-i="' + i + '" data-act="' + (j.status === 'paused' ? 'job-resume' : 'job-pause') + '">' +
++              (j.status === 'paused' ? 'Reprendre' : 'Pause') + '</button>' +
++            '<button class="jact danger" data-i="' + i + '" data-act="job-cancel">Supprimer</button>' +
++            '<div id="jst-' + i + '" style="font-size:11px;color:#888"></div>' +
++          '</td></tr>';
++      }
++      document.getElementById('content').innerHTML = html + '</table>';
++    }
++
++    function writeToken(reset) {
++      if (reset) localStorage.removeItem('dashWriteToken');
++      let t = localStorage.getItem('dashWriteToken');
++      if (!t) {
++        t = prompt('Token ÉCRITURE du dashboard (DASHBOARD_WRITE_SECRET) :') || '';
++        if (t) localStorage.setItem('dashWriteToken', t);
++      }
++      return t;
++    }
++    async function postAction(body) {
++      const t = writeToken(false);
++      if (!t) return { ok: false, message: 'pas de token écriture' };
++      const res = await fetch('/api/actions', {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + t },
++        body: JSON.stringify(body),
++      });
++      if (res.status === 401) { writeToken(true); return { ok: false, message: 'token écriture invalide (re-saisir)' }; }
++      return res.json();
++    }
++
++    document.getElementById('add-btn').addEventListener('click', async () => {
++      const st = document.getElementById('add-st');
++      const whenLocal = document.getElementById('add-when').value;
++      st.textContent = '…';
++      const r = await postAction({
++        action: 'job-add',
++        agentGroupId: document.getElementById('add-group').value,
++        prompt: document.getElementById('add-prompt').value,
++        processAfter: whenLocal ? new Date(whenLocal).toISOString() : '',
++        recurrence: document.getElementById('add-cron').value.trim() || null,
++      });
++      st.textContent = (r.ok ? '✓ ' : '✗ ') + r.message;
++      st.style.color = r.ok ? '#4ade80' : '#f87171';
++      if (r.ok) { document.getElementById('add-prompt').value = ''; setTimeout(load, 800); }
++    });
++
++    document.addEventListener('click', async (ev) => {
++      const btn = ev.target.closest('button.jact');
++      if (!btn || btn.id === 'add-btn') return;
++      const j = (DATA.scheduled || [])[Number(btn.dataset.i)];
++      if (!j) return;
++      const st = document.getElementById('jst-' + btn.dataset.i);
++      const base = { agentGroupId: j.agentGroupId, sessionDir: j.sessionDir, taskId: j.id };
++      let body = null;
++      if (btn.dataset.act === 'edit') {
++        const prompt = window.prompt('Prompt :', j.prompt);
++        if (prompt === null) return;
++        const when = window.prompt('Prochaine échéance (ISO, vide = inchangée) :', j.processAfter || '');
++        if (when === null) return;
++        const cron = window.prompt('Récurrence cron 5 champs (vide = ponctuelle) :', j.recurrence || '');
++        if (cron === null) return;
++        body = { action: 'job-update', ...base, prompt, recurrence: cron.trim() || null };
++        if (when.trim()) body.processAfter = when.trim();
++      } else if (btn.dataset.act === 'job-cancel') {
++        if (!confirm('Supprimer la tâche ' + j.id + ' ?')) return;
++        body = { action: 'job-cancel', ...base };
++      } else {
++        body = { action: btn.dataset.act, ...base };
++      }
++      st.textContent = '…';
++      const r = await postAction(body);
++      st.textContent = (r.ok ? '✓ ' : '✗ ') + r.message;
++      st.style.color = r.ok ? '#4ade80' : '#f87171';
++      if (r.ok) setTimeout(load, 800);
++    });
 +
 +    function cardHtml(label, value) {
 +      return '<div class="card"><div class="label">' + esc(label) + '</div><div class="value">' + esc(String(value)) + '</div></div>';
 +    }
++    load().catch(e => {
++      document.getElementById('content').innerHTML = '<div class="loading">Error: ' + esc(e.message) + '</div>';
++    });
 +    </script>
 +  `);
 +}
