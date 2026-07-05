@@ -216,7 +216,7 @@ export function deriveAccessRights(config: {
       const instr = server.instructions ?? '';
       rights.push(
         /lecture seule|écriture/i.test(instr)
-          ? 'Google Calendar (restreint — voir instructions)'
+          ? 'Google Calendar (restreint PAR INSTRUCTIONS — non garanti techniquement)'
           : 'Google Calendar (complet)',
       );
     } else if (name === 'imap') {
@@ -318,7 +318,7 @@ export function buildAgentsRecap(): string {
   lines.push('- « Gmail perso » = compte ppegon@gmail.com, OAuth par groupe dans son dossier `groups/<folder>/`.');
   lines.push('- Les groupes agy (Gemini) ne remontent PAS de stats tokens (Antigravity ne les expose pas).');
   lines.push(
-    '- Le détail des restrictions vit dans le champ `instructions` des serveurs MCP (`ncl groups config get`).',
+    "- « restreint PAR INSTRUCTIONS » = règle énoncée dans le champ `instructions` du serveur MCP et suivie par le modèle — ce n'est PAS une barrière technique (ni côté serveur MCP, ni côté Google). Détail complet : `ncl groups config get --id <agent-group-id>` ou le fragment `.claude-fragments/mcp-google-calendar.md` composé dans le prompt du groupe.",
   );
   return lines.join('\n');
 }

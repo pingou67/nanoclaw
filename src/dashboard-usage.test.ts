@@ -29,7 +29,7 @@ describe('deriveAccessRights', () => {
       cli_scope: 'global',
     });
     expect(rights).toContain('Gmail perso (complet)');
-    expect(rights).toContain('Google Calendar (restreint — voir instructions)');
+    expect(rights).toContain('Google Calendar (restreint PAR INSTRUCTIONS — non garanti techniquement)');
     expect(rights).toContain('Mail Unistra (imap)');
     expect(rights).toContain('Vikunja (projet WORK)');
     expect(rights).toContain('Mémoire persistante');

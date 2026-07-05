@@ -129,10 +129,10 @@ index 36b957573fba3d5046e9b50f844aefb9fde486e8..b0f86eb262455d04f6809d095198b907
  const CSS = `
 diff --git a/dist/ui/pages/agents.js b/dist/ui/pages/agents.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..ea55d2959e801e32656f7cb4904677113428af44
+index 0000000000000000000000000000000000000000..534c77c9c155f722884f1d910bf834b5df084fd9
 --- /dev/null
 +++ b/dist/ui/pages/agents.js
-@@ -0,0 +1,157 @@
+@@ -0,0 +1,166 @@
 +/**
 + * Agents page — NanoClaw fork addition (pnpm patch, not upstream).
 + * Per-channel recap of agent characteristics: provider/model, trigger,
@@ -180,8 +180,12 @@ index 0000000000000000000000000000000000000000..ea55d2959e801e32656f7cb490467711
 +            const mcp = (r.mcp || []).map(m => badge(m, 'gray')).join(' ') || '<span style="color:#555">-</span>';
 +            const rights = (r.rights || []).map(x => {
 +              const warn = x.indexOf('⚠') >= 0;
++              const byInstr = x.indexOf('PAR INSTRUCTIONS') >= 0;
 +              const strong = x.indexOf('GLOBAL') >= 0 || x.indexOf('Mount RW') >= 0;
-+              return badge(x, warn ? 'red' : strong ? 'yellow' : x.indexOf('restreint') >= 0 ? 'yellow' : 'green');
++              const b = badge(x, warn ? 'red' : byInstr ? 'yellow' : strong ? 'yellow' : 'green');
++              return byInstr
++                ? '<span title="Règle suivie par le modèle (champ instructions du serveur MCP), PAS une barrière technique. Détail : ncl groups config get --id ' + esc(r.agentGroupId) + '">' + b + '</span>'
++                : b;
 +            }).join(' ') || '<span style="color:#555">-</span>';
 +            html += '<tr>' +
 +              '<td style="font-weight:500">' + esc(r.channel) + '</td>' +
@@ -196,6 +200,11 @@ index 0000000000000000000000000000000000000000..ea55d2959e801e32656f7cb490467711
 +              '</tr>';
 +          }
 +          html += '</table>';
++          html += '<div style="font-size:12px;color:#888;margin:-12px 0 24px">' +
++            badge('restreint PAR INSTRUCTIONS', 'yellow') +
++            ' = règle énoncée dans le champ <code>instructions</code> du serveur MCP et suivie par le modèle — ' +
++            'ce n\u2019est <b>pas</b> une barrière technique. Détail : <code>ncl groups config get --id &lt;agent-group-id&gt;</code> ' +
++            'ou le fragment <code>.claude-fragments/mcp-google-calendar.md</code> composé dans le prompt du groupe.</div>';
 +          document.getElementById('content').innerHTML = html;
 +        }
 +
