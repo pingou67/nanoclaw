@@ -758,3 +758,117 @@ index 0000000000000000000000000000000000000000..70bb43688808ba003d9d6c4820a42e5d
 +    </script>
 +  `);
 +}
+diff --git a/dist/ui/pages/logs.js b/dist/ui/pages/logs.js
+index 93fe37af10c30bf3ab8ac49647914b3f71bae682..9004934138c1dbc406ea73212fa7d43c7ad9ca56 100644
+--- a/dist/ui/pages/logs.js
++++ b/dist/ui/pages/logs.js
+@@ -28,11 +28,11 @@ export function logsPage() {
+       fetch(logUrl).then(function(response) {
+         if (!response.ok) {
+           statusEl.textContent = 'Log streaming unavailable';
+-          statusEl.style.color = '#f87171';
++          statusEl.style.color = 'var(--err)';
+           return;
+         }
+         statusEl.textContent = 'Connected';
+-        statusEl.style.color = '#4ade80';
++        statusEl.style.color = 'var(--ok)';
+         var reader = response.body.getReader();
+         var decoder = new TextDecoder();
+         var buffer = '';
+@@ -41,7 +41,7 @@ export function logsPage() {
+           reader.read().then(function(result) {
+             if (result.done) {
+               statusEl.textContent = 'Disconnected';
+-              statusEl.style.color = '#f87171';
++              statusEl.style.color = 'var(--err)';
+               setTimeout(connect, 3000);
+               return;
+             }
+@@ -59,14 +59,14 @@ export function logsPage() {
+             read();
+           }).catch(function() {
+             statusEl.textContent = 'Disconnected';
+-            statusEl.style.color = '#f87171';
++            statusEl.style.color = 'var(--err)';
+             setTimeout(connect, 3000);
+           });
+         }
+         read();
+       }).catch(function() {
+         statusEl.textContent = 'Failed to connect';
+-        statusEl.style.color = '#f87171';
++        statusEl.style.color = 'var(--err)';
+         setTimeout(connect, 5000);
+       });
+     }
+@@ -91,8 +91,8 @@ export function logsPage() {
+       var div = document.createElement('div');
+       div.className = 'log-line';
+       div.textContent = text;
+-      if (text.indexOf('ERROR') >= 0) div.style.color = '#f87171';
+-      else if (text.indexOf('WARN') >= 0) div.style.color = '#facc15';
++      if (text.indexOf('ERROR') >= 0) div.style.color = 'var(--err)';
++      else if (text.indexOf('WARN') >= 0) div.style.color = 'var(--warn)';
+       else if (text.indexOf('DEBUG') >= 0) div.style.color = '#666';
+       viewer.appendChild(div);
+       while (viewer.children.length > MAX_LINES) viewer.removeChild(viewer.firstChild);
+diff --git a/dist/ui/pages/overview.js b/dist/ui/pages/overview.js
+index 3e0cc9e7eea0c3eff47ac352b547dbe59f3cfc81..3039ad8bb5cb5473df93cf4170c9ccf057fd41fe 100644
+--- a/dist/ui/pages/overview.js
++++ b/dist/ui/pages/overview.js
+@@ -60,8 +60,8 @@ export function overviewPage() {
+           var mv = models[m];
+           detailHtml += '<tr><td>' + badge(m, 'blue') + '</td><td>' + formatNum(mv.requests) + '</td>' +
+             '<td>' + formatNum(mv.inputTokens) + '</td><td>' + formatNum(mv.outputTokens) + '</td>' +
+-            '<td style="color:#4ade80">' + formatNum(mv.cacheReadTokens) + '</td>' +
+-            '<td style="color:#facc15">' + formatNum(mv.cacheCreationTokens) + '</td></tr>';
++            '<td style="color:var(--ok)">' + formatNum(mv.cacheReadTokens) + '</td>' +
++            '<td style="color:var(--warn)">' + formatNum(mv.cacheCreationTokens) + '</td></tr>';
+         }
+         detailHtml += '</table></div>';
+ 
+@@ -74,8 +74,8 @@ export function overviewPage() {
+           detailHtml += '<tr><td><a href="/dashboard/agent-groups?id=' + esc(gid) + '">' + esc(gv.name) + '</a></td>' +
+             '<td>' + formatNum(gv.requests) + '</td>' +
+             '<td>' + formatNum(gv.inputTokens) + '</td><td>' + formatNum(gv.outputTokens) + '</td>' +
+-            '<td style="color:#4ade80">' + formatNum(gv.cacheReadTokens) + '</td>' +
+-            '<td style="color:#facc15">' + formatNum(gv.cacheCreationTokens) + '</td></tr>';
++            '<td style="color:var(--ok)">' + formatNum(gv.cacheReadTokens) + '</td>' +
++            '<td style="color:var(--warn)">' + formatNum(gv.cacheCreationTokens) + '</td></tr>';
+         }
+         detailHtml += '</table></div></div>';
+         document.getElementById('token-detail').innerHTML = detailHtml;
+@@ -89,7 +89,7 @@ export function overviewPage() {
+           for (var ci = 0; ci < ctxSessions.length; ci++) {
+             var cs = ctxSessions[ci];
+             var pct = cs.usagePercent;
+-            var barColor = pct > 80 ? '#f87171' : pct > 50 ? '#facc15' : '#4ade80';
++            var barColor = pct > 80 ? 'var(--err)' : pct > 50 ? 'var(--warn)' : 'var(--ok)';
+             var groupName = '';
+             // try to find group name from overview data
+             for (var gi = 0; gi < (data.agentGroups.list || []).length; gi++) {
+@@ -107,8 +107,8 @@ export function overviewPage() {
+               '<div style="background:#2a2a2a;border-radius:4px;height:8px;overflow:hidden">' +
+               '<div style="background:' + barColor + ';height:100%;width:' + Math.min(pct, 100) + '%;border-radius:4px;transition:width 0.3s"></div></div>' +
+               '<div style="display:flex;gap:16px;margin-top:6px;font-size:11px;color:#666">' +
+-              '<span>Cache read: <span style="color:#4ade80">' + formatNum(cs.cacheReadTokens) + '</span></span>' +
+-              '<span>Cache write: <span style="color:#facc15">' + formatNum(cs.cacheCreationTokens) + '</span></span>' +
++              '<span>Cache read: <span style="color:var(--ok)">' + formatNum(cs.cacheReadTokens) + '</span></span>' +
++              '<span>Cache write: <span style="color:var(--warn)">' + formatNum(cs.cacheCreationTokens) + '</span></span>' +
+               '<span>Output: ' + formatNum(cs.outputTokens) + '</span>' +
+               '<span>' + timeAgo(cs.timestamp) + '</span></div></div>';
+           }
+diff --git a/dist/ui/pages/sessions.js b/dist/ui/pages/sessions.js
+index 7e438eb56aede2fa7f775a99c3d9c8b52b1180d3..9903ccf6862ce12923b23201cdd260829d69c20e 100644
+--- a/dist/ui/pages/sessions.js
++++ b/dist/ui/pages/sessions.js
+@@ -33,7 +33,7 @@ export function sessionsPage() {
+           let ctxCell = '<span style="color:#555">-</span>';
+           if (ctx) {
+             const pct = ctx.usagePercent;
+-            const barColor = pct > 80 ? '#f87171' : pct > 50 ? '#facc15' : '#4ade80';
++            const barColor = pct > 80 ? 'var(--err)' : pct > 50 ? 'var(--warn)' : 'var(--ok)';
+             ctxCell = '<div style="display:flex;align-items:center;gap:6px">' +
+               '<div style="width:60px;background:#2a2a2a;border-radius:3px;height:6px;overflow:hidden">' +
+               '<div style="background:' + barColor + ';height:100%;width:' + Math.min(pct, 100) + '%"></div></div>' +
