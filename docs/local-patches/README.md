@@ -122,3 +122,12 @@ PR upstream :
 - **`tests/integration/mattermost/run_suite.py`** (skill-owned
   /add-mattermost, synchro branche `channels`) — écrit
   `logs/e2e-last-run.json` en fin de run pour le check e2e-last-run.
+- **`src/dashboard-usage.ts`** (fork-owned, 2026-07-05) — stats tokens et
+  fenêtres de contexte **OpenCode** (lecture des `opencode-xdg/opencode/
+  opencode.db` par session, agrégats par modèle/groupe injectés dans les
+  sections By Model / Context Windows de l'Overview ; plus récent par
+  groupe seulement) + récap agents par channel (`data/agents-recap.md`,
+  MCP actifs et droits d'accès dérivés de container_configs). Limitation
+  documentée : agy/Antigravity n'expose aucun comptage de tokens.
+  Trois retouches supplémentaires dans `dashboard-pusher.ts` (imports,
+  entrées pré-agrégées `requests`, appel writeAgentsRecap).

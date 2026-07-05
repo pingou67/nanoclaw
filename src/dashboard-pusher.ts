@@ -16,6 +16,7 @@ import { getAllUsers, getUser } from './modules/permissions/db/users.js';
 import { getUserRoles, getAdminsOfAgentGroup } from './modules/permissions/db/user-roles.js';
 import { getUserDmsForUser } from './modules/permissions/db/user-dms.js';
 import { collectHealth, collectSessionRuntime, healthLogLines } from './dashboard-health.js';
+import { collectOpenCodeTokens, collectOpenCodeContextWindows, writeAgentsRecap } from './dashboard-usage.js';
 import { getActiveAdapters, getRegisteredChannelNames } from './channels/channel-registry.js';
 import { DATA_DIR, ASSISTANT_NAME } from './config.js';
 import { getDb } from './db/connection.js';
@@ -156,6 +157,7 @@ async function push(config: PusherConfig): Promise<void> {
   } catch (err) {
     log.debug(`Dashboard health collection failed: ${(err as Error).message}`);
   }
+  writeAgentsRecap(); // data/agents-recap.md — projection lisible de la DB
   postJson(config, '/api/ingest', snapshot);
   log.debug('Dashboard snapshot pushed');
 }
@@ -319,6 +321,8 @@ function collectTokens() {
     cacheReadTokens: number;
     cacheCreationTokens: number;
     agentGroupId: string;
+    /** Pre-aggregated entries (OpenCode) carry their request count. */
+    requests?: number;
   }> = [];
   const agentGroups = getAllAgentGroups();
   const nameMap = new Map(agentGroups.map((g) => [g.id, g.name]));
@@ -329,6 +333,8 @@ function collectTokens() {
       allEntries.push(...entries.map((e) => ({ ...e, agentGroupId: agDir })));
     }
   }
+  // Fork extension: OpenCode sessions (pre-aggregated, carry `requests`).
+  allEntries.push(...collectOpenCodeTokens());
 
   const byModel: Record<
     string,
@@ -356,7 +362,7 @@ function collectTokens() {
   for (const e of allEntries) {
     if (!byModel[e.model])
       byModel[e.model] = { requests: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
-    byModel[e.model].requests++;
+    byModel[e.model].requests += e.requests ?? 1;
     byModel[e.model].inputTokens += e.inputTokens;
     byModel[e.model].outputTokens += e.outputTokens;
     byModel[e.model].cacheReadTokens += e.cacheReadTokens;
@@ -371,13 +377,13 @@ function collectTokens() {
         cacheCreationTokens: 0,
         name: nameMap.get(e.agentGroupId) || e.agentGroupId,
       };
-    byGroup[e.agentGroupId].requests++;
+    byGroup[e.agentGroupId].requests += e.requests ?? 1;
     byGroup[e.agentGroupId].inputTokens += e.inputTokens;
     byGroup[e.agentGroupId].outputTokens += e.outputTokens;
     byGroup[e.agentGroupId].cacheReadTokens += e.cacheReadTokens;
     byGroup[e.agentGroupId].cacheCreationTokens += e.cacheCreationTokens;
 
-    totals.requests++;
+    totals.requests += e.requests ?? 1;
     totals.inputTokens += e.inputTokens;
     totals.outputTokens += e.outputTokens;
     totals.cacheReadTokens += e.cacheReadTokens;
@@ -506,6 +512,8 @@ function collectContextWindows() {
     }
   }
 
+  // Fork extension: OpenCode sessions (agy exposes no usage data — absent).
+  results.push(...collectOpenCodeContextWindows());
   return results;
 }
 
