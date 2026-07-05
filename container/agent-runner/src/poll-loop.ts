@@ -16,6 +16,7 @@ import {
   getLiveStatusPosts,
   migrateLegacyContinuation,
   removeLiveStatusPost,
+  setBgJobsSnapshot,
   setContinuation,
   setLiveEnabled,
 } from './db/session-state.js';
@@ -245,6 +246,7 @@ function transitionToBackground(reason: 'manual' | 'auto', requester?: ActiveQue
 
   activeBackgroundQueries.set(jobId, fg);
   activeForegroundQuery = null;
+  persistBgJobs();
 
   // The demoted query keeps its in-memory SDK session id (subprocess already
   // has it loaded), but we MUST clear the persisted continuation and signal
@@ -335,6 +337,10 @@ function updateLiveStatus(active: ActiveQuery, text: string, opts: { countAction
   // mostly refresh ticks).
   if (opts.countAction !== false) live.eventCount += 1;
   live.latestText = text;
+
+  // Keep the persisted bg_jobs snapshot's actions/lastAction fresh during
+  // long jobs (dashboard observability; own 10s throttle inside).
+  if (active.kind === 'background') persistBgJobsThrottled();
 
   // Throttle: respect minimum interval since the last write.
   if (now - live.lastUpdateAt < LIVE_STATUS_THROTTLE_MS) return;
@@ -482,6 +488,7 @@ async function stopAllActivity(): Promise<number> {
   activeForegroundQuery = null;
   activeBackgroundQueries.clear();
   pendingBgResults.length = 0;
+  persistBgJobs();
 
   for (const aq of all) {
     aq.aborted = true; // disarm the query's follow-up poller immediately
@@ -524,6 +531,7 @@ async function cancelBackgroundJob(jobId: string): Promise<boolean> {
   if (!bg) return false;
 
   activeBackgroundQueries.delete(jobId);
+  persistBgJobs();
   bg.aborted = true; // disarm its follow-up poller
   try {
     bg.query.abort();
@@ -567,6 +575,37 @@ function listBackgroundJobs(): Array<{ jobId: string; elapsedS: number; lastActi
     });
   }
   return out;
+}
+
+/**
+ * Persist the current bg map to session_state (`bg_jobs` key) so the host
+ * (dashboard pusher) can observe running background work. Observability
+ * only — the in-memory map stays authoritative; a fresh container clears
+ * the key at startup (bg work does not survive container death, by design).
+ * Called on every bg mutation, plus throttled from live-status updates so
+ * `actions`/`lastAction` stay fresh during long jobs.
+ */
+function persistBgJobs(): void {
+  try {
+    setBgJobsSnapshot(
+      Array.from(activeBackgroundQueries.entries()).map(([jobId, bg]) => ({
+        jobId,
+        startedAt: bg.turnStartedAt,
+        actions: bg.live.eventCount,
+        lastAction: bg.live.latestText,
+        prompt: bg.originalPrompt.slice(0, 200),
+      })),
+    );
+  } catch {
+    /* observability must never break the loop */
+  }
+}
+
+let lastBgPersistAt = 0;
+function persistBgJobsThrottled(): void {
+  if (Date.now() - lastBgPersistAt < 10_000) return;
+  lastBgPersistAt = Date.now();
+  persistBgJobs();
 }
 
 /**
@@ -664,6 +703,7 @@ async function reapStaleBackgroundJobs(): Promise<number> {
     const bg = activeBackgroundQueries.get(jobId);
     if (!bg) continue;
     activeBackgroundQueries.delete(jobId);
+    persistBgJobs();
     bg.aborted = true; // disarm its follow-up poller
     try {
       bg.query.abort();
@@ -771,6 +811,10 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
   activeForegroundQuery = null;
   activeBackgroundQueries.clear();
   pendingBgResults.length = 0;
+  // Clear any bg_jobs snapshot left by a previous container — bg work does
+  // not survive container death, so a stale snapshot would show ghost jobs
+  // on the dashboard forever.
+  persistBgJobs();
   freshFgContinuationNeeded = false;
   runnerProviderName = config.providerName;
   runnerStructuredDelivery = config.provider.structuredDelivery ?? false;
@@ -1135,7 +1179,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         markCompleted(processingIds);
         // Slot bookkeeping: free fg slot or remove from bg map.
         if (activeForegroundQuery === activeQuery) activeForegroundQuery = null;
-        activeBackgroundQueries.delete(activeQuery.jobId);
+        if (activeBackgroundQueries.delete(activeQuery.jobId)) persistBgJobs();
         log(`Completed ${activeQuery.kind === 'background' ? activeQuery.jobId : ids.length + ' message(s)'}`);
       }
     })();

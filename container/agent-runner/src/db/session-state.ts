@@ -162,3 +162,39 @@ export function removeLiveStatusPost(outboundId: string): void {
 export function clearLiveStatusPosts(): void {
   deleteValue(LIVE_POST_KEY);
 }
+
+const BG_JOBS_KEY = 'bg_jobs';
+
+/**
+ * Snapshot of the running background jobs, persisted for OBSERVABILITY only
+ * (the host dashboard pusher reads outbound.db and surfaces it). The
+ * authoritative state stays in the poll-loop's in-memory map — on container
+ * death the jobs are gone (by design), so runPollLoop clears this key at
+ * startup rather than trying to resume anything from it.
+ */
+export interface BgJobSnapshot {
+  jobId: string;
+  /** turnStartedAt of the query — what the user perceives as job start. */
+  startedAt: number;
+  /** live-status event count ("N actions"). */
+  actions: number;
+  /** latest live-status one-liner (e.g. "🔧 imap_search_emails(…)"). */
+  lastAction: string;
+  /** original prompt, truncated by the writer. */
+  prompt: string;
+}
+
+export function setBgJobsSnapshot(jobs: BgJobSnapshot[]): void {
+  if (jobs.length === 0) deleteValue(BG_JOBS_KEY);
+  else setValue(BG_JOBS_KEY, JSON.stringify(jobs));
+}
+
+export function getBgJobsSnapshot(): BgJobSnapshot[] {
+  const v = getValue(BG_JOBS_KEY);
+  if (!v) return [];
+  try {
+    return JSON.parse(v) as BgJobSnapshot[];
+  } catch {
+    return [];
+  }
+}

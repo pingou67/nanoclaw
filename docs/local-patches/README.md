@@ -96,3 +96,29 @@ convertir exigerait des points d'extension côté upstream (hooks) :
 - `src/db/migrations/019+020` — colonnes env/thinking de container_configs
 - `setup/`, `scripts/` (q.ts, reauth-google, refresh-claude-token),
   `migrate-v2.sh`, `.gitignore`, `CLAUDE.md`, `container/CLAUDE.md`
+
+### Extension dashboard (2026-07-05 — 7 propositions santé/observabilité)
+
+Le dashboard (`/add-dashboard`, skill upstream) est étendu côté fork, sans
+PR upstream :
+
+- **`src/dashboard-health.ts`** (nouveau, fork-owned) — checks de santé :
+  expiry OAuth Claude + état des timers systemd (claude-token-refresh,
+  nanoclaw-rtk-update, nanoclaw-upstream-watch), fichiers credentials MCP
+  présents par groupe, token agy, OneCLI UI joignable, économies rtk
+  (host + sessions), marqueur E2E, drift skills-sync (1×/h). Sorties :
+  clé `health` du snapshot, lignes `[health]` dans la page Logs (sur
+  changement d'état uniquement), et `data/health.json` en local.
+  `collectSessionRuntime()` remonte aussi bg_jobs/live_enabled/continuations
+  par session (clé `session_runtime`).
+- **`src/dashboard-pusher.ts`** — ⚠️ fichier posé par le skill upstream
+  /add-dashboard, PATCHÉ localement (bloc fork dans `push()` + import).
+  Après un update du skill upstream, re-porter ce bloc (post-update
+  checklist).
+- **`container/agent-runner/src/{poll-loop,db/session-state}.ts`** —
+  persistance observabilité des bg jobs (`session_state.bg_jobs`, écrite à
+  chaque mutation + throttle 10 s pendant les live-updates, purgée au boot).
+  S'ajoute au système bg du reliquat ci-dessus.
+- **`tests/integration/mattermost/run_suite.py`** (skill-owned
+  /add-mattermost, synchro branche `channels`) — écrit
+  `logs/e2e-last-run.json` en fin de run pour le check e2e-last-run.
