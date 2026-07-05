@@ -243,6 +243,10 @@ export interface RecapRow {
   folder: string;
   provider: string;
   model: string;
+  /** Reasoning effort (low…max) — null when the group uses the default. */
+  effort: string | null;
+  /** Thinking mode ('adaptive' | 'enabled' | 'disabled') — null if unset. */
+  thinking: string | null;
   engage: string;
   mcp: string[];
   rights: string[];
@@ -274,6 +278,14 @@ export function buildAgentsRecapRows(): RecapRow[] {
         folder: group.folder,
         provider: config?.provider || 'claude',
         model: config?.model || '(défaut)',
+        effort: config?.effort ?? null,
+        thinking: (() => {
+          try {
+            return config?.thinking ? ((JSON.parse(config.thinking) as { type?: string }).type ?? null) : null;
+          } catch {
+            return null;
+          }
+        })(),
         engage: wiring.engage_mode === 'mention' ? 'mention' : `pattern ${wiring.engage_pattern ?? '.'}`,
         mcp: mcpNames,
         rights,
@@ -295,7 +307,7 @@ export function buildAgentsRecap(): string {
   ];
   for (const r of buildAgentsRecapRows()) {
     lines.push(
-      `| ${r.channel} | ${r.folder} | ${r.provider} / ${r.model} | ${r.engage} | ${r.mcp.join(', ') || '—'} | ${r.rights.join(' · ') || '—'} |`,
+      `| ${r.channel} | ${r.folder} | ${r.provider} / ${r.model}${r.effort ? ` (effort ${r.effort}` + (r.thinking ? `, thinking ${r.thinking})` : ')') : r.thinking ? ` (thinking ${r.thinking})` : ''} | ${r.engage} | ${r.mcp.join(', ') || '—'} | ${r.rights.join(' · ') || '—'} |`,
     );
   }
   lines.push('');

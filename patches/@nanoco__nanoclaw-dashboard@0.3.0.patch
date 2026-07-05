@@ -45,10 +45,10 @@ index 36b957573fba3d5046e9b50f844aefb9fde486e8..b0f86eb262455d04f6809d095198b907
  const CSS = `
 diff --git a/dist/ui/pages/agents.js b/dist/ui/pages/agents.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..cd992c42dca43e94515efea35b721e19382cc0d7
+index 0000000000000000000000000000000000000000..c685c30faf018df2161616829e4d18b65722e0a6
 --- /dev/null
 +++ b/dist/ui/pages/agents.js
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,85 @@
 +/**
 + * Agents page — NanoClaw fork addition (pnpm patch, not upstream).
 + * Per-channel recap of agent characteristics: provider/model, trigger,
@@ -98,7 +98,9 @@ index 0000000000000000000000000000000000000000..cd992c42dca43e94515efea35b721e19
 +            html += '<tr>' +
 +              '<td style="font-weight:500">' + esc(r.channel) + '</td>' +
 +              '<td style="color:#888">' + esc(r.folder) + '</td>' +
-+              '<td>' + badge(r.provider, provColor) + ' <span style="font-size:12px">' + esc(r.model) + '</span></td>' +
++              '<td>' + badge(r.provider, provColor) + ' <span style="font-size:12px">' + esc(r.model) + '</span>' +
++                (r.effort ? ' ' + badge('effort ' + r.effort, 'blue') : '') +
++                (r.thinking ? ' ' + badge('thinking ' + r.thinking, 'gray') : '') + '</td>' +
 +              '<td style="font-size:12px;color:#888">' + esc(r.engage) + '</td>' +
 +              '<td>' + mcp + '</td>' +
 +              '<td>' + rights + '</td>' +
