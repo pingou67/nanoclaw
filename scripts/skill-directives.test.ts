@@ -15,11 +15,16 @@ describe('skill-directives parser, on the converted add-slack', () => {
       'dep', // step 3: pinned package
       'run', // step 4: build
       'run', // step 4: test
-      'operator', // credentials: create-app walkthrough (addressed to the operator)
+      'prompt', // credentials: socket vs webhook delivery mode
+      'operator', // credentials: create-app walkthrough, Socket Mode variant
+      'operator', // credentials: create-app walkthrough, webhook variant
       'prompt', // credentials: capture bot token
-      'prompt', // credentials: capture signing secret
-      'env-set', // credentials: write captured values to .env
-      'operator', // credentials: event-delivery walkthrough
+      'prompt', // credentials: capture app-level token (socket only)
+      'prompt', // credentials: capture signing secret (webhook only)
+      'env-set', // credentials: bot token (both modes)
+      'env-set', // credentials: app token — doubles as the Socket Mode switch
+      'env-set', // credentials: signing secret (webhook only)
+      'operator', // credentials: event-delivery walkthrough (webhook only)
       'prompt', // resolve: owner member id (owner_handle)
       'run', // resolve: validate token (auth.test) — fast-fail before the restart
       'run', // resolve: DM channel (conversations.open → capture:platform_id)
@@ -32,10 +37,16 @@ describe('skill-directives parser, on the converted add-slack', () => {
 
   it('delineates the human UI steps as nc:operator (not agent prose or a run)', () => {
     const ops = directives.filter((d) => d.kind === 'operator');
-    expect(ops).toHaveLength(2);
-    expect(ops[0].body.join('\n')).toMatch(/Create the Slack app/);
-    expect(ops[0].body.join('\n')).toMatch(/Bot Token Scopes/);
-    expect(ops[1].body.join('\n')).toMatch(/Event Subscriptions/);
+    expect(ops).toHaveLength(3);
+    expect(ops[0].body.join('\n')).toMatch(/Create the Slack app \(Socket Mode\)/);
+    expect(ops[0].body.join('\n')).toMatch(/connections:write/);
+    expect(ops[1].body.join('\n')).toMatch(/Create the Slack app \(webhook delivery\)/);
+    expect(ops[1].body.join('\n')).toMatch(/Bot Token Scopes/);
+    expect(ops[2].body.join('\n')).toMatch(/Event Subscriptions/);
+    // the mode branches are guard-delineated, one per delivery mode
+    expect(ops[0].attrs.when).toBe('connection=socket');
+    expect(ops[1].attrs.when).toBe('connection=webhook');
+    expect(ops[2].attrs.when).toBe('connection=webhook');
   });
 
   it('reads copy as a branch fetch with both files', () => {
@@ -65,14 +76,19 @@ describe('skill-directives parser, on the converted add-slack', () => {
     ]);
   });
 
-  it('captures prompts into named vars — credentials secret, the handle not', () => {
+  it('captures prompts into named vars — credentials secret, the mode and handle not', () => {
     const prompts = directives.filter((d) => d.kind === 'prompt');
-    expect(prompts.map(promptVar)).toEqual(['bot_token', 'signing_secret', 'owner_handle']);
-    expect(prompts[0].args).toContain('secret'); // bot_token
-    expect(prompts[1].args).toContain('secret'); // signing_secret
-    expect(prompts[2].args).not.toContain('secret'); // owner_handle — a plain id, not a secret
+    expect(prompts.map(promptVar)).toEqual(['connection', 'bot_token', 'app_token', 'signing_secret', 'owner_handle']);
+    expect(prompts[0].args).not.toContain('secret'); // connection — a mode choice, not a secret
+    expect(prompts[1].args).toContain('secret'); // bot_token
+    expect(prompts[2].args).toContain('secret'); // app_token
+    expect(prompts[3].args).toContain('secret'); // signing_secret
+    expect(prompts[4].args).not.toContain('secret'); // owner_handle — a plain id, not a secret
+    // Each mode's credential is guard-scoped to its branch.
+    expect(prompts[2].attrs.when).toBe('connection=socket');
+    expect(prompts[3].attrs.when).toBe('connection=webhook');
     // The prompt body is the question; it does not mention env at all.
-    expect(prompts[0].body.join(' ')).toMatch(/Bot User OAuth Token/);
+    expect(prompts[1].body.join(' ')).toMatch(/Bot User OAuth Token/);
   });
 
   it('resolves the conversation address into capture:platform_id (the wire input)', () => {
@@ -83,9 +99,15 @@ describe('skill-directives parser, on the converted add-slack', () => {
     expect(resolve.body.join(' ')).toMatch(/"slack:" \+ \.channel\.id/); // emits the slack:<id> platform_id
   });
 
-  it('wires the captured variables into env-set via {{var}} references', () => {
-    const envSet = directives.find((d) => d.kind === 'env-set')!;
-    expect(envSet.body).toEqual(['SLACK_BOT_TOKEN={{bot_token}}', 'SLACK_SIGNING_SECRET={{signing_secret}}']);
+  it('wires the captured variables into env-set via {{var}} references, one per mode', () => {
+    const envSets = directives.filter((d) => d.kind === 'env-set');
+    expect(envSets.map((d) => d.body)).toEqual([
+      ['SLACK_BOT_TOKEN={{bot_token}}'],
+      ['SLACK_APP_TOKEN={{app_token}}'],
+      ['SLACK_SIGNING_SECRET={{signing_secret}}'],
+    ]);
+    expect(envSets[1].attrs.when).toBe('connection=socket');
+    expect(envSets[2].attrs.when).toBe('connection=webhook');
   });
 
   it('passes validation (well-formed, pinned, every {{var}} captured first)', () => {

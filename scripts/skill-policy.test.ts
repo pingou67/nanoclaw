@@ -85,8 +85,11 @@ describe('gatePolicy — §5.1 parity table (real skills)', () => {
     expect(d[1].flavor).toBe('completed');
   });
 
-  it('slack: both operators are prompt-followed — no confirm, unchanged', () => {
-    expect(decisions(loadSkill('slack')).map((g) => g.needsConfirm)).toEqual([false, false]);
+  it('slack: all three operators are prompt-followed — no confirm, unchanged', () => {
+    // socket-create (guard-skips its webhook twin, lands on the bot_token
+    // prompt), webhook-create (bot_token prompt), event-delivery (owner_handle
+    // prompt in Resolve) — every barrier is a natural prompt barrier.
+    expect(decisions(loadSkill('slack')).map((g) => g.needsConfirm)).toEqual([false, false, false]);
   });
 });
 
@@ -143,9 +146,9 @@ describe('extractOfferUrl — §5.2 inventory', () => {
     expect(extractOfferUrl(operatorBody(md, 3))).toBe('https://portal.azure.com'); // bot resource (new offer)
   });
 
-  it('slack :97 — the <your-public-host> placeholder is EXCLUDED (normative negative fixture)', () => {
+  it('slack — the <your-public-host> placeholder is EXCLUDED (normative negative fixture)', () => {
     const md = loadSkill('slack');
-    const body = operatorBody(md, 1); // event-delivery block
+    const body = operatorBody(md, 2); // event-delivery block (after the two create-app variants)
     expect(body).toContain('https://<your-public-host>/webhook/slack'); // fixture still authored as a placeholder
     expect(extractOfferUrl(body)).toBeUndefined(); // slack stays offer-free
   });

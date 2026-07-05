@@ -62,12 +62,34 @@ delivery against a real workspace is verified manually once the service runs.
 
 ## Credentials
 
-Walk the operator through creating the Slack app, then collect the two secrets it
-hands back. The adapter is already installed and registered — it just can't
-receive a message until this is done. Tell the user:
+Slack can deliver events two ways. Socket Mode holds an outbound WebSocket open
+— no public URL, so it works on a laptop or behind NAT — and is the right
+default. Webhook delivery needs a public HTTPS Request URL but avoids the
+long-lived socket. The adapter picks Socket Mode automatically whenever
+`SLACK_APP_TOKEN` is set; otherwise it serves the webhook.
 
-```nc:operator
-Create the Slack app:
+```nc:prompt connection validate:^(socket|webhook)$
+How should Slack deliver events? `socket` (Socket Mode — no public URL, recommended for local or behind-NAT installs) or `webhook` (needs a public HTTPS Request URL).
+```
+
+Walk the operator through creating the Slack app, then collect the secrets it
+hands back. The adapter is already installed and registered — it just can't
+receive a message until this is done. For Socket Mode, tell the user:
+
+```nc:operator when:connection=socket
+Create the Slack app (Socket Mode):
+1. Go to api.slack.com/apps → Create New App → From scratch. Name it (e.g. "NanoClaw") and pick your workspace.
+2. OAuth & Permissions → add these Bot Token Scopes: chat:write, im:write, channels:history, groups:history, im:history, channels:read, groups:read, users:read, reactions:write, files:read, files:write.
+3. App Home → enable the Messages Tab, and check "Allow users to send Slash commands and messages from the messages tab."
+4. Basic Information → App-Level Tokens → "Generate Token and Scopes" → add the connections:write scope → copy the token (starts with xapp-).
+5. Socket Mode → toggle "Enable Socket Mode" on.
+6. Install to Workspace, then copy the Bot User OAuth Token (starts with xoxb-).
+```
+
+For webhook delivery, tell the user:
+
+```nc:operator when:connection=webhook
+Create the Slack app (webhook delivery):
 1. Go to api.slack.com/apps → Create New App → From scratch. Name it (e.g. "NanoClaw") and pick your workspace.
 2. OAuth & Permissions → add these Bot Token Scopes: chat:write, im:write, channels:history, groups:history, im:history, channels:read, groups:read, users:read, reactions:write, files:read, files:write.
 3. App Home → enable the Messages Tab, and check "Allow users to send Slash commands and messages from the messages tab."
@@ -75,23 +97,35 @@ Create the Slack app:
 5. Basic Information → copy the Signing Secret.
 ```
 
-Collect the two secrets and store them (the bridge reads them from `.env`):
+Collect the secrets and store them (the bridge reads them from `.env`; the
+app-level token doubles as the Socket Mode switch, the signing secret
+authenticates webhook requests — each mode needs only its own):
 
 ```nc:prompt bot_token secret validate:^xoxb-
 Paste the Bot User OAuth Token — OAuth & Permissions, starts with `xoxb-`.
 ```
-```nc:prompt signing_secret secret validate:^[a-fA-F0-9]{16,}$
+```nc:prompt app_token secret validate:^xapp- reuse:SLACK_APP_TOKEN when:connection=socket
+Paste the App-Level Token — Basic Information → App-Level Tokens, starts with `xapp-`.
+```
+```nc:prompt signing_secret secret validate:^[a-fA-F0-9]{16,}$ when:connection=webhook
 Paste the Signing Secret — Basic Information.
 ```
 ```nc:env-set
 SLACK_BOT_TOKEN={{bot_token}}
+```
+```nc:env-set when:connection=socket
+SLACK_APP_TOKEN={{app_token}}
+```
+```nc:env-set when:connection=webhook
 SLACK_SIGNING_SECRET={{signing_secret}}
 ```
-The bridge serves the webhook on port 3000 at `/webhook/slack` automatically; to
-receive replies, that port must be reachable from the internet and registered
-with Slack. Tell the user:
 
-```nc:operator
+With webhook delivery, the bridge serves port 3000 at `/webhook/slack`
+automatically; to receive replies, that port must be reachable from the internet
+and registered with Slack (Socket Mode skips all of this — events arrive over
+the socket as soon as the service restarts). Tell the user:
+
+```nc:operator when:connection=webhook
 Set up event delivery (needs a public HTTPS URL for port 3000 — ngrok, a Cloudflare Tunnel, or a reverse proxy on a VPS):
 1. Event Subscriptions → Enable Events. Set the Request URL to https://<your-public-host>/webhook/slack and wait for the challenge to pass.
 2. Subscribe to bot events: message.channels, message.groups, message.im, app_mention. Save Changes.
@@ -126,8 +160,10 @@ curl -s -X POST https://slack.com/api/conversations.open -H "Authorization: Bear
 ```
 
 `owner_handle` and `platform_id` are what the owner-wiring step needs. The
-greeting goes out over `chat.postMessage`, which works right away; to receive
-replies, finish the Event Subscriptions and Interactivity steps above.
+greeting goes out over `chat.postMessage`, which works right away. Receiving
+replies needs the event path live: with Socket Mode that happens as soon as the
+service restarts below; with webhook delivery, finish the Event Subscriptions
+and Interactivity steps above first.
 
 ## Restart
 
