@@ -179,6 +179,86 @@ export function collectOpenCodeContextWindows(): unknown[] {
 }
 
 /* ------------------------------------------------------------------ */
+/* Scheduled jobs (kind='task' rows in each session's inbound.db)      */
+/* ------------------------------------------------------------------ */
+
+export interface ScheduledJob {
+  agentGroupId: string;
+  agentGroupName: string | undefined;
+  sessionDir: string;
+  id: string;
+  status: string;
+  processAfter: string | null;
+  recurrence: string | null;
+  prompt: string;
+}
+
+/**
+ * Pending/paused scheduled tasks across every session. The host WRITES
+ * inbound.db (it's its side of the two-DB split), so reading it here is
+ * within the single-writer rule.
+ */
+export function collectScheduledJobs(): ScheduledJob[] {
+  const nameMap = new Map(getAllAgentGroups().map((g) => [g.id, g.name]));
+  const out: ScheduledJob[] = [];
+  const sessionsRoot = path.join(DATA_DIR, 'v2-sessions');
+  let groupDirs: string[] = [];
+  try {
+    groupDirs = fs.readdirSync(sessionsRoot).filter((d) => d.startsWith('ag-'));
+  } catch {
+    return out;
+  }
+  for (const gid of groupDirs) {
+    let sessionDirs: string[] = [];
+    try {
+      sessionDirs = fs.readdirSync(path.join(sessionsRoot, gid)).filter((d) => d.startsWith('sess-'));
+    } catch {
+      continue;
+    }
+    for (const sid of sessionDirs) {
+      const dbPath = path.join(sessionsRoot, gid, sid, 'inbound.db');
+      if (!fs.existsSync(dbPath)) continue;
+      try {
+        const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+        try {
+          const rows = db
+            .prepare(
+              `SELECT id, status, process_after, recurrence, content FROM messages_in
+               WHERE kind = 'task' AND status IN ('pending', 'paused')
+               ORDER BY process_after`,
+            )
+            .all() as Array<{ id: string; status: string; process_after: string | null; recurrence: string | null; content: string }>;
+          for (const r of rows) {
+            let prompt = '';
+            try {
+              prompt = String((JSON.parse(r.content) as { prompt?: string }).prompt ?? '');
+            } catch {
+              prompt = r.content;
+            }
+            out.push({
+              agentGroupId: gid,
+              agentGroupName: nameMap.get(gid),
+              sessionDir: sid,
+              id: r.id,
+              status: r.status,
+              processAfter: r.process_after,
+              recurrence: r.recurrence,
+              prompt: prompt.replace(/\s+/g, ' ').slice(0, 160),
+            });
+          }
+        } finally {
+          db.close();
+        }
+      } catch {
+        /* transient lock — skip this cycle */
+      }
+    }
+  }
+  out.sort((a, b) => (a.processAfter ?? '').localeCompare(b.processAfter ?? ''));
+  return out;
+}
+
+/* ------------------------------------------------------------------ */
 /* Per-channel agents recap                                            */
 /* ------------------------------------------------------------------ */
 

@@ -1,19 +1,30 @@
 diff --git a/dist/router.js b/dist/router.js
-index 326434d184af3d5496de61b07c79bca0ceff7e7f..5265f81cdb7462baa197447f2dfc5c9d4270b0f5 100644
+index 326434d184af3d5496de61b07c79bca0ceff7e7f..e32bea5eae20508156aae910b0cee0afad0f12ff 100644
 --- a/dist/router.js
 +++ b/dist/router.js
-@@ -6,6 +6,7 @@ import { channelsPage } from './ui/pages/channels.js';
+@@ -6,6 +6,8 @@ import { channelsPage } from './ui/pages/channels.js';
  import { messagesPage } from './ui/pages/messages.js';
  import { usersPage } from './ui/pages/users.js';
  import { logsPage } from './ui/pages/logs.js';
 +import { agentsPage } from './ui/pages/agents.js';
++import { jobsPage } from './ui/pages/jobs.js';
  function json(res, data, status = 200) {
      res.writeHead(status, { 'Content-Type': 'application/json' });
      res.end(JSON.stringify(data));
-@@ -109,6 +110,11 @@ export async function dispatch(method, path, params, res) {
+@@ -109,6 +111,21 @@ export async function dispatch(method, path, params, res) {
              return json(res, { error: 'No data yet' }, 503);
          return json(res, s.tokens);
      }
++    if (method === 'GET' && path === '/api/jobs') {
++        if (!s)
++            return json(res, { error: 'No data yet' }, 503);
++        const bg = [];
++        for (const rt of (s.session_runtime || [])) {
++            const groupName = (s.agent_groups || []).find((g) => g.id === rt.agent_group_id)?.name;
++            for (const b of (rt.bg_jobs || [])) bg.push({ ...b, agentGroupId: rt.agent_group_id, groupName });
++        }
++        return json(res, { scheduled: s.scheduled_jobs || [], bg });
++    }
 +    if (method === 'GET' && path === '/api/agents-recap') {
 +        if (!s)
 +            return json(res, { error: 'No data yet' }, 503);
@@ -22,10 +33,12 @@ index 326434d184af3d5496de61b07c79bca0ceff7e7f..5265f81cdb7462baa197447f2dfc5c9d
      if (method === 'GET' && path === '/api/context') {
          if (!s)
              return json(res, { error: 'No data yet' }, 503);
-@@ -128,6 +134,8 @@ export async function dispatch(method, path, params, res) {
+@@ -128,6 +145,10 @@ export async function dispatch(method, path, params, res) {
              return html(res, messagesPage());
          if (path === '/dashboard/users')
              return html(res, usersPage());
++        if (path === '/dashboard/jobs')
++            return html(res, jobsPage());
 +        if (path === '/dashboard/agents')
 +            return html(res, agentsPage());
          if (path === '/dashboard/logs')
@@ -116,14 +129,15 @@ index f616ef5adfe7763270aa56d9685c1843819202de..25b84cac3c8cef2331b97ccca67877df
      // Auth check — read token from query param since SSE can't set headers
      if (dashboardSecret) {
 diff --git a/dist/ui/layout.js b/dist/ui/layout.js
-index 36b957573fba3d5046e9b50f844aefb9fde486e8..b0f86eb262455d04f6809d095198b907cb92e9d7 100644
+index 36b957573fba3d5046e9b50f844aefb9fde486e8..142d1b6ca5ef682add0985acf78617cb60c94b5d 100644
 --- a/dist/ui/layout.js
 +++ b/dist/ui/layout.js
-@@ -10,6 +10,7 @@ const NAV_ITEMS = [
+@@ -10,6 +10,8 @@ const NAV_ITEMS = [
      { href: '/dashboard/channels', label: 'Channels', icon: '&#8644;' },
      { href: '/dashboard/messages', label: 'Messages', icon: '&#9993;' },
      { href: '/dashboard/users', label: 'Users', icon: '&#9679;' },
 +    { href: '/dashboard/agents', label: 'Agents', icon: '&#9819;' },
++    { href: '/dashboard/jobs', label: 'Jobs', icon: '&#8987;' },
      { href: '/dashboard/logs', label: 'Logs', icon: '&#9776;' },
  ];
  const CSS = `
@@ -295,6 +309,91 @@ index 0000000000000000000000000000000000000000..534c77c9c155f722884f1d910bf834b5
 +
 +    function cardHtml(label, value) {
 +      return '<div class="card"><div class="label">' + esc(label) + '</div><div class="value" style="font-size:20px">' + esc(String(value)) + '</div></div>';
++    }
++    </script>
++  `);
++}
+diff --git a/dist/ui/pages/jobs.js b/dist/ui/pages/jobs.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..0f676e2c8ccd9eb2d9bf87181ebea1ba3d0122d4
+--- /dev/null
++++ b/dist/ui/pages/jobs.js
+@@ -0,0 +1,79 @@
++/**
++ * Jobs page — NanoClaw fork addition (pnpm patch, not upstream).
++ * Two sections: scheduled tasks (cron/reminders, `kind='task'` rows in each
++ * session's inbound.db) and currently-running background jobs (`bg_jobs`
++ * persisted by the runner in session_state). Data comes from the snapshot
++ * keys `scheduled_jobs` and `session_runtime` pushed by the fork pusher.
++ */
++import { layout } from '../layout.js';
++export function jobsPage() {
++    return layout('Jobs', '/dashboard/jobs', `
++    <h2 class="page-title">Jobs</h2>
++    <div id="summary" class="cards"><div class="loading">Loading...</div></div>
++    <h3 class="section-title">Jobs background en cours</h3>
++    <div id="bg"><div class="loading">Loading...</div></div>
++    <h3 class="section-title">Tâches planifiées (pending / paused)</h3>
++    <div id="content"><div class="loading">Loading...</div></div>
++    <script>
++    (async () => {
++      try {
++        const data = await api('/api/jobs');
++        const jobs = data.scheduled || [];
++        const bg = data.bg || [];
++
++        const recurring = jobs.filter(j => j.recurrence);
++        const oneShot = jobs.filter(j => !j.recurrence);
++        document.getElementById('summary').innerHTML = [
++          cardHtml('Bg en cours', bg.length),
++          cardHtml('Récurrentes', recurring.length),
++          cardHtml('Ponctuelles', oneShot.length),
++          cardHtml('En pause', jobs.filter(j => j.status === 'paused').length),
++        ].join('');
++
++        if (bg.length === 0) {
++          document.getElementById('bg').innerHTML = '<div class="loading">Aucun job background en cours</div>';
++        } else {
++          let bh = '<table><tr><th>Groupe</th><th>Job</th><th>Depuis</th><th>Actions</th><th>Dernière action</th><th>Prompt</th></tr>';
++          for (const b of bg) {
++            bh += '<tr>' +
++              '<td>' + esc(b.groupName || b.agentGroupId) + '</td>' +
++              '<td>' + badge(b.jobId, 'blue') + '</td>' +
++              '<td>' + esc(Math.round((Date.now() - b.startedAt) / 1000) + 's') + '</td>' +
++              '<td>' + esc(String(b.actions)) + '</td>' +
++              '<td style="font-size:12px">' + esc(b.lastAction || '-') + '</td>' +
++              '<td style="font-size:12px;color:#888">' + esc(b.prompt || '') + '</td>' +
++              '</tr>';
++          }
++          bh += '</table>';
++          document.getElementById('bg').innerHTML = bh;
++        }
++
++        if (jobs.length === 0) {
++          document.getElementById('content').innerHTML = '<div class="loading">Aucune tâche planifiée</div>';
++        } else {
++          let html = '<table><tr><th>Groupe</th><th>Prochaine échéance</th><th>Récurrence</th><th>Statut</th><th>Prompt</th></tr>';
++          for (const j of jobs) {
++            const overdue = j.processAfter && Date.parse(j.processAfter) < Date.now() - 120000;
++            html += '<tr>' +
++              '<td>' + esc(j.agentGroupName || j.agentGroupId) + '</td>' +
++              '<td>' + esc(j.processAfter ? new Date(j.processAfter).toLocaleString('fr-FR') : '-') +
++                (overdue ? ' ' + badge('en retard', 'red') : '') + '</td>' +
++              '<td>' + (j.recurrence ? badge(j.recurrence, 'purple') : '<span style="color:#555">ponctuelle</span>') + '</td>' +
++              '<td>' + badge(j.status, j.status === 'pending' ? 'green' : 'yellow') + '</td>' +
++              '<td style="font-size:12px;color:#aaa">' + esc(j.prompt) + '</td>' +
++              '</tr>';
++          }
++          html += '</table>';
++          document.getElementById('content').innerHTML = html;
++        }
++      } catch (e) {
++        document.getElementById('content').innerHTML = '<div class="loading">Error: ' + esc(e.message) + '</div>';
++      }
++    })();
++
++    function cardHtml(label, value) {
++      return '<div class="card"><div class="label">' + esc(label) + '</div><div class="value">' + esc(String(value)) + '</div></div>';
 +    }
 +    </script>
 +  `);

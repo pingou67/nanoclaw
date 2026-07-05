@@ -21,6 +21,7 @@ import {
   collectOpenCodeContextWindows,
   writeAgentsRecap,
   buildAgentsRecapRows,
+  collectScheduledJobs,
 } from './dashboard-usage.js';
 import { getActiveAdapters, getRegisteredChannelNames } from './channels/channel-registry.js';
 import { DATA_DIR, ASSISTANT_NAME } from './config.js';
@@ -168,6 +169,7 @@ async function push(config: PusherConfig): Promise<void> {
     snapshot.health = health;
     snapshot.session_runtime = collectSessionRuntime();
     snapshot.agents_recap = buildAgentsRecapRows();
+    snapshot.scheduled_jobs = collectScheduledJobs();
     const lines = healthLogLines(health);
     if (lines.length > 0) postJson(config, '/api/logs/push', { lines });
   } catch (err) {
