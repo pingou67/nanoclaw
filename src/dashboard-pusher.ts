@@ -85,7 +85,7 @@ export async function startDashboard(): Promise<void> {
   // Guarded by a DEDICATED write secret — unset means the dashboard stays
   // strictly read-only, whatever the package patch supports.
   const writeSecret = process.env.DASHBOARD_WRITE_SECRET || env.DASHBOARD_WRITE_SECRET;
-  const { handleDashboardAction } = await import('./dashboard-actions.js');
+  const { handleDashboardAction, setAfterActionHook } = await import('./dashboard-actions.js');
   const { startDashboard: startServer } = await import('@nanoco/nanoclaw-dashboard');
   startServer({
     port,
@@ -93,7 +93,14 @@ export async function startDashboard(): Promise<void> {
     ...(writeSecret ? { writeSecret, onAction: handleDashboardAction } : {}),
   } as Parameters<typeof startServer>[0]);
   if (!writeSecret) log.info('Dashboard en lecture seule (pas de DASHBOARD_WRITE_SECRET)');
-  startDashboardPusher({ port, secret, intervalMs: 60000 });
+  const config: PusherConfig = { port, secret, intervalMs: 60000 };
+  // Immediate snapshot push after every successful write action — without
+  // this the UI reloads against data up to 60 s stale and a deletion looks
+  // like a silent failure.
+  setAfterActionHook(() => {
+    push(config).catch(() => {});
+  });
+  startDashboardPusher(config);
 }
 
 /** Fire-and-forget POST to the dashboard. */

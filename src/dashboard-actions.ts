@@ -45,6 +45,27 @@ const THINKING = new Set(['adaptive', 'enabled', 'disabled', 'none']);
 /** Model ids: aliases (opus), full ids, provider-prefixed (a/b/c). */
 const MODEL_RE = /^[\w.:\/-]{1,120}$/;
 
+/**
+ * Hook fired after every SUCCESSFUL mutating action — the pusher registers
+ * an immediate snapshot push here, so the UI's reload (~1 s later) sees
+ * fresh data instead of the up-to-60 s-stale previous snapshot (which made
+ * deletions look like silent failures).
+ */
+let afterActionHook: (() => void) | null = null;
+export function setAfterActionHook(fn: () => void): void {
+  afterActionHook = fn;
+}
+
+function done(message: string, auditLine: string): DashboardActionResult {
+  audit(auditLine);
+  try {
+    afterActionHook?.();
+  } catch {
+    /* refresh is best-effort */
+  }
+  return { ok: true, message };
+}
+
 function audit(line: string): void {
   log.info(`[action] ${line}`);
 }
@@ -77,18 +98,18 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
         // env / mounts / cli_scope / anything else: not on the whitelist.
         return refuse(`champ non modifiable depuis le dashboard: ${field ?? '(absent)'}`, req);
       }
-      audit(`set-config ${field}=${value ?? '(défaut)'} group=${group.folder} (via dashboard)`);
-      return { ok: true, message: `${field} → ${value ?? '(défaut)'} — effectif au prochain restart du groupe` };
+      return done(
+        `${field} → ${value ?? '(défaut)'} — effectif au prochain restart du groupe`,
+        `set-config ${field}=${value ?? '(défaut)'} group=${group.folder} (via dashboard)`,
+      );
     }
 
     case 'restart-group': {
       const n = restartAgentGroupContainers(gid, 'dashboard action');
-      audit(`restart-group group=${group.folder} containers=${n} (via dashboard)`);
-      return {
-        ok: true,
-        message:
-          n > 0 ? `${n} container(s) redémarré(s)` : 'aucun container actif — la config sera prise au prochain message',
-      };
+      return done(
+        n > 0 ? `${n} container(s) redémarré(s)` : 'aucun container actif — la config sera prise au prochain message',
+        `restart-group group=${group.folder} containers=${n} (via dashboard)`,
+      );
     }
 
     case 'toggle-live': {
@@ -112,11 +133,10 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
         threadId: session.thread_id ?? null,
         content: JSON.stringify({ text: '!live', sender: 'dashboard', senderId: 'dashboard' }),
       });
-      audit(`toggle-live group=${group.folder} session=${session.id} (via dashboard, commande !live injectée)`);
-      return {
-        ok: true,
-        message: 'commande !live envoyée — le container ack dans le channel (à la prochaine minute si endormi)',
-      };
+      return done(
+        'commande !live envoyée — le container ack dans le channel (à la prochaine minute si endormi)',
+        `toggle-live group=${group.folder} session=${session.id} (via dashboard, commande !live injectée)`,
+      );
     }
 
     case 'job-add': {
@@ -139,10 +159,10 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
         threadId: session.thread_id ?? null,
         content: JSON.stringify({ prompt }),
       });
-      audit(
+      return done(
+        `tâche ${taskId} créée`,
         `job-add ${taskId} group=${group.folder} processAfter=${when} recurrence=${recurrence ?? '(ponctuelle)'} (via dashboard)`,
       );
-      return { ok: true, message: `tâche ${taskId} créée` };
     }
 
     case 'job-update': {
@@ -174,9 +194,12 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
     case 'job-cancel': {
       const target = requireTask(req);
       if ('error' in target) return refuse(target.error, req);
-      cancelTask(openInboundDb(gid, target.sessionId), target.taskId);
-      audit(`job-cancel ${target.taskId} group=${group.folder} (via dashboard)`);
-      return { ok: true, message: `tâche ${target.taskId} supprimée` };
+      const db = openInboundDb(gid, target.sessionId);
+      if (countLiveTaskRows(db, target.taskId) === 0) {
+        return refuse(`tâche déjà supprimée/terminée (ou id inconnu): ${target.taskId}`, req);
+      }
+      cancelTask(db, target.taskId);
+      return done(`tâche ${target.taskId} supprimée`, `job-cancel ${target.taskId} group=${group.folder} (via dashboard)`);
     }
 
     case 'job-pause':
@@ -184,10 +207,16 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
       const target = requireTask(req);
       if ('error' in target) return refuse(target.error, req);
       const db = openInboundDb(gid, target.sessionId);
+      const wanted = req.action === 'job-pause' ? 'pending' : 'paused';
+      if (countLiveTaskRows(db, target.taskId, wanted) === 0) {
+        return refuse(`aucune tâche au statut « ${wanted} » pour ${target.taskId}`, req);
+      }
       if (req.action === 'job-pause') pauseTask(db, target.taskId);
       else resumeTask(db, target.taskId);
-      audit(`${req.action} ${target.taskId} group=${group.folder} (via dashboard)`);
-      return { ok: true, message: `tâche ${req.action === 'job-pause' ? 'mise en pause' : 'reprise'}` };
+      return done(
+        `tâche ${req.action === 'job-pause' ? 'mise en pause' : 'reprise'}`,
+        `${req.action} ${target.taskId} group=${group.folder} (via dashboard)`,
+      );
     }
 
     default:
@@ -206,6 +235,18 @@ function latestActiveSession(gid: string) {
   return getSessionsByAgentGroup(gid)
     .filter((s) => s.status === 'active')
     .sort((a, b) => (b.last_active ?? '').localeCompare(a.last_active ?? ''))[0];
+}
+
+/** Count live rows a job action would touch — gives honest "no-op" answers. */
+function countLiveTaskRows(db: ReturnType<typeof openInboundDb>, taskId: string, status?: string): number {
+  const statuses = status ? [status] : ['pending', 'paused'];
+  const row = db
+    .prepare(
+      `SELECT count(*) AS n FROM messages_in
+       WHERE (id = ? OR series_id = ?) AND kind = 'task' AND status IN (${statuses.map(() => '?').join(',')})`,
+    )
+    .get(taskId, taskId, ...statuses) as { n: number };
+  return row.n;
 }
 
 /** Resolve and validate the (sessionDir, taskId) pair of a job action. */
