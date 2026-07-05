@@ -129,10 +129,10 @@ index f616ef5adfe7763270aa56d9685c1843819202de..671e169b85b1e39fa3d55cbc2728400b
      // Auth check — read token from query param since SSE can't set headers
      if (dashboardSecret) {
 diff --git a/dist/ui/layout.js b/dist/ui/layout.js
-index 36b957573fba3d5046e9b50f844aefb9fde486e8..2673b0743e83e01b8ca5a6ba485c1c904e6e9418 100644
+index 36b957573fba3d5046e9b50f844aefb9fde486e8..8e17ca95286798df75ed92d3a17730c07adf86c9 100644
 --- a/dist/ui/layout.js
 +++ b/dist/ui/layout.js
-@@ -10,159 +10,121 @@ const NAV_ITEMS = [
+@@ -10,159 +10,123 @@ const NAV_ITEMS = [
      { href: '/dashboard/channels', label: 'Channels', icon: '&#8644;' },
      { href: '/dashboard/messages', label: 'Messages', icon: '&#9993;' },
      { href: '/dashboard/users', label: 'Users', icon: '&#9679;' },
@@ -147,6 +147,7 @@ index 36b957573fba3d5046e9b50f844aefb9fde486e8..2673b0743e83e01b8ca5a6ba485c1c90
 +    --text: #e0e0e0; --title: #fff; --heading: #ccc; --muted: #888; --faint: #555;
 +    --link: #7eb8da; --nav-active-bg: #1e2a35;
 +    --btn-bg: #1e2a35; --btn-border: #2a3a4a; --btn-hover: #253545;
++    --ok: #4ade80; --warn: #facc15; --err: #f87171;
 +  }
 +  [data-theme="light"] {
 +    --bg: #f4f5f7; --panel: #ffffff; --panel-deep: #fbfbfc; --hover: #ededf0;
@@ -154,6 +155,7 @@ index 36b957573fba3d5046e9b50f844aefb9fde486e8..2673b0743e83e01b8ca5a6ba485c1c90
 +    --text: #24292f; --title: #111; --heading: #333; --muted: #667; --faint: #99a;
 +    --link: #1a6fa8; --nav-active-bg: #e2eefa;
 +    --btn-bg: #e2eefa; --btn-border: #b9d4ea; --btn-hover: #d2e4f6;
++    --ok: #15803d; --warn: #a16207; --err: #b91c1c;
 +  }
    * { margin: 0; padding: 0; box-sizing: border-box; }
    body {
@@ -352,7 +354,7 @@ index 36b957573fba3d5046e9b50f844aefb9fde486e8..2673b0743e83e01b8ca5a6ba485c1c90
  `;
  export function layout(title, activePath, bodyHtml) {
      const token = getDashboardSecret() || '';
-@@ -178,6 +140,14 @@ export function layout(title, activePath, bodyHtml) {
+@@ -178,6 +142,14 @@ export function layout(title, activePath, bodyHtml) {
    <title>${title} — NanoClaw Dashboard</title>
    <style>${CSS}</style>
    <script>
@@ -367,7 +369,7 @@ index 36b957573fba3d5046e9b50f844aefb9fde486e8..2673b0743e83e01b8ca5a6ba485c1c90
      const TOKEN = document.querySelector('meta[name="dashboard-token"]')?.content || '';
      async function api(path) {
        const headers = {};
-@@ -228,6 +198,11 @@ export function layout(title, activePath, bodyHtml) {
+@@ -228,6 +200,11 @@ export function layout(title, activePath, bodyHtml) {
    <div class="sidebar">
      <h1>NanoClaw</h1>
      <nav>${navHtml}</nav>
@@ -381,7 +383,7 @@ index 36b957573fba3d5046e9b50f844aefb9fde486e8..2673b0743e83e01b8ca5a6ba485c1c90
      ${bodyHtml}
 diff --git a/dist/ui/pages/agents.js b/dist/ui/pages/agents.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..3c5a1a93ff231437fb5445dfba37ca5044c08e35
+index 0000000000000000000000000000000000000000..9f6b9509d60a8868982eb338c0492e1f0e138419
 --- /dev/null
 +++ b/dist/ui/pages/agents.js
 @@ -0,0 +1,166 @@
@@ -523,7 +525,7 @@ index 0000000000000000000000000000000000000000..3c5a1a93ff231437fb5445dfba37ca50
 +      const gid = decodeURIComponent(k);
 +      const st = document.getElementById('st-' + k);
 +      st.textContent = '…';
-+      st.style.color = '#888';
++      st.style.color = 'var(--muted)';
 +      if (btn.dataset.act === 'apply') {
 +        const fields = [
 +          ['effort', document.getElementById('eff-' + k).value],
@@ -537,11 +539,11 @@ index 0000000000000000000000000000000000000000..3c5a1a93ff231437fb5445dfba37ca50
 +          msgs.push(field + ' ✓');
 +        }
 +        st.textContent = msgs.join(' · ') + ' — restart pour appliquer';
-+        st.style.color = '#facc15';
++        st.style.color = 'var(--warn)';
 +      } else {
 +        const r = await postAction({ action: btn.dataset.act, agentGroupId: gid });
 +        st.textContent = (r.ok ? '✓ ' : '✗ ') + r.message;
-+        st.style.color = r.ok ? '#4ade80' : '#f87171';
++        st.style.color = r.ok ? 'var(--ok)' : 'var(--err)';
 +      }
 +    });
 +
@@ -553,7 +555,7 @@ index 0000000000000000000000000000000000000000..3c5a1a93ff231437fb5445dfba37ca50
 +}
 diff --git a/dist/ui/pages/jobs.js b/dist/ui/pages/jobs.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..8fa96187893d644da6d102d8e745e33331130fce
+index 0000000000000000000000000000000000000000..70bb43688808ba003d9d6c4820a42e5df13d079d
 --- /dev/null
 +++ b/dist/ui/pages/jobs.js
 @@ -0,0 +1,199 @@
@@ -710,7 +712,7 @@ index 0000000000000000000000000000000000000000..8fa96187893d644da6d102d8e745e333
 +        recurrence: document.getElementById('add-cron').value.trim() || null,
 +      });
 +      st.textContent = (r.ok ? '✓ ' : '✗ ') + r.message;
-+      st.style.color = r.ok ? '#4ade80' : '#f87171';
++      st.style.color = r.ok ? 'var(--ok)' : 'var(--err)';
 +      if (r.ok) { document.getElementById('add-prompt').value = ''; setTimeout(load, 800); }
 +    });
 +
@@ -743,7 +745,7 @@ index 0000000000000000000000000000000000000000..8fa96187893d644da6d102d8e745e333
 +      st.textContent = '…';
 +      const r = await postAction(body);
 +      st.textContent = (r.ok ? '✓ ' : '✗ ') + r.message;
-+      st.style.color = r.ok ? '#4ade80' : '#f87171';
++      st.style.color = r.ok ? 'var(--ok)' : 'var(--err)';
 +      if (r.ok) { editIndex = -1; setTimeout(load, 800); }
 +    });
 +
