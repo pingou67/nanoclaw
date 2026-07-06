@@ -11,16 +11,18 @@ import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/con
 import {
   addLiveStatusPost,
   clearContinuation,
+  clearCurrentInReplyTo,
   clearLiveStatusPosts,
+  getCurrentInReplyTo,
   getLiveEnabled,
   getLiveStatusPosts,
   migrateLegacyContinuation,
   removeLiveStatusPost,
   setBgJobsSnapshot,
   setContinuation,
+  setCurrentInReplyTo,
   setLiveEnabled,
 } from './db/session-state.js';
-import { clearCurrentInReplyTo, getCurrentInReplyTo, setCurrentInReplyTo } from './current-batch.js';
 import {
   formatMessages,
   extractRouting,

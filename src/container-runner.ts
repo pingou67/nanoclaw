@@ -3,10 +3,11 @@
  * Spawns agent containers with session folder + agent group folder mounts.
  * The container runs the v2 agent-runner which polls the session DB.
  */
-import { ChildProcess, execFileSync, execSync, spawn } from 'child_process';
+import { ChildProcess, execFile, spawn } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { promisify } from 'util';
 
 import { OneCLI } from '@onecli-sh/sdk';
 
@@ -357,12 +358,6 @@ export function buildMounts(
     mounts.push({ hostPath: fragmentsDir, containerPath: '/workspace/agent/.claude-fragments', readonly: true });
   }
 
-  // Global memory directory — always read-only.
-  const globalDir = path.join(GROUPS_DIR, 'global');
-  if (fs.existsSync(globalDir)) {
-    mounts.push({ hostPath: globalDir, containerPath: '/workspace/global', readonly: true });
-  }
-
   // Shared CLAUDE.md — read-only, imported by the composed entry point via
   // the `.claude-shared.md` symlink inside the group dir.
   const sharedClaudeMd = path.join(process.cwd(), 'container', 'CLAUDE.md');
@@ -611,6 +606,8 @@ async function buildContainerArgs(
   return args;
 }
 
+const execFileAsync = promisify(execFile);
+
 /** Build a per-agent-group Docker image with custom packages. */
 export async function buildAgentGroupImage(agentGroupId: string): Promise<void> {
   const agentGroup = getAgentGroup(agentGroupId);
@@ -660,9 +657,12 @@ export async function buildAgentGroupImage(agentGroupId: string): Promise<void> 
   const tmpDockerfile = path.join(buildDir, 'Dockerfile');
   fs.writeFileSync(tmpDockerfile, dockerfile);
   try {
-    execFileSync(CONTAINER_RUNTIME_BIN, ['build', '-t', imageTag, '-f', tmpDockerfile, '.'], {
+    // Awaited async execFile so the single-threaded host stays responsive
+    // during the build (can take minutes) instead of blocking. argv form (no
+    // shell) keeps the tag/path uninterpreted; buffers stdout/stderr and
+    // rejects on a non-zero exit.
+    await execFileAsync(CONTAINER_RUNTIME_BIN, ['build', '-t', imageTag, '-f', tmpDockerfile, '.'], {
       cwd: buildDir,
-      stdio: 'pipe',
       timeout: 900_000,
     });
   } finally {
