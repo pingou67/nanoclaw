@@ -501,7 +501,7 @@ export class ClaudeProvider implements AgentProvider {
             yield { type: 'result', text, isError: m.is_error === true };
           } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
             yield { type: 'error', message: 'API retry', retryable: true };
-          } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'rate_limit_event') {
+          } else if (message.type === 'rate_limit_event') {
             yield { type: 'error', message: 'Rate limit', retryable: false, classification: 'quota' };
           } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary') {
             // Progress, NOT result: auto-compaction can fire MID-turn, and the
