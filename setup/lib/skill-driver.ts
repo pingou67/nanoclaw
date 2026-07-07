@@ -13,8 +13,8 @@
  * the URL offer, the prose-derived validation message.
  */
 import { execSync, spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 
 import * as p from '@clack/prompts';
 
@@ -30,6 +30,7 @@ import {
 } from '../../scripts/skill-apply.js';
 import { parseDirectives, promptVar } from '../../scripts/skill-directives.js';
 import { extractOfferUrl, gatePolicy } from '../../scripts/skill-policy.js';
+import * as setupLog from '../logs.js';
 import { isHeadless } from '../platform.js';
 import { openUrl } from './browser.js';
 import { isHelpEscape, offerClaudeHandoff, validateWithHelpEscape } from './claude-handoff.js';
@@ -251,8 +252,19 @@ async function reuseFromEnv(
  * `exit <code>: <first stderr line>` — and the full stderr kept below, so
  * one-line consumers (run-channel-skill's bounce warn) stay readable while the
  * agentTask reason an agent fixes from still carries everything.
+ *
+ * Non-step effects are captured-output steps — the spinner is the only UI, and
+ * stderr is piped, never echoed (a chatty tool's warnings don't belong on the
+ * wizard screen). When `rawLog` is given, every command's stdout+stderr is
+ * appended there (level 3, like runner.ts's per-step raw logs) so the silenced
+ * noise stays inspectable.
  */
-export function hostExec(projectRoot: string): (cmd: string) => Promise<string> {
+export function hostExec(projectRoot: string, rawLog?: string): (cmd: string) => Promise<string> {
+  const tee = (cmd: string, stdout: string, stderr: string): void => {
+    if (!rawLog) return;
+    const body = [stdout, stderr].filter(Boolean).join('');
+    appendFileSync(rawLog, `$ ${cmd}\n${body}${body && !body.endsWith('\n') ? '\n' : ''}\n`);
+  };
   return (cmd) =>
     new Promise((resolve, reject) => {
       const child = spawn('bash', ['-c', cmd], {
@@ -266,6 +278,7 @@ export function hostExec(projectRoot: string): (cmd: string) => Promise<string> 
       child.stderr.on('data', (c: Buffer) => { err += c.toString('utf8'); });
       child.on('error', reject);
       child.on('close', (code) => {
+        tee(cmd, out, err);
         if (code === 0) return resolve(out);
         const stderr = err.trim();
         const head = stderr.split('\n').map((l) => l.trim()).find(Boolean) ?? 'command failed';
@@ -497,11 +510,19 @@ export async function runSkill(skillDir: string, opts: RunSkillOptions = {}): Pr
   } catch {
     // missing SKILL.md — the engine will produce an empty result anyway
   }
+  // One raw log per skill apply (level 3): every default-exec command appends
+  // its `$ cmd` + output there. Allocated only when the default exec is used —
+  // an injected exec (tests, agent relay) owns its own capture.
+  let rawLog: string | undefined;
+  if (!opts.exec) {
+    rawLog = setupLog.stepRawLog(`skill-${basename(skillDir)}`);
+    writeFileSync(rawLog, `# skill ${basename(skillDir)} — ${new Date().toISOString()}\n\n`);
+  }
   return applySkill(skillDir, projectRoot, {
     inputs,
     resolveInput: opts.resolveInput ?? clackResolveInput({ channel: opts.channel, step: opts.step }),
     onEvent: opts.onEvent ?? defaultOnEvent(md, confirm, open),
-    exec: opts.exec ?? hostExec(projectRoot),
+    exec: opts.exec ?? hostExec(projectRoot, rawLog),
     execStream: opts.execStream ?? hostExecStream(projectRoot),
     resolveRemote: opts.resolveRemote ?? channelsRemote(projectRoot),
     skipEffects: opts.skipEffects,

@@ -139,6 +139,20 @@ describe('thin skill driver', () => {
     await expect(run).rejects.toThrow(/stack line two/); // full stderr survives for the agentTask reason
   });
 
+  it('hostExec tees each command + stdout/stderr to the raw log, success and failure alike', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'driver-tee-'));
+    const rawLog = join(root, 'raw.log');
+    const exec = hostExec(root, rawLog);
+    await exec('echo out-line; echo warn-line >&2');
+    await expect(exec('echo dying-gasp >&2; exit 3')).rejects.toThrow(/exit 3/);
+    const log = readFileSync(rawLog, 'utf8');
+    expect(log).toContain('$ echo out-line; echo warn-line >&2');
+    expect(log).toContain('out-line');
+    expect(log).toContain('warn-line'); // stderr captured, not echoed to the wizard
+    expect(log).toContain('$ echo dying-gasp >&2; exit 3');
+    expect(log).toContain('dying-gasp'); // the failing command's output survives too
+  });
+
   it('hostExecStream runs a step and captures the terminal status block fields (for effect:step)', async () => {
     const root = mkdtempSync(join(tmpdir(), 'driver-step-'));
     const out = await hostExecStream(root)(
