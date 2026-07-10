@@ -20,6 +20,7 @@ Skip to **Credentials** if all of these are already in place:
 - `src/channels/whatsapp.test.ts` exists
 - `src/channels/index.ts` contains `import './whatsapp.js';`
 - `setup/whatsapp-auth.ts` and `setup/groups.ts` both exist
+- `container/skills/whatsapp-formatting/instructions.md` exists
 - `setup/index.ts`'s `STEPS` map contains both `'whatsapp-auth':` and `groups:`
 - `@whiskeysockets/baileys`, `qrcode`, `pino` are listed in `package.json` dependencies
 - `.claude/skills/add-whatsapp/scripts/wa-qr-browser.ts` exists (ships with this skill)
@@ -40,7 +41,16 @@ git show origin/channels:src/channels/whatsapp-registration.test.ts    > src/cha
 git show origin/channels:src/channels/whatsapp.test.ts                 > src/channels/whatsapp.test.ts
 git show origin/channels:setup/whatsapp-auth.ts                        > setup/whatsapp-auth.ts
 git show origin/channels:setup/groups.ts                               > setup/groups.ts
+mkdir -p container/skills/whatsapp-formatting
+git show origin/channels:container/skills/whatsapp-formatting/SKILL.md        > container/skills/whatsapp-formatting/SKILL.md
+git show origin/channels:container/skills/whatsapp-formatting/instructions.md > container/skills/whatsapp-formatting/instructions.md
 ```
+
+The `whatsapp-formatting` container skill is part of the channel payload: its
+`instructions.md` becomes the `skill-whatsapp-formatting.md` fragment in every
+group's composed CLAUDE.md (see `src/claude-md-compose.ts`), teaching agents
+WhatsApp's formatting syntax. Trunk does not ship it — without this copy step
+agents format WhatsApp messages with generic markdown that renders literally.
 
 ### 3. Append the self-registration import
 
