@@ -47,7 +47,7 @@ import {
   getMessagingGroupByPlatform,
 } from '../db/messaging-groups.js';
 import { log } from '../log.js';
-import { insertTask } from '../modules/scheduling/db.js';
+import { insertTaskRow } from '../modules/scheduling/db.js';
 import { openInboundDb, resolveSession } from '../session-manager.js';
 import type { ChannelAdapter, ChannelSetup, OutboundMessage } from './adapter.js';
 import { registerChannelAdapter } from './channel-registry.js';
@@ -410,13 +410,14 @@ function createAdapter(): ChannelAdapter | null {
             : null);
         if (!promptText) continue;
 
-        insertTask(db, {
+        // Legacy-style placement: the row lives in the channel's chat session
+        // (kind='task' rows keep firing wherever they are), so the fire keeps
+        // the session's Mattermost destinations.
+        insertTaskRow(db, {
           id: taskId,
+          seriesId: taskId,
           processAfter,
           recurrence: entry.schedule,
-          platformId,
-          channelType: 'mattermost',
-          threadId: null,
           content: JSON.stringify({ prompt: promptText }),
         });
         log.info('Mattermost: imported cron', {
@@ -483,13 +484,11 @@ function createAdapter(): ChannelAdapter | null {
         "Si le dossier `semaines/` n'existe pas, crée-le. " +
         'Quand le fichier est écrit, termine ton turn sans répondre — pas de message de confirmation, pas de récap, rien dans le canal.';
 
-      insertTask(db, {
+      insertTaskRow(db, {
         id: taskId,
+        seriesId: taskId,
         processAfter,
         recurrence: schedule,
-        platformId,
-        channelType: 'mattermost',
-        threadId: null,
         content: JSON.stringify({ prompt: promptText }),
       });
       log.info('Mattermost: added default weekly summary task', {
