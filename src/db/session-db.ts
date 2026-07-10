@@ -168,22 +168,27 @@ export function getMessageForRetry(
 
 export function syncProcessingAcks(inDb: Database.Database, outDb: Database.Database): void {
   const acked = outDb
-    .prepare("SELECT message_id, status FROM processing_ack WHERE status IN ('completed', 'failed')")
-    .all() as Array<{ message_id: string; status: 'completed' | 'failed' }>;
+    .prepare(
+      "SELECT message_id, status FROM processing_ack WHERE status IN ('completed', 'failed', 'script-skip:error')",
+    )
+    .all() as Array<{ message_id: string; status: string }>;
 
   if (acked.length === 0) return;
 
   // Mirror the container's terminal ack verbatim: a 'failed' ack must land as
   // 'failed' (same status markMessageFailed writes), not be collapsed into
-  // 'completed' — that would erase the failure signal. Both statuses are
+  // 'completed' — that would erase the failure signal. `script-skip:error`
+  // (pre-task script crashed) also lands as a FAILED run — semantically true,
+  // and it lets recurrence derive the trailing failed streak from the
+  // occurrence rows themselves (no stored counter). All statuses are
   // terminal: countDueMessages and the container's pending query gate on
-  // 'pending', so neither is ever re-processed.
+  // 'pending', so none is ever re-processed.
   const updateStmt = inDb.prepare(
     "UPDATE messages_in SET status = ? WHERE id = ? AND status NOT IN ('completed', 'failed')",
   );
   inDb.transaction(() => {
     for (const { message_id, status } of acked) {
-      updateStmt.run(status, message_id);
+      updateStmt.run(status === 'script-skip:error' ? 'failed' : status, message_id);
     }
   })();
 }
@@ -301,9 +306,11 @@ export function migrateDeliveredTable(db: Database.Database): void {
   }
 }
 
-// Adds columns added to messages_in after the initial v2 schema to
-// pre-existing session DBs. No-op on fresh installs where the columns are
-// in the baseline schema. Backfills existing rows so invariants hold.
+// LEGACY-COMPAT(v1-tasks): adds columns added to messages_in after the initial
+// v2 schema to pre-existing session DBs — this lazy, on-open migration IS the
+// upgrade path for old installs (there is no central migration for session
+// DBs). No-op on fresh installs where the columns are in the baseline schema.
+// Backfills existing rows so invariants hold (series_id = id).
 export function migrateMessagesInTable(db: Database.Database): void {
   const cols = new Set(
     (db.prepare("PRAGMA table_info('messages_in')").all() as Array<{ name: string }>).map((c) => c.name),

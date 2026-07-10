@@ -3,10 +3,11 @@ import {
   getPendingMessages,
   markProcessing,
   markCompleted,
+  markScriptSkipped,
   releaseProcessing,
   type MessageInRow,
 } from './db/messages-in.js';
-import { getDeliveredPlatformId, writeMessageOut } from './db/messages-out.js';
+import { getDeliveredPlatformId, hasIdenticalSend, writeMessageOut } from './db/messages-out.js';
 import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
 import {
   addLiveStatusPost,
@@ -1043,15 +1044,15 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // Without the scheduling module, the marker block is empty, `keep`
     // falls back to `normalMessages`, and no gating happens.
     let keep: MessageInRow[] = normalMessages;
-    let skipped: string[] = [];
+    let skipped: Array<{ id: string; reason: string }> = [];
     // MODULE-HOOK:scheduling-pre-task:start
     const { applyPreTaskScripts } = await import('./scheduling/task-script.js');
     const preTask = await applyPreTaskScripts(normalMessages);
     keep = preTask.keep;
     skipped = preTask.skipped;
     if (skipped.length > 0) {
-      markCompleted(skipped);
-      log(`Pre-task script skipped ${skipped.length} task(s): ${skipped.join(', ')}`);
+      markScriptSkipped(skipped);
+      log(`Pre-task script skipped ${skipped.length} task(s): ${skipped.map((s) => s.id).join(', ')}`);
     }
     // MODULE-HOOK:scheduling-pre-task:end
 
@@ -1085,7 +1086,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       systemContext: config.systemContext,
     });
 
-    const skippedSet = new Set(skipped);
+    const skippedSet = new Set(skipped.map((s) => s.id));
     const processingIds = ids.filter((id) => !commandIds.includes(id) && !skippedSet.has(id));
 
     // Set up the ActiveQuery descriptor before spawning the consumer.
@@ -1422,15 +1423,15 @@ export async function processQuery(
         // its script gate and always wakes the agent, defeating the gate.
         // Mirrors the initial-batch hook above.
         let keep = newMessages;
-        let skipped: string[] = [];
+        let skipped: Array<{ id: string; reason: string }> = [];
         // MODULE-HOOK:scheduling-pre-task-followup:start
         const { applyPreTaskScripts } = await import('./scheduling/task-script.js');
         const preTask = await applyPreTaskScripts(newMessages);
         keep = preTask.keep;
         skipped = preTask.skipped;
         if (skipped.length > 0) {
-          markCompleted(skipped);
-          log(`Pre-task script skipped ${skipped.length} follow-up task(s): ${skipped.join(', ')}`);
+          markScriptSkipped(skipped);
+          log(`Pre-task script skipped ${skipped.length} follow-up task(s): ${skipped.map((s) => s.id).join(', ')}`);
         }
         // MODULE-HOOK:scheduling-pre-task-followup:end
 
@@ -1818,6 +1819,15 @@ function dispatchResultText(
 function sendToDestination(dest: DestinationEntry, body: string, routing: RoutingContext): void {
   const platformId = dest.type === 'channel' ? dest.platformId! : dest.agentGroupId!;
   const channelType = dest.type === 'channel' ? dest.channelType! : 'agent';
+  // Task fires: an explicitly-addressed final-text block is either the echo of
+  // an MCP send the agent already made this turn (drop it HERE, where the
+  // duplication originates) or the agent's only deliberate send (write it
+  // in_reply_to-null like the MCP path, or the host's task-fire suppression
+  // would discard it — zero delivery).
+  if (routing.taskFire && hasIdenticalSend(platformId, channelType, body)) {
+    log(`Dropping turn-final echo of an already-sent task message to ${dest.name}`);
+    return;
+  }
   // Resolve thread_id per-destination from the most recent inbound message
   // that came from this same channel+platform. In agent-shared sessions,
   // different destinations have different thread contexts — using a single
@@ -1825,7 +1835,7 @@ function sendToDestination(dest: DestinationEntry, body: string, routing: Routin
   const destRouting = resolveDestinationThread(channelType, platformId);
   writeMessageOut({
     id: generateId(),
-    in_reply_to: destRouting?.inReplyTo ?? routing.inReplyTo,
+    in_reply_to: destRouting?.inReplyTo ?? (routing.taskFire ? null : routing.inReplyTo),
     kind: 'chat',
     platform_id: platformId,
     channel_type: channelType,

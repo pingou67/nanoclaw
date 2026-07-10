@@ -119,13 +119,11 @@ function destinationListLines(): string[] {
   }
   if (all.length === 1) {
     const d = all[0];
-    const label = d.displayName && d.displayName !== d.name ? ` (${d.displayName})` : '';
-    return [`Your destination is \`${d.name}\`${label}.`];
+    return [`Your destination is \`${d.name}\`${destinationLabel(d)}.`];
   }
   const lines = ['You can send messages to the following destinations:', ''];
   for (const d of all) {
-    const label = d.displayName && d.displayName !== d.name ? ` (${d.displayName})` : '';
-    lines.push(`- \`${d.name}\`${label}`);
+    lines.push(`- \`${d.name}\`${destinationLabel(d)}`);
   }
   return lines;
 }
@@ -170,4 +168,11 @@ function buildDestinationsSection(): string {
     'The `send_message` MCP tool is the same delivery, available mid-turn — handy for a quick acknowledgment ("on it") before a slow tool call. Each `send_message` call and each final-response `<message>` block lands as its own message in the conversation, so they read as a sequence rather than as one combined reply.',
   );
   return lines.join('\n');
+}
+
+function destinationLabel(d: DestinationEntry): string {
+  const parts: string[] = [];
+  if (d.channelType) parts.push(d.channelType);
+  if (d.displayName && d.displayName !== d.name) parts.push(d.displayName);
+  return parts.length > 0 ? ` (${parts.join(' · ')})` : '';
 }

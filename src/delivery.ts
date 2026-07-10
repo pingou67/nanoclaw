@@ -266,7 +266,7 @@ async function deliverMessage(
 ): Promise<string | undefined> {
   const content = JSON.parse(msg.content);
 
-  // System actions — handle internally (schedule_task, cancel_task, etc.).
+  // System actions — handle internally (cli_request, etc.).
   // Ordered before the adapter check: system actions never touch the channel
   // adapter, so they must not be blocked when none is configured.
   if (msg.kind === 'system') {
