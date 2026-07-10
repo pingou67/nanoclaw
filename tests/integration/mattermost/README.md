@@ -30,6 +30,7 @@ parity** (Claude ⇄ OpenCode) after a switch:
 | **runner `!help`** | The `!`-prefixed runner commands still work (Mattermost intercepts `/`). Asserts the reply lists `!clear` / `!stop`. |
 | **provider switch** | Regression guard for the opencode→claude switch: on a **throwaway `ag-e2e_switch` group only** (never a prod group), flips opencode→claude, purges the per-provider continuation, and asserts the next turn still replies (no stale-continuation `Model not found` hang). |
 | **live-status lifecycle** | Restarts with live-status **ENABLED**, runs a tool-using turn, and asserts the mock saw the full cycle: a `🔧` post created (`POST /posts`) → edited (`PUT …/patch`) → finalized to `✅ Terminé`. This is the only phase that exercises live-status — the others disable it for deterministic first-reply assertions. |
+| **MCP matrix** | One scenario per MCP server wired in `container_configs` (vikunja, imap, gmail, google-calendar, brave-search…). Each picks the first E2E-reachable channel whose group has the server (optionally preferring the group whose credentials matter most, e.g. famille's own calendar OAuth), sends a **read-only** prompt forcing one MCP call, and asserts a stable backend invariant (`WORK` project, `INBOX` folder/label, calendar name, `Paris`). A server wired on no reachable group (e.g. `memory` on the agy-backed agc) is a SKIP. Catches MCP config drift (DB `mcp_servers`, mounts, HOME overrides, OAuth tokens) that unit tests can't see. Run just this phase with `--only-mcp` (~3-4 min). |
 | **env hygiene** | After teardown, asserts the systemd `--user` manager env carries no `NANOCLAW_*` test override (the leak that silently disabled live-status in prod). |
 
 ## When to run
@@ -74,6 +75,8 @@ restored (Mattermost retains messages indefinitely).
 
 - `--scenario <name>` — run only one scenario (e.g. `--scenario scenario_main`).
   Names match the keys in the `SCENARIOS` list at the bottom of `run_suite.py`.
+- `--only-mcp` — run only the MCP matrix phase (plus setup/teardown), ~3-4 min.
+  For validating MCP wiring changes without replaying the whole suite.
 - `--keep-mock` — don't restore the live config, leave the mock running.
   Useful when debugging a failure: you can re-inject events manually with
   `curl http://127.0.0.1:8888/__test/inject -d ...` and inspect logs
