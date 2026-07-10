@@ -818,6 +818,106 @@ def run_provider_matrix() -> list[Result]:
     return out
 
 
+# --- MCP matrix ---------------------------------------------------------------
+# One scenario per MCP server wired in container_configs (vikunja, imap, gmail,
+# google-calendar, brave-search, memory…). Each test picks the FIRST
+# E2E-reachable channel whose group has the server wired, sends a read-only
+# prompt forcing one MCP call, and asserts a stable invariant of the real
+# backend (project name, INBOX folder, calendar name, city…). Read-only by
+# design: no create/update/delete ever reaches the backends. A server wired on
+# no reachable group is a SKIP (same policy as absent skills).
+
+WAIT_MCP_SEC = 120  # npx-based servers download into the container on cold start
+
+MCP_CHANNEL_CANDIDATES = [
+    ("work",     "ch-work",     False),
+    ("testor",   "ch-testor",   False),
+    ("famille",  "ch-famille",  True),
+    ("coding",   "ch-coding",   False),
+    ("adminsys", "ch-adminsys", False),
+    ("main",     "ch-main",     True),
+]
+
+# (server key, read-only prompt, expected marker per channel label — None = default,
+#  optional preferred labels tried before the default candidate order — lets a
+#  scenario target the group whose CREDENTIALS matter most, e.g. famille's own
+#  calendar OAuth token, distinct from testor's)
+MCP_SCENARIOS = [
+    ("vikunja",
+     "Utilise le serveur MCP vikunja pour lister les projets accessibles et réponds "
+     "UNIQUEMENT avec les noms des projets, séparés par des virgules.",
+     {"work": "WORK", None: "Inbox"}),
+    ("imap",
+     "Utilise le serveur MCP imap (compte unistra) pour lister les dossiers de la boîte "
+     "et réponds UNIQUEMENT avec les noms des dossiers, séparés par des virgules.",
+     {None: "INBOX"}),
+    ("gmail",
+     "Utilise le serveur MCP gmail pour lister les labels de la boîte et réponds "
+     "UNIQUEMENT avec les noms des labels, séparés par des virgules.",
+     {None: "INBOX"}),
+    ("google-calendar",
+     "Utilise le serveur MCP google-calendar pour lister les calendriers disponibles et "
+     "réponds UNIQUEMENT avec les noms des calendriers, séparés par des virgules.",
+     {"famille": "Famille", None: "Philippe"},
+     ["famille"]),
+    ("brave-search",
+     "Utilise le serveur MCP brave-search pour chercher « capitale de la France » et "
+     "réponds UNIQUEMENT avec le nom de la ville.",
+     {None: "Paris"}),
+    ("memory",
+     "Utilise le serveur MCP memory pour lister l'index de ta mémoire persistante et "
+     "réponds UNIQUEMENT avec OK-MEMORY si l'appel a réussi.",
+     {None: "OK-MEMORY"}),
+]
+
+def _group_mcp_servers(label: str) -> set[str]:
+    raw = _q(CENTRAL_DB,
+             f"SELECT COALESCE(mcp_servers,'{{}}') FROM container_configs "
+             f"WHERE agent_group_id='ag-mattermost_{label}'")
+    try:
+        return set(json.loads(raw or "{}").keys())
+    except json.JSONDecodeError:
+        return set()
+
+def run_mcp_matrix() -> list[Result]:
+    out: list[Result] = []
+    servers_by_label = {label: _group_mcp_servers(label) for label, _, _ in MCP_CHANNEL_CANDIDATES}
+    for name, prompt, expects, *rest in MCP_SCENARIOS:
+        prefer = rest[0] if rest else []
+        candidates = sorted(MCP_CHANNEL_CANDIDATES,
+                            key=lambda c: prefer.index(c[0]) if c[0] in prefer else len(prefer) + 1)
+        # Match `gmail` against `gmail` AND `gmail-perso` (per-group aliases).
+        target = next(
+            ((label, ch_id, req) for label, ch_id, req in candidates
+             if any(k == name or k.startswith(name + "-") for k in servers_by_label[label])),
+            None,
+        )
+        if target is None:
+            out.append(Result(f"mcp {name}", True,
+                              "SKIP — câblé sur aucun groupe joignable en E2E", skipped=True))
+            continue
+        label, ch_id, req = target
+        expected = expects.get(label) or expects[None]
+        rname = f"mcp {name} @#{label}"
+        print(f"  ▸ {rname} …", flush=True)
+        reset_replies()
+        prefix = "@claw " if req else ""
+        inject({
+            "user_id": "human-test",
+            "message": prefix + prompt,
+            "channel_id": ch_id, "channel_type": "O",
+        })
+        reply = wait_for_answer(WAIT_MCP_SEC)
+        if not reply:
+            out.append(Result(rname, False, "no reply within timeout"))
+            continue
+        msg = reply.get("message", "")
+        out.append(Result(rname, expected.lower() in msg.lower(),
+                          f"expected {expected!r} — got {msg[:80]!r}"))
+        print(f"  {out[-1]}", flush=True)
+    return out
+
+
 def env_hygiene_result() -> Result:
     """Post-teardown: the systemd --user manager env must carry no test-only
     NANOCLAW_* overrides (the leak that silently disabled live-status in prod)."""
@@ -855,6 +955,8 @@ def main() -> int:
     parser.add_argument("--keep-mock", action="store_true",
                         help="don't restore live config or stop mock at end (for debugging)")
     parser.add_argument("--scenario", help="run only one scenario by name")
+    parser.add_argument("--only-mcp", action="store_true",
+                        help="run only the MCP matrix (plus setup/teardown)")
     args = parser.parse_args()
 
     print(f"== Mattermost adapter v2 E2E suite ==")
@@ -882,7 +984,7 @@ def main() -> int:
     print("\n[setup] Starting mock_mm.py …")
     mock_proc = start_mock()
     results: list[Result] = []
-    full_run = not args.scenario  # extra phases only run on a full suite
+    full_run = not args.scenario and not args.only_mcp  # extra phases only run on a full suite
     try:
         wait_for_mock_ready()
         print("[setup] Mock ready on 127.0.0.1:8888")
@@ -892,11 +994,19 @@ def main() -> int:
         print("[setup] nanoclaw connected to mock — running scenarios\n")
 
         for sid, fn in SCENARIOS:
-            if args.scenario and args.scenario != sid:
+            if (args.scenario and args.scenario != sid) or args.only_mcp:
                 continue
             print(f"▸ {sid} …", flush=True)
             results.append(_safe(sid, fn))
             print(f"  {results[-1]}\n")
+
+        if full_run or args.only_mcp:
+            print("▸ MCP matrix (un scénario par serveur MCP câblé) …", flush=True)
+            try:
+                results.extend(run_mcp_matrix())
+            except Exception as e:
+                results.append(Result("mcp matrix", False, f"exception: {e}"))
+            print()
 
         if full_run:
             print("▸ provider matrix (Claude + OpenCode parity) …", flush=True)
