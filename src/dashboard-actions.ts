@@ -19,7 +19,7 @@ import { getMessagingGroup } from './db/messaging-groups.js';
 import { getContainerConfig, updateContainerConfigScalars, updateContainerConfigJson } from './db/container-configs.js';
 import { restartAgentGroupContainers } from './container-restart.js';
 import { writeSessionMessage, openInboundDb } from './session-manager.js';
-import { insertTask, updateTask, cancelTask, pauseTask, resumeTask } from './modules/scheduling/db.js';
+import { insertTaskRow, updateTask, cancelTask, pauseTask, resumeTask } from './modules/scheduling/db.js';
 import { log } from './log.js';
 
 export interface DashboardActionRequest {
@@ -148,15 +148,16 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
       if (recurrence === false) return refuse(`récurrence invalide (cron 5 champs attendu): ${req.recurrence}`, req);
       const session = latestActiveSession(gid);
       if (!session) return refuse('aucune session active pour ce groupe', req);
-      const mg = session.messaging_group_id ? getMessagingGroup(session.messaging_group_id) : undefined;
       const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      insertTask(openInboundDb(gid, session.id), {
+      // Legacy-style placement: the row lives in the group's chat session
+      // (upstream keeps firing kind='task' rows wherever they are), so the
+      // fire keeps the session's destinations — unlike ncl tasks' isolated
+      // per-series sessions.
+      insertTaskRow(openInboundDb(gid, session.id), {
         id: taskId,
+        seriesId: taskId,
         processAfter: new Date(when).toISOString(),
         recurrence,
-        platformId: mg?.platform_id ?? null,
-        channelType: mg?.channel_type ?? null,
-        threadId: session.thread_id ?? null,
         content: JSON.stringify({ prompt }),
       });
       return done(
