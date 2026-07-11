@@ -321,6 +321,8 @@ export function deriveAccessRights(config: {
       rights.push(scope === 'ALL' || scope === '' ? 'Vikunja (tous projets)' : `Vikunja (projet ${scope})`);
     } else if (name === 'memory') {
       rights.push('Mémoire persistante');
+    } else if (name === 'ha') {
+      rights.push('Home Assistant (MCP)');
     } else {
       rights.push(`MCP ${name}`);
     }
@@ -366,9 +368,12 @@ export function buildAgentsRecapRows(): RecapRow[] {
         /* ignore */
       }
       const rights = config ? deriveAccessRights(config) : [];
-      // Home Assistant is file-based (assumed exception to the DB principle)
+      // Home Assistant REST credentials are file-based. When the ha MCP server
+      // is also wired, REST is only the documented fallback — one merged entry.
       if (fs.existsSync(path.resolve(process.cwd(), 'groups', group.folder, 'ha_credentials.json'))) {
-        rights.push('Home Assistant (REST)');
+        const mcpIdx = rights.indexOf('Home Assistant (MCP)');
+        if (mcpIdx >= 0) rights[mcpIdx] = 'Home Assistant (MCP + secours REST)';
+        else rights.push('Home Assistant (REST)');
       }
       rows.push({
         channel: mg.name ?? mg.id,
