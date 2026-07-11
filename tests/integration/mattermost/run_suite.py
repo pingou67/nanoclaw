@@ -820,7 +820,7 @@ def run_provider_matrix() -> list[Result]:
 
 # --- MCP matrix ---------------------------------------------------------------
 # One scenario per MCP server wired in container_configs (vikunja, imap, gmail,
-# google-calendar, brave-search, memory…). Each test picks the FIRST
+# google-calendar, searxng, memory…). Each test picks the FIRST
 # E2E-reachable channel whose group has the server wired, sends a read-only
 # prompt forcing one MCP call, and asserts a stable invariant of the real
 # backend (project name, INBOX folder, calendar name, city…). Read-only by
@@ -860,8 +860,8 @@ MCP_SCENARIOS = [
      "réponds UNIQUEMENT avec les noms des calendriers, séparés par des virgules.",
      {"famille": "Famille", None: "Philippe"},
      ["famille"]),
-    ("brave-search",
-     "Utilise le serveur MCP brave-search pour chercher « capitale de la France » et "
+    ("searxng",
+     "Utilise le serveur MCP searxng pour chercher « capitale de la France » et "
      "réponds UNIQUEMENT avec le nom de la ville.",
      {None: "Paris"}),
     ("memory",
