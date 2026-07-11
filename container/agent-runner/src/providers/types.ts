@@ -125,9 +125,14 @@ export interface QueryInput {
 }
 
 export interface McpServerConfig {
-  command: string;
-  args: string[];
-  env: Record<string, string>;
+  /** stdio server (default when `command` is set). */
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  /** Remote server — passed through to the provider SDK verbatim. */
+  type?: 'http' | 'sse';
+  url?: string;
+  headers?: Record<string, string>;
 }
 
 export interface AgentQuery {

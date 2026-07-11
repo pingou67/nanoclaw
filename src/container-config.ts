@@ -17,9 +17,14 @@ import { getAgentGroup } from './db/agent-groups.js';
 import type { AgentGroup, ContainerConfigRow } from './types.js';
 
 export interface McpServerConfig {
-  command: string;
+  /** stdio server (default when `command` is set). */
+  command?: string;
   args?: string[];
   env?: Record<string, string>;
+  /** Remote server — passed through to the provider SDK verbatim. */
+  type?: 'http' | 'sse';
+  url?: string;
+  headers?: Record<string, string>;
   instructions?: string;
 }
 

@@ -2,7 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { query as sdkQuery, type HookCallback, type PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
+import { query as sdkQuery, type HookCallback, type McpServerConfig as SdkMcpServerConfig, type PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 
 import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/connection.js';
 import { writeMessageOut } from '../db/messages-out.js';
@@ -85,6 +85,26 @@ const TOOL_ALLOWLIST = [
 // allowlist patterns match what the SDK actually exposes.
 function mcpAllowPattern(serverName: string): string {
   return `mcp__${serverName.replace(/[^a-zA-Z0-9_-]/g, '_')}__*`;
+}
+
+// Narrow our loose McpServerConfig into the SDK's discriminated union:
+// url-bearing entries become http/sse servers, the rest stdio.
+function toSdkMcpServers(
+  servers: Record<string, McpServerConfig>,
+): Record<string, SdkMcpServerConfig> {
+  const out: Record<string, SdkMcpServerConfig> = {};
+  for (const [name, cfg] of Object.entries(servers)) {
+    if (cfg.url) {
+      out[name] = {
+        type: cfg.type === 'sse' ? 'sse' : 'http',
+        url: cfg.url,
+        ...(cfg.headers ? { headers: cfg.headers } : {}),
+      };
+    } else if (cfg.command) {
+      out[name] = { command: cfg.command, args: cfg.args ?? [], env: cfg.env ?? {} };
+    }
+  }
+  return out;
 }
 
 interface SDKUserMessage {
@@ -467,7 +487,7 @@ export class ClaudeProvider implements AgentProvider {
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         settingSources: ['project', 'user', 'local'],
-        mcpServers: this.mcpServers,
+        mcpServers: toSdkMcpServers(this.mcpServers),
         hooks: {
           PreToolUse: [{ hooks: [preToolUseHook] }],
           PostToolUse: [{ hooks: [postToolUseHook] }],
