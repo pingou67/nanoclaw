@@ -164,7 +164,12 @@ export class AgyProvider implements AgentProvider {
             }
             const cleanServers: Record<string, unknown> = {};
             for (const [name, cfg] of Object.entries(options.mcpServers)) {
-              cleanServers[name] = { command: cfg.command, args: cfg.args, env: cfg.env };
+              if (cfg.url) {
+                // Gemini extensions support remote MCP via httpUrl.
+                cleanServers[name] = { httpUrl: cfg.url, ...(cfg.headers ? { headers: cfg.headers } : {}) };
+              } else {
+                cleanServers[name] = { command: cfg.command, args: cfg.args, env: cfg.env };
+              }
             }
             const extDir = path.join(fakeGemini, 'extensions', 'nanoclaw-mcp');
             fs.mkdirSync(extDir, { recursive: true });
