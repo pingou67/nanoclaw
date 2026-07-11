@@ -864,6 +864,11 @@ MCP_SCENARIOS = [
      "Utilise le serveur MCP searxng pour chercher « capitale de la France » et "
      "réponds UNIQUEMENT avec le nom de la ville.",
      {None: "Paris"}),
+    ("ha",
+     "Utilise le serveur MCP ha pour lister les entités du domaine todo et réponds "
+     "UNIQUEMENT avec leurs entity_id, séparés par des virgules.",
+     {None: "liste_dachats"},
+     ["famille"]),
     ("memory",
      "Utilise le serveur MCP memory pour lister l'index de ta mémoire persistante et "
      "réponds UNIQUEMENT avec OK-MEMORY si l'appel a réussi.",
