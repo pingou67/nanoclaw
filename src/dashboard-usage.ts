@@ -368,13 +368,6 @@ export function buildAgentsRecapRows(): RecapRow[] {
         /* ignore */
       }
       const rights = config ? deriveAccessRights(config) : [];
-      // Home Assistant REST credentials are file-based. When the ha MCP server
-      // is also wired, REST is only the documented fallback — one merged entry.
-      if (fs.existsSync(path.resolve(process.cwd(), 'groups', group.folder, 'ha_credentials.json'))) {
-        const mcpIdx = rights.indexOf('Home Assistant (MCP)');
-        if (mcpIdx >= 0) rights[mcpIdx] = 'Home Assistant (MCP + secours REST)';
-        else rights.push('Home Assistant (REST)');
-      }
       rows.push({
         channel: mg.name ?? mg.id,
         agentGroupId: group.id,
