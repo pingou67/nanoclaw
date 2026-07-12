@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   '@nanoco/nanoclaw-dashboard@0.3.0':
-    hash: 7a98c8ab4f29cbbac602b70b8b8b9db5c3afb6f33e003dab8321698d7dd46414
+    hash: 4367d4639af8fb36b24cdbe8232ceeeb3d4f8ab7f19d600adee7c7e4c40298ef
     path: patches/@nanoco__nanoclaw-dashboard@0.3.0.patch
 
 importers:
@@ -21,7 +21,7 @@ importers:
         version: 1.2.0
       '@nanoco/nanoclaw-dashboard':
         specifier: ^0.3.0
-        version: 0.3.0(patch_hash=7a98c8ab4f29cbbac602b70b8b8b9db5c3afb6f33e003dab8321698d7dd46414)
+        version: 0.3.0(patch_hash=4367d4639af8fb36b24cdbe8232ceeeb3d4f8ab7f19d600adee7c7e4c40298ef)
       '@onecli-sh/sdk':
         specifier: 2.2.1
         version: 2.2.1
@@ -1700,7 +1700,7 @@ snapshots:
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
 
-  '@nanoco/nanoclaw-dashboard@0.3.0(patch_hash=7a98c8ab4f29cbbac602b70b8b8b9db5c3afb6f33e003dab8321698d7dd46414)': {}
+  '@nanoco/nanoclaw-dashboard@0.3.0(patch_hash=4367d4639af8fb36b24cdbe8232ceeeb3d4f8ab7f19d600adee7c7e4c40298ef)': {}
 
   '@napi-rs/wasm-runtime@1.1.4(@emnapi/core@1.9.2)(@emnapi/runtime@1.9.2)':
     dependencies:
