@@ -9,7 +9,6 @@ adapter to think it's connected to a real server.
 
 | Scenario | Validates |
 |---|---|
-| `scenario_main` | Channel + `engage_mode='mention'` (requires `@claw`) |
 | `scenario_work`, `mainframe`, `adminsys`, `coding` | Channel + `engage_mode='pattern'` (responds to all) |
 | `scenario_famille` | Channel + `engage_mode='mention'` (responds when `@claw`) |
 | `must_ignore` | Mention-required channel must IGNORE messages without `@claw` |
@@ -73,7 +72,7 @@ restored (Mattermost retains messages indefinitely).
 
 ## Flags
 
-- `--scenario <name>` — run only one scenario (e.g. `--scenario scenario_main`).
+- `--scenario <name>` — run only one scenario (e.g. `--scenario scenario_famille`).
   Names match the keys in the `SCENARIOS` list at the bottom of `run_suite.py`.
 - `--only-mcp` — run only the MCP matrix phase (plus setup/teardown), ~3-4 min.
   For validating MCP wiring changes without replaying the whole suite.
