@@ -19,6 +19,10 @@ import { moduleApprovalsTitleOptions } from './module-approvals-title-options.js
 import { migration018 } from './018-approvals-approver-user-id.js';
 import { migration019 } from './019-container-configs-env-2-1-19.js';
 import { migration020 } from './020-container-configs-thinking-2-1-19.js';
+// Fork: upstream's 019 arrive après nos 019/020 locaux — le runner déduplique
+// par `name` (le numéro n'est qu'un hint d'ordre), alias pour éviter la
+// collision de symbole.
+import { migration019 as migrationWiringThreads } from './019-wiring-threads.js';
 
 export interface Migration {
   version: number;
@@ -54,6 +58,7 @@ export const migrations: Migration[] = [
   migration016,
   migration019,
   migration020,
+  migrationWiringThreads,
 ];
 
 /** Row shape of PRAGMA foreign_key_check. Child rowids are stable across a

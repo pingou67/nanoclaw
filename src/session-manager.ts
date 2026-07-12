@@ -443,8 +443,17 @@ export function writeOutboundDirect(
     const seq = maxSeq < 2 ? 2 : maxSeq + 2 - (maxSeq % 2);
     db.prepare(
       `INSERT OR IGNORE INTO messages_out (id, seq, timestamp, kind, platform_id, channel_type, thread_id, content)
-       VALUES (?, ?, datetime('now'), ?, ?, ?, ?, ?)`,
-    ).run(message.id, seq, message.kind, message.platformId, message.channelType, message.threadId, message.content);
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      message.id,
+      seq,
+      new Date().toISOString(),
+      message.kind,
+      message.platformId,
+      message.channelType,
+      message.threadId,
+      message.content,
+    );
   } finally {
     db.close();
   }
