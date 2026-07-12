@@ -43,7 +43,6 @@ SERVER_VERSION = "11.8.1"
 # provider-matrix test groups (the harness appends matching entries to the mock
 # mattermost.json so the adapter registers them on startup).
 CHANNELS = {
-    "main":         {"id": "ch-main",         "type": "O"},
     "coding":       {"id": "ch-coding",       "type": "O"},
     "famille":      {"id": "ch-famille",      "type": "O"},
     "adminsys":     {"id": "ch-adminsys",     "type": "O"},

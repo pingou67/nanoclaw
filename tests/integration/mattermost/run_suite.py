@@ -70,7 +70,6 @@ def skip_result(name: str, skill: str) -> "Result":
 
 # Channel id mapping in mock_mm.py — keep in sync with mock_mm.CHANNELS
 CHANNELS = {
-    "main":      ("ch-main",      True),   # requireMention=True
     "work":      ("ch-work",      False),
     "adminsys":  ("ch-adminsys",  False),
     "famille":   ("ch-famille",   True),
@@ -782,7 +781,6 @@ def scenario_provider_switch() -> Result:
 # one Claude-backed and one OpenCode-backed group regardless of current
 # provider assignments.
 PROVIDER_MATRIX_CANDIDATES = [
-    ("main",      "ch-main",      True),
     ("work",      "ch-work",      False),
     ("coding",    "ch-coding",    False),
     ("adminsys",  "ch-adminsys",  False),
@@ -835,7 +833,6 @@ MCP_CHANNEL_CANDIDATES = [
     ("famille",  "ch-famille",  True),
     ("coding",   "ch-coding",   False),
     ("adminsys", "ch-adminsys", False),
-    ("main",     "ch-main",     True),
 ]
 
 # (server key, read-only prompt, expected marker per channel label — None = default,
@@ -940,7 +937,6 @@ def _safe(label: str, fn) -> Result:
 
 
 SCENARIOS = [
-    ("scenario_main",       lambda: scenario_channel_text("main",      "ch-main",      True,  "OK-MAIN")),
     ("scenario_work",       lambda: scenario_channel_text("work",      "ch-work",      False, "OK-WK")),
     ("scenario_adminsys",   lambda: scenario_channel_text("adminsys",  "ch-adminsys",  False, "OK-AS")),
     ("scenario_coding",     lambda: scenario_channel_text("coding",    "ch-coding",    False, "OK-CD")),
