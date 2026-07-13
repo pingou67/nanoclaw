@@ -1,14 +1,15 @@
 import fs from 'fs';
 
-import { memoryContextForSessionStart, type MemorySessionStartSource } from './memory-session-hook.js';
+import { MEMORY_SESSION_HOOK, memoryContextForSessionStart, type MemorySessionStartSource } from './session-hook.js';
 
 function readSource(): MemorySessionStartSource | undefined {
   try {
     const input: unknown = JSON.parse(fs.readFileSync(0, 'utf-8'));
     if (!input || typeof input !== 'object' || !('source' in input)) return undefined;
     const source = input.source;
-    if (source === 'startup' || source === 'resume' || source === 'clear' || source === 'compact') {
-      return source;
+    const validSources: readonly unknown[] = [...MEMORY_SESSION_HOOK.sources, 'resume'];
+    if (validSources.includes(source)) {
+      return source as MemorySessionStartSource;
     }
   } catch {
     // Invalid hook input fails closed: no additional context is emitted.

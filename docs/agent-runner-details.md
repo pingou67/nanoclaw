@@ -25,8 +25,8 @@ interface AgentProvider {
    *  through raw. When false, the poll-loop formats them like any chat message. */
   readonly supportsNativeSlashCommands: boolean;
 
-  /** True when the provider injects shared memory on startup, clear, and compact. */
-  readonly providesMemorySessionHook?: boolean;
+  /** Register shared memory through the provider's native session-start mechanism. */
+  registerMemorySessionHook(hook: MemorySessionHookRegistration): void;
 
   /** Optional. Called after each completed exchange so providers whose harness
    *  keeps no on-disk transcript can persist it themselves. Claude (the SDK

@@ -54,7 +54,7 @@ For each approved group:
    `.memory-migration-quarantine/` if absent. The quarantine is beside
    `memory/`, never inside the OKF bundle.
 2. If `memory/index.md` or `memory/system/definition.md` is absent, copy its
-   matching template from `container/agent-runner/src/memory-templates/`.
+   matching template from `container/agent-runner/src/memory/templates/`.
 3. If either destination is a symlink or non-regular file, do not read or
    replace it. Report the path and stop this group for operator review.
 

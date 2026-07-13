@@ -24,6 +24,13 @@ edit. One Markdown concept per file, with YAML frontmatter containing a
 `type`; `index.md` and `log.md` are reserved and do not need a type. The root
 `index.md` declares `okf_version: "0.1"`.
 
+Start every new concept file like:
+```yaml
+---
+type: value
+---
+```
+
 Only `type` is required: what kind of concept the file is. The optional OKF
 fields:
 

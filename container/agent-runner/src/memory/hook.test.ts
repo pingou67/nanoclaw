@@ -7,7 +7,7 @@ const BASE = '/tmp/nanoclaw-memory-hook-test';
 function runHook(input: string): ReturnType<typeof Bun.spawnSync> {
   const inputFile = path.join(BASE, 'hook-input.json');
   fs.writeFileSync(inputFile, input);
-  return Bun.spawnSync(['bun', path.join(import.meta.dir, 'memory-hook.ts'), BASE], {
+  return Bun.spawnSync(['bun', path.join(import.meta.dir, 'hook.ts'), BASE], {
     stdin: Bun.file(inputFile),
   });
 }

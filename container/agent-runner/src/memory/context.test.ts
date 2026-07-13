@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import fs from 'fs';
 import path from 'path';
 
-import { MEMORY_FILE_BUDGET_CHARS, MEMORY_TRUNCATION_NOTICE, renderMemorySection } from './memory-context.js';
+import { MEMORY_FILE_BUDGET_CHARS, MEMORY_TRUNCATION_NOTICE, renderMemorySection } from './context.js';
 
 const BASE = '/tmp/nanoclaw-memory-context-test';
 
@@ -27,8 +27,7 @@ describe('renderMemorySection', () => {
 
     expect(section).toContain('## Memory');
     expect(section).toContain('files on disk are authoritative');
-    expect(section).toContain('Missing or malformed');
-    expect(section).toContain('metadata never blocks memory use');
+    expect(section).toContain('Open Knowledge Format (OKF) v0.1 bundle');
     expect(section).toContain('- [Casa](memories/casa.md)');
     expect(section).toContain('custom doctrine');
   });

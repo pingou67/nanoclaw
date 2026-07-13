@@ -77,12 +77,7 @@ describe('initGroupFilesystem agent surfaces', () => {
     const settings = JSON.parse(fs.readFileSync(path.join(claudeDir, 'settings.json'), 'utf-8'));
     expect(settings.autoMemoryEnabled).toBe(false);
     expect(settings.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe('1');
-    expect(settings.hooks.SessionStart).toEqual([
-      {
-        matcher: 'startup|clear|compact',
-        hooks: [{ type: 'command', command: 'bun /app/src/memory-hook.ts' }],
-      },
-    ]);
+    expect(settings.hooks.SessionStart).toBeUndefined();
   });
 
   it('disables native Claude memory in existing settings without clobbering other values', () => {
@@ -109,10 +104,6 @@ describe('initGroupFilesystem agent surfaces', () => {
     expect(reconciled.customValue).toBe('preserved');
     expect(reconciled.hooks.SessionStart).toEqual([
       { matcher: 'resume', hooks: [{ type: 'command', command: 'custom-resume' }] },
-      {
-        matcher: 'startup|clear|compact',
-        hooks: [{ type: 'command', command: 'bun /app/src/memory-hook.ts' }],
-      },
     ]);
     expect(JSON.stringify(reconciled.hooks.PreCompact)).toContain('compact-instructions.ts');
   });

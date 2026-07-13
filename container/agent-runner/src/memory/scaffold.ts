@@ -10,7 +10,7 @@ import { fileURLToPath } from 'url';
  * ephemeral container). No host-side step, nothing mounted in.
  *
  * The default `definition.md` / `index.md` live as real markdown templates next
- * to this module (under `memory-templates/`) — not as strings in code — so the
+ * to this module (under `templates/`) — not as strings in code — so the
  * doctrine is editable as markdown and the agent receives an unescaped copy.
  * They ship in the mounted `/app/src` tree, so no image change is needed.
  *
@@ -18,7 +18,7 @@ import { fileURLToPath } from 'url';
  * accumulated memory are never clobbered on a later wake. Every provider uses
  * the same tree.
  */
-const TEMPLATES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'memory-templates');
+const TEMPLATES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'templates');
 
 export function ensureMemoryScaffold(baseDir = '/workspace/agent'): void {
   const memoryDir = path.join(baseDir, 'memory');

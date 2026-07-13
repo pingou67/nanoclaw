@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { ensureMemoryScaffold } from './memory-scaffold.js';
+import { ensureMemoryScaffold } from './scaffold.js';
 
 function parseFrontmatter(filePath: string): unknown {
   const content = fs.readFileSync(filePath, 'utf-8');

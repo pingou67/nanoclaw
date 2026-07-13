@@ -5,6 +5,7 @@ import { DATA_DIR, DEFAULT_AGENT_PROVIDER, GROUPS_DIR } from './config.js';
 import { ensureContainerConfig } from './db/container-configs.js';
 import { stageGroupPersona } from './group-persona.js';
 import { log } from './log.js';
+import { migrateClaudeMemorySettings } from './migrate-claude-memory-settings.js';
 import { providerProvidesAgentSurfaces } from './providers/provider-container-registry.js';
 import type { AgentGroup } from './types.js';
 
@@ -17,17 +18,6 @@ const DEFAULT_SETTINGS_JSON =
         CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
       },
       hooks: {
-        SessionStart: [
-          {
-            matcher: 'startup|clear|compact',
-            hooks: [
-              {
-                type: 'command',
-                command: 'bun /app/src/memory-hook.ts',
-              },
-            ],
-          },
-        ],
         PreCompact: [
           {
             hooks: [
@@ -107,8 +97,8 @@ export function initGroupFilesystem(
     if (!fs.existsSync(settingsFile)) {
       fs.writeFileSync(settingsFile, DEFAULT_SETTINGS_JSON);
       initialized.push('settings.json');
-    } else {
-      ensureClaudeSettings(settingsFile, initialized);
+    } else if (migrateClaudeMemorySettings(settingsFile)) {
+      initialized.push('settings.json (reconciled Claude settings)');
     }
 
     // Skills directory — created empty here; symlinks are synced at spawn
@@ -128,104 +118,4 @@ export function initGroupFilesystem(
       steps: initialized,
     });
   }
-}
-
-const PRE_COMPACT_COMMAND = 'bun /app/src/compact-instructions.ts';
-const MEMORY_SESSION_START_COMMAND = 'bun /app/src/memory-hook.ts';
-const MEMORY_SESSION_START_MATCHER = 'startup|clear|compact';
-
-/**
- * Patch NanoClaw-owned Claude settings without disturbing unrelated values.
- * Runs on every group init so existing groups disable Claude auto-memory and
- * keep the SessionStart memory and PreCompact hooks.
- */
-function ensureClaudeSettings(settingsFile: string, initialized: string[]): void {
-  try {
-    const raw = fs.readFileSync(settingsFile, 'utf-8');
-    const parsed: unknown = JSON.parse(raw);
-    if (!isRecord(parsed)) {
-      log.warn('Claude settings root is not an object; leaving it unchanged', { settingsFile });
-      return;
-    }
-    const settings = parsed;
-    let changed = false;
-
-    if (settings.autoMemoryEnabled !== false) {
-      settings.autoMemoryEnabled = false;
-      changed = true;
-    }
-
-    const env = isRecord(settings.env) ? settings.env : {};
-    if (env.CLAUDE_CODE_DISABLE_AUTO_MEMORY !== '1') {
-      env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = '1';
-      changed = true;
-    }
-    if (settings.env !== env) {
-      settings.env = env;
-      changed = true;
-    }
-
-    const hooks = isRecord(settings.hooks) ? settings.hooks : {};
-    const existingSessionStart = Array.isArray(hooks.SessionStart) ? hooks.SessionStart : [];
-    // NanoClaw owns this command entry and replaces stale matcher/options on init.
-    const nextSessionStart = existingSessionStart.map(removeNanoClawMemoryHook).filter((entry) => entry !== undefined);
-    nextSessionStart.push({
-      matcher: MEMORY_SESSION_START_MATCHER,
-      hooks: [{ type: 'command', command: MEMORY_SESSION_START_COMMAND }],
-    });
-    if (JSON.stringify(nextSessionStart) !== JSON.stringify(existingSessionStart)) {
-      hooks.SessionStart = nextSessionStart;
-      changed = true;
-    }
-
-    const existing = Array.isArray(hooks.PreCompact) ? hooks.PreCompact : [];
-    if (!JSON.stringify(existing).includes(PRE_COMPACT_COMMAND)) {
-      existing.push({
-        hooks: [{ type: 'command', command: PRE_COMPACT_COMMAND }],
-      });
-      hooks.PreCompact = existing;
-      changed = true;
-    }
-    if (settings.hooks !== hooks) {
-      settings.hooks = hooks;
-      changed = true;
-    }
-
-    if (!changed) return;
-
-    writeAtomic(settingsFile, JSON.stringify(settings, null, 2) + '\n');
-    initialized.push('settings.json (reconciled Claude settings)');
-  } catch (err) {
-    log.warn('Failed to reconcile Claude settings; leaving them unchanged', {
-      settingsFile,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
-
-function writeAtomic(filePath: string, content: string): void {
-  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  try {
-    fs.writeFileSync(tmp, content, { flag: 'wx' });
-    fs.renameSync(tmp, filePath);
-  } finally {
-    try {
-      fs.unlinkSync(tmp);
-    } catch {
-      // The rename consumed the temp file, or creation failed before it existed.
-    }
-  }
-}
-
-function removeNanoClawMemoryHook(value: unknown): unknown {
-  if (!isRecord(value) || !Array.isArray(value.hooks)) return value;
-  const remaining = value.hooks.filter((hook) => {
-    if (!isRecord(hook)) return true;
-    return hook.command !== MEMORY_SESSION_START_COMMAND;
-  });
-  return remaining.length > 0 ? { ...value, hooks: remaining } : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

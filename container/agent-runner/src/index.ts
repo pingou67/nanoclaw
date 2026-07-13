@@ -28,7 +28,8 @@ import { fileURLToPath } from 'url';
 import { loadConfig } from './config.js';
 import { buildSystemPromptAddendum } from './destinations.js';
 import { getTaskSeriesId } from './db/session-routing.js';
-import { ensureMemoryScaffold } from './memory-scaffold.js';
+import { ensureMemoryScaffold } from './memory/scaffold.js';
+import { MEMORY_SESSION_HOOK } from './memory/session-hook.js';
 // Providers barrel — each enabled provider self-registers on import.
 // Provider skills append imports to providers/index.ts.
 import './providers/index.js';
@@ -104,13 +105,7 @@ async function main(): Promise<void> {
     model: config.model,
     effort: config.effort,
   });
-
-  if (!provider.providesMemorySessionHook) {
-    log(
-      `Provider '${providerName}' has not registered the shared-memory session hook; ` +
-        'continuing for compatibility without automatic memory injection',
-    );
-  }
+  provider.registerMemorySessionHook(MEMORY_SESSION_HOOK);
 
   await runPollLoop({
     provider,

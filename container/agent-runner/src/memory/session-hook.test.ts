@@ -3,15 +3,15 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import {
-  MEMORY_SESSION_START_MATCHER,
-  memoryContextForSessionStart,
-  type MemorySessionStartSource,
-} from './memory-session-hook.js';
+import { MEMORY_SESSION_HOOK, memoryContextForSessionStart, type MemorySessionStartSource } from './session-hook.js';
 
 describe('memory SessionStart contract', () => {
   it('injects startup, clear, and compact but not resume', () => {
-    expect(MEMORY_SESSION_START_MATCHER).toBe('startup|clear|compact');
+    expect(MEMORY_SESSION_HOOK).toMatchObject({
+      command: 'bun /app/src/memory/hook.ts',
+      legacyCommands: ['bun /app/src/memory-hook.ts'],
+      sources: ['startup', 'clear', 'compact'],
+    });
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-memory-hook-contract-'));
     try {
       fs.mkdirSync(path.join(base, 'memory', 'system'), { recursive: true });
