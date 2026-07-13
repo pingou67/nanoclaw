@@ -9,6 +9,7 @@ const approvalState = vi.hoisted(() => ({
     | ((args: {
         session: unknown;
         payload: Record<string, unknown>;
+        approval: Record<string, unknown>;
         userId: string;
         notify: (text: string) => void;
       }) => Promise<void>),
@@ -18,6 +19,7 @@ const approvalState = vi.hoisted(() => ({
       handler: (args: {
         session: unknown;
         payload: Record<string, unknown>;
+        approval: Record<string, unknown>;
         userId: string;
         notify: (text: string) => void;
       }) => Promise<void>,
@@ -43,8 +45,11 @@ vi.mock('../db/agent-groups.js', () => ({
 }));
 
 const mockGetSession = vi.fn();
+// The guard's grant check re-fetches the approval row to prove it's live.
+const mockGetPendingApproval = vi.fn();
 vi.mock('../db/sessions.js', () => ({
   getSession: (...args: unknown[]) => mockGetSession(...args),
+  getPendingApproval: (...args: unknown[]) => mockGetPendingApproval(...args),
 }));
 
 // dispatch's post-handler looks up the resource's `scopeField` via getResource.
@@ -495,16 +500,93 @@ describe('CLI scope enforcement', () => {
       callerContext: ctx,
     });
 
+    // The approve path hands the handler the live approval row — the grant
+    // the replay carries back into dispatch.
+    const grantRow = {
+      approval_id: 'appr-t1',
+      action: 'cli_command',
+      payload: JSON.stringify(approval.payload),
+    };
+    mockGetPendingApproval.mockReturnValue(grantRow);
+
     expect(approvalState.approvalHandler).toBeTypeOf('function');
     await approvalState.approvalHandler!({
       session: { id: 's1', agent_group_id: 'g1', messaging_group_id: 'mg1' },
       payload: approval.payload,
+      approval: grantRow,
       userId: 'telegram:admin',
       notify: vi.fn(),
     });
 
     expect(approvalState.observedContexts).toEqual([ctx]);
     expect(approvalState.requestApproval).toHaveBeenCalledTimes(1);
+  });
+
+  // --- Grant-carrying replay (the `approved: true` boolean no longer exists) ---
+
+  it('replay with a dead grant (row deleted) refuses instead of re-holding', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'group' });
+    mockGetSession.mockReturnValue({ id: 's1', agent_group_id: 'g1', messaging_group_id: 'mg1' });
+    mockGetAgentGroup.mockReturnValue({ id: 'g1', name: 'Group One' });
+
+    const ctx = agentCtx();
+    await dispatch({ id: '1', command: 'approval-context-command', args: {} }, ctx);
+    const approval = approvalState.requestApproval.mock.calls[0][0] as { payload: Record<string, unknown> };
+
+    mockGetPendingApproval.mockReturnValue(undefined); // resolution already deleted the row
+    const notify = vi.fn();
+    await approvalState.approvalHandler!({
+      session: { id: 's1', agent_group_id: 'g1', messaging_group_id: 'mg1' },
+      payload: approval.payload,
+      approval: { approval_id: 'appr-dead', action: 'cli_command', payload: JSON.stringify(approval.payload) },
+      userId: 'telegram:admin',
+      notify,
+    });
+
+    expect(approvalState.observedContexts).toHaveLength(0); // handler never ran
+    expect(approvalState.requestApproval).toHaveBeenCalledTimes(1); // no second card
+    expect(notify.mock.calls[0][0]).toContain('failed');
+  });
+
+  it("a grant approved for one command doesn't transfer to another", async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'group' });
+
+    // A live cli_command row, but held for a DIFFERENT command.
+    const grantRow = {
+      approval_id: 'appr-other',
+      action: 'cli_command',
+      payload: JSON.stringify({ frame: { command: 'members-add' } }),
+    };
+    mockGetPendingApproval.mockReturnValue(grantRow);
+
+    const resp = await dispatch({ id: '1', command: 'approval-context-command', args: {} }, agentCtx(), {
+      grant: grantRow as never,
+    });
+
+    expect(resp.ok).toBe(false);
+    if (!resp.ok) {
+      expect(resp.error.code).toBe('forbidden');
+      expect(resp.error.message).toContain('grant');
+    }
+    expect(approvalState.observedContexts).toHaveLength(0);
+  });
+
+  it('a fabricated grant object without a live row is refused', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'group' });
+    mockGetPendingApproval.mockReturnValue(undefined);
+
+    const forged = {
+      approval_id: 'appr-forged',
+      action: 'cli_command',
+      payload: JSON.stringify({ frame: { command: 'approval-context-command' } }),
+    };
+    const resp = await dispatch({ id: '1', command: 'approval-context-command', args: {} }, agentCtx(), {
+      grant: forged as never,
+    });
+
+    expect(resp.ok).toBe(false);
+    if (!resp.ok) expect(resp.error.code).toBe('forbidden');
+    expect(approvalState.requestApproval).not.toHaveBeenCalled(); // refusal, not a fresh hold
   });
 
   // --- Post-handler filtering ---
