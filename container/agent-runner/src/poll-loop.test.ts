@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from './db/connection.js';
 import { getPendingMessages, markCompleted } from './db/messages-in.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
-import { formatMessages, extractRouting } from './formatter.js';
+import { formatMessages, extractRouting, type RoutingContext } from './formatter.js';
 import { isCorruptionError, processQuery, type ActiveQuery } from './poll-loop.js';
 import { MockProvider } from './providers/mock.js';
 import type { AgentQuery, ProviderEvent } from './providers/types.js';
@@ -411,7 +411,7 @@ const ERR_ROUTING = {
   inReplyTo: 'm1',
 };
 
-function makeActiveQuery(q: AgentQuery): ActiveQuery {
+function makeActiveQuery(q: AgentQuery, routing: RoutingContext = ERR_ROUTING, ids: string[] = ['m1']): ActiveQuery {
   return {
     jobId: 'fg',
     kind: 'foreground',
@@ -421,8 +421,8 @@ function makeActiveQuery(q: AgentQuery): ActiveQuery {
     turnStartedAt: Date.now(),
     activelyProcessing: true,
     interactive: true,
-    routing: ERR_ROUTING,
-    initialBatchIds: ['m1'],
+    routing,
+    initialBatchIds: ids,
     live: { outboundId: null, platformMsgId: null, lastUpdateAt: 0, latestText: '', eventCount: 0 },
   };
 }
@@ -500,7 +500,7 @@ describe('task-run turn wiring (real processQuery)', () => {
     }
     const query: AgentQuery = { push: () => {}, end: () => {}, events: events(), abort: () => {} };
 
-    await processQuery(query, TASK_ROUTING, ['t1'], 'claude', undefined, 'prompt', undefined);
+    await processQuery(makeActiveQuery(query, TASK_ROUTING, ['t1']), 'claude', undefined);
 
     const logs = taskLogRows();
     expect(logs).toHaveLength(1);
@@ -541,7 +541,7 @@ describe('task-run turn wiring (real processQuery)', () => {
       abort: () => {},
     };
 
-    await processQuery(query, TASK_ROUTING, ['t1'], 'claude', undefined, 'prompt', undefined);
+    await processQuery(makeActiveQuery(query, TASK_ROUTING, ['t1']), 'claude', undefined);
 
     const nudges = pushes.filter((p) => p.includes('If and only if'));
     expect(nudges).toHaveLength(2);

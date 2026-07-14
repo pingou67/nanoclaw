@@ -79,7 +79,7 @@ describe('buildSystemPromptAddendum — structured delivery', () => {
   it('drops the <message> envelope guidance and points at reply-text + send_message', () => {
     seedDestination('casa', 'Casa', 'whatsapp', 'group-1@g.us');
 
-    const prompt = buildSystemPromptAddendum('Casa', true);
+    const prompt = buildSystemPromptAddendum('Casa', { kind: 'chat' }, true);
 
     expect(prompt).not.toContain('<message to="name">');
     expect(prompt).not.toContain('Wrap each delivered message');
@@ -93,7 +93,7 @@ describe('buildSystemPromptAddendum — structured delivery', () => {
     seedDestination('casa', 'Casa', 'whatsapp', 'group-1@g.us');
     seedDestination('worker-1', 'worker-1', 'whatsapp', 'phone-2@s.whatsapp.net');
 
-    const prompt = buildSystemPromptAddendum('Casa', true);
+    const prompt = buildSystemPromptAddendum('Casa', { kind: 'chat' }, true);
 
     expect(prompt).toContain('`casa`');
     expect(prompt).toContain('`worker-1`');
@@ -101,7 +101,7 @@ describe('buildSystemPromptAddendum — structured delivery', () => {
   });
 
   it('handles the no-destination case in structured mode without crashing', () => {
-    const prompt = buildSystemPromptAddendum('Casa', true);
+    const prompt = buildSystemPromptAddendum('Casa', { kind: 'chat' }, true);
 
     expect(prompt).toContain('no configured destinations');
     expect(prompt).not.toContain('<message to="name">');

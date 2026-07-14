@@ -283,7 +283,7 @@ async function deliverMessage(
     return;
   }
 
-// Task-run log: the runner mirrors a run's final text here (one-door
+  // Task-run log: the runner mirrors a run's final text here (one-door
   // delivery — final text never reaches a channel; the send_message tool is
   // the only delivery path from a task session). Append to the series log,
   // never deliver. The caller marks it delivered so it isn't retried.
