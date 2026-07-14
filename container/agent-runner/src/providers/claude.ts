@@ -26,6 +26,10 @@ function log(msg: string): void {
 //   the question and blocks on the real reply.
 // - EnterPlanMode / ExitPlanMode / EnterWorktree / ExitWorktree: Claude
 //   Code UI affordances; in a headless container they'd appear stuck.
+// - DesignSync: desktop design-tool integration — nothing to sync with in a
+//   headless container (~9.3KB/turn schema).
+// - ReportFindings: code-review-reporting UI affordance with no headless
+//   host surface to receive it (~1.9KB/turn schema).
 const SDK_DISALLOWED_TOOLS = [
   'CronCreate',
   'CronDelete',
@@ -36,6 +40,8 @@ const SDK_DISALLOWED_TOOLS = [
   'ExitPlanMode',
   'EnterWorktree',
   'ExitWorktree',
+  'DesignSync',
+  'ReportFindings',
 ];
 
 // claude.ai web connectors (Gmail, Google Calendar, Google Drive, …) are

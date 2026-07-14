@@ -27,6 +27,7 @@ import { fileURLToPath } from 'url';
 
 import { loadConfig } from './config.js';
 import { buildSystemPromptAddendum } from './destinations.js';
+import { getTaskSeriesId } from './db/session-routing.js';
 import { ensureMemoryScaffold } from './memory-scaffold.js';
 // Providers barrel — each enabled provider self-registers on import.
 // Provider skills append imports to providers/index.ts.
@@ -100,9 +101,13 @@ async function main(): Promise<void> {
   // live destinations map. Built after the provider exists so its delivery
   // style (structuredDelivery) selects the right routing guidance — structured
   // (reply directly + send_message tool) vs legacy (<message to="…"> envelopes).
-  // Everything else is loaded by the harness from /workspace/agent/CLAUDE.md.
+  // Task sessions get the one-door contract (explicit sends only, final text →
+  // run log) whatever the provider. Everything else is loaded by the harness
+  // from /workspace/agent/CLAUDE.md.
+  const taskId = getTaskSeriesId();
   const instructions = buildSystemPromptAddendum(
     config.assistantName || undefined,
+    taskId ? { kind: 'task', taskId } : { kind: 'chat' },
     provider.structuredDelivery ?? false,
   );
 

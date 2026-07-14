@@ -1,10 +1,10 @@
-## Sending messages
+## Outbound tools
 
-**How you deliver a reply is described in the `## Sending messages` section of your runtime system prompt** — it lists your destinations and the exact mechanism for your setup (reply with your text directly, or wrap each message in a `<message to="name">…</message>` block). Follow that section. Either way, text you do NOT want delivered goes in `<internal>…</internal>` tags (scratchpad — logged, never sent).
+**How you deliver a reply is described in the `## Sending messages` section of your runtime system prompt** — it lists your destinations, explains how final output is handled in this session, and gives the exact mechanism for your setup (reply with your text directly, or wrap each message in a `<message to="name">…</message>` block). Follow that section. Either way, text you do NOT want delivered goes in `<internal>…</internal>` tags (scratchpad — logged, never sent).
 
 ### Mid-turn updates (`send_message`)
 
-Use the `mcp__nanoclaw__send_message` tool to send a message while you're still working (before your final output). If you have one destination, `to` is optional; with multiple, specify it. Pace your updates to the length of the work:
+Use the `mcp__nanoclaw__send_message` tool to send a message while you're still working (before your final output). Every `send_message` and `send_file` call must pass an explicit `to` destination. Pace your updates to the length of the work:
 
 - **Short turn (≤2 quick tool calls):** Don't narrate. Output any response.
 - **Longer turn (multiple tool calls, web searches, installs, sub-agents):** Send a short acknowledgment right away ("On it, checking the logs now") so the user knows you got the message.
@@ -16,7 +16,7 @@ Use the `mcp__nanoclaw__send_message` tool to send a message while you're still 
 
 ### Sending files (`send_file`)
 
-Use `mcp__nanoclaw__send_file({ path, text?, filename?, to? })` to deliver a file from your workspace. `path` is absolute or relative to `/workspace/agent/`; `filename` overrides the display name shown in chat (defaults to the file's basename); `text` is an optional accompanying message. Use this for artifacts you produce (charts, PDFs, generated images, reports) rather than dumping contents into chat.
+Use `mcp__nanoclaw__send_file({ to, path, text?, filename? })` to deliver a file from your workspace. `path` is absolute or relative to `/workspace/agent/`; `filename` overrides the display name shown in chat (defaults to the file's basename); `text` is an optional accompanying message. Use this for artifacts you produce (charts, PDFs, generated images, reports) rather than dumping contents into chat.
 
 ### Reacting to messages (`add_reaction`)
 
