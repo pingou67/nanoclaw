@@ -52,6 +52,26 @@ describe('insertTaskRow', () => {
     expect(row.series_id).toBe('task-1');
     db.close();
   });
+
+  it('stamps timestamp with the scheduled slot, not the insertion time', () => {
+    // Une série quotidienne insère sa prochaine occurrence juste après le run
+    // précédent : si timestamp = insertion, l'agent voit <task time="hier"> et
+    // produit un livrable daté de la veille (bug du 2026-07-15).
+    const db = freshDb();
+    const slot = '2099-01-02T06:00:00.000Z';
+    insertTaskRow(db, {
+      id: 'task-slot',
+      seriesId: 'task-slot',
+      processAfter: slot,
+      recurrence: '0 7 * * *',
+      content: JSON.stringify({ prompt: 'noop' }),
+    });
+    const row = db.prepare('SELECT timestamp FROM messages_in WHERE id = ?').get('task-slot') as {
+      timestamp: string;
+    };
+    expect(row.timestamp).toBe(slot);
+    db.close();
+  });
 });
 
 describe('cancelTask / pauseTask / resumeTask series matching', () => {

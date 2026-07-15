@@ -37,7 +37,12 @@ export function insertTaskRow(
   ).run({
     status: 'pending',
     ...row,
-    timestamp: new Date().toISOString(),
+    // Le timestamp est l'étiquette temporelle que l'agent verra (<task time=…>).
+    // Pour une occurrence planifiée, c'est le créneau de tir — PAS l'heure
+    // d'insertion : la ligne suivante d'une série quotidienne est créée juste
+    // après le run précédent, et estampiller l'insertion ferait produire à
+    // l'agent un livrable daté de la veille (bug du 2026-07-15).
+    timestamp: row.processAfter ?? new Date().toISOString(),
     seq: nextEvenSeq(db),
   });
 }

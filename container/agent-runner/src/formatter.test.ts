@@ -147,6 +147,24 @@ describe('task timestamps', () => {
     const result = formatMessages(getPendingMessages());
     expect(result).toContain(`time="${formatLocalTime('2026-01-05T12:00:00.000Z', TIMEZONE)}"`);
   });
+
+  it('carries the real execution time in run_at and flags a late run', () => {
+    // Créneau planifié loin dans le passé → le run est « tardif » : bandeau
+    // demandant de produire pour MAINTENANT, pour qu'un backlog rejoué ne
+    // donne jamais un digest daté de la veille (bug du 2026-07-15).
+    insertMessage('t1', 'task', { prompt: 'daily digest' }, { timestamp: '2026-01-05T12:00:00.000Z' });
+    const result = formatMessages(getPendingMessages());
+    expect(result).toContain('run_at="');
+    expect(result).toContain('[Late run:');
+    expect(result).toContain('Produce the deliverable for the present moment');
+  });
+
+  it('omits the late-run banner when firing on schedule', () => {
+    insertMessage('t1', 'task', { prompt: 'daily digest' }, { timestamp: new Date().toISOString() });
+    const result = formatMessages(getPendingMessages());
+    expect(result).toContain('run_at="');
+    expect(result).not.toContain('[Late run:');
+  });
 });
 
 describe('reply_to + quoted_message rendering', () => {

@@ -361,16 +361,35 @@ function originAttr(msg: MessageInRow): string {
   return '';
 }
 
+/** Au-delà de ce retard entre le créneau planifié (`time=`) et l'exécution
+ *  réelle (`run_at=`), un bandeau demande à l'agent de produire le livrable
+ *  pour MAINTENANT — un backlog rejoué ne doit jamais donner un digest daté
+ *  de la veille. */
+const LATE_TASK_RUN_MS = 15 * 60 * 1000;
+
 function formatTaskMessage(msg: MessageInRow): string {
+  // Pas de paramètre `now` : formatTaskMessage est passé tel quel à .map(),
+  // dont le 2e argument (l'index) écraserait un paramètre optionnel.
+  const now = new Date();
   const content = parseContent(msg.content);
   const from = originAttr(msg);
   const time = formatLocalTime(msg.timestamp, TIMEZONE);
+  const runAt = formatLocalTime(now.toISOString(), TIMEZONE);
+  const scheduledMs = Date.parse(msg.timestamp);
+  const lateMs = Number.isFinite(scheduledMs) ? now.getTime() - scheduledMs : 0;
   const parts: string[] = [];
+  if (lateMs > LATE_TASK_RUN_MS) {
+    parts.push(
+      `[Late run: this occurrence was scheduled for ${time} but is executing NOW (${runAt}). ` +
+        `Produce the deliverable for the present moment — do not date or scope it to the original slot.]`,
+      '',
+    );
+  }
   if (content.scriptOutput) {
     parts.push('Script output:', JSON.stringify(content.scriptOutput, null, 2), '');
   }
   parts.push('Instructions:', stripLegacyTaskContract(content.prompt || ''));
-  return `<task${from} time="${escapeXml(time)}">${parts.join('\n')}</task>`;
+  return `<task${from} time="${escapeXml(time)}" run_at="${escapeXml(runAt)}">${parts.join('\n')}</task>`;
 }
 
 const LEGACY_TASK_CONTRACT_MARKERS = [
