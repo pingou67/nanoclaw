@@ -786,6 +786,7 @@ PROVIDER_MATRIX_CANDIDATES = [
     ("adminsys",  "ch-adminsys",  False),
     ("famille",   "ch-famille",   True),
     ("testor",    "ch-testor",    False),  # OpenCode-backed — keeps both providers covered
+    ("testor-claude", "ch-testor-claude", False),  # Claude-backed depuis la migration opencode de 2026-07 — garde la couverture claude
 ]
 
 def _relabel(r: Result, name: str) -> Result:
@@ -830,6 +831,7 @@ WAIT_MCP_SEC = 120  # npx-based servers download into the container on cold star
 MCP_CHANNEL_CANDIDATES = [
     ("work",     "ch-work",     False),
     ("testor",   "ch-testor",   False),
+    ("testor-claude", "ch-testor-claude", False),
     ("famille",  "ch-famille",  True),
     ("coding",   "ch-coding",   False),
     ("adminsys", "ch-adminsys", False),
