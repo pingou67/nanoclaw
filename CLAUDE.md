@@ -344,9 +344,14 @@ cd container/agent-runner && bun test      # Container tests (bun:test)
 >
 > ```bash
 > docker run --rm --entrypoint sh \
->   -v $PWD/container/agent-runner:/ar -w /ar \
+>   -v $PWD:/repo -w /repo/container/agent-runner \
 >   nanoclaw-agent-v2-c761ecdc:latest -c 'bun test'
 > ```
+>
+> Monter le **repo entier** (pas seulement `container/agent-runner/`) : depuis la
+> mémoire OKF, les tests de wiring (`memory/session-hook.wiring.test.ts`) lisent
+> des fichiers host (`src/group-init.ts`) — un mount partiel les fait échouer en
+> ENOENT.
 
 Container typecheck is a separate tsconfig — if you edit `container/agent-runner/src/`, run `pnpm exec tsc -p container/agent-runner/tsconfig.json --noEmit` from root (or `bun run typecheck` from `container/agent-runner/`).
 
