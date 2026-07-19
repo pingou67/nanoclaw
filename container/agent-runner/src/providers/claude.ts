@@ -6,13 +6,64 @@ import { query as sdkQuery, type HookCallback, type McpServerConfig as SdkMcpSer
 
 import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/connection.js';
 import { writeMessageOut } from '../db/messages-out.js';
+import type { MemorySessionHookRegistration } from '../memory/session-hook.js';
 import { TIMEZONE, formatLocalStamp } from '../timezone.js';
 import { registerProvider } from './provider-registry.js';
 import { summarizeToolUse } from './summarize.js';
-import type { AgentProvider, AgentQuery, McpServerConfig, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
+import type {
+  AgentProvider,
+  AgentQuery,
+  McpServerConfig,
+  ProviderEvent,
+  ProviderOptions,
+  QueryInput,
+} from './types.js';
 
 function log(msg: string): void {
   console.error(`[claude-provider] ${msg}`);
+}
+
+export interface SdkRateLimitInfo {
+  status?: string;
+  resetsAt?: number;
+  rateLimitType?: string;
+  utilization?: number;
+  errorCode?: string;
+  overageDisabledReason?: string;
+}
+
+/**
+ * Map an SDK `rate_limit_event` to a provider event — or to NOTHING.
+ *
+ * The SDK emits this "when rate limit info changes": it is TELEMETRY, and
+ * `status` is usually 'allowed' (here's your remaining headroom). We used to
+ * treat every one as a terminal quota error: on a stock install that logged a
+ * spurious "Rate limit (retryable: false, quota)" on perfectly healthy turns
+ * (#3016), and any consumer acting on the classification aborted those turns
+ * outright. **Only 'rejected' is an actual block.**
+ *
+ * When it IS rejected the SDK tells us WHY, so we distinguish properly instead
+ * of guessing: `errorCode: 'credits_required'` / `overageDisabledReason:
+ * 'out_of_credits'` means genuinely out of credits (billing); anything else is a
+ * transient window limit that resets (`resetsAt`, `rateLimitType`).
+ *
+ * Returns null when the event is informational (do not disturb the turn).
+ */
+export function classifyRateLimitEvent(
+  info: SdkRateLimitInfo | undefined,
+): { message: string; classification: 'rate_limit' | 'quota' } | null {
+  if (info?.status !== 'rejected') return null;
+  const outOfCredits = info.errorCode === 'credits_required' || info.overageDisabledReason === 'out_of_credits';
+  let detail = '';
+  if (typeof info.resetsAt === 'number' && Number.isFinite(info.resetsAt)) {
+    const ms = info.resetsAt < 1e12 ? info.resetsAt * 1000 : info.resetsAt;
+    detail = ` (resets ${new Date(ms).toISOString()})`;
+  }
+  const window = info.rateLimitType ? ` [${info.rateLimitType}]` : '';
+  return {
+    message: `${outOfCredits ? 'Out of credits' : 'Rate limit'}${window}${detail}`,
+    classification: outOfCredits ? 'quota' : 'rate_limit',
+  };
 }
 
 // Deferred SDK builtins that either sidestep nanoclaw's own scheduling or
@@ -172,10 +223,15 @@ function parseTranscript(content: string): ParsedMessage[] {
     try {
       const entry = JSON.parse(line);
       if (entry.type === 'user' && entry.message?.content) {
-        const text = typeof entry.message.content === 'string' ? entry.message.content : entry.message.content.map((c: { text?: string }) => c.text || '').join('');
+        const text =
+          typeof entry.message.content === 'string'
+            ? entry.message.content
+            : entry.message.content.map((c: { text?: string }) => c.text || '').join('');
         if (text) messages.push({ role: 'user', content: text });
       } else if (entry.type === 'assistant' && entry.message?.content) {
-        const textParts = entry.message.content.filter((c: { type: string }) => c.type === 'text').map((c: { text: string }) => c.text);
+        const textParts = entry.message.content
+          .filter((c: { type: string }) => c.type === 'text')
+          .map((c: { text: string }) => c.text);
         const text = textParts.join('');
         if (text) messages.push({ role: 'assistant', content: text });
       }
@@ -188,7 +244,13 @@ function parseTranscript(content: string): ParsedMessage[] {
 
 function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | null, assistantName?: string): string {
   const now = new Date();
-  const dateStr = now.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+  const dateStr = now.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
   const lines = [`# ${title || 'Conversation'}`, '', `Archived: ${dateStr}`, '', '---', ''];
   for (const msg of messages) {
     const sender = msg.role === 'user' ? 'User' : assistantName || 'Assistant';
@@ -240,7 +302,11 @@ const postToolUseHook: HookCallback = async () => {
  * the agent's `conversations/` folder so context survives a compaction or a
  * session rotation. Best-effort: returns false (and logs) on any failure.
  */
-function archiveTranscriptFile(transcriptPath: string | undefined, sessionId: string | undefined, assistantName?: string): boolean {
+function archiveTranscriptFile(
+  transcriptPath: string | undefined,
+  sessionId: string | undefined,
+  assistantName?: string,
+): boolean {
   if (!transcriptPath || !fs.existsSync(transcriptPath)) {
     log('No transcript found for archiving');
     return false;
@@ -257,14 +323,20 @@ function archiveTranscriptFile(transcriptPath: string | undefined, sessionId: st
     if (fs.existsSync(indexPath)) {
       try {
         const index = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
-        summary = index.entries?.find((e: { sessionId: string; summary?: string }) => e.sessionId === sessionId)?.summary;
+        summary = index.entries?.find(
+          (e: { sessionId: string; summary?: string }) => e.sessionId === sessionId,
+        )?.summary;
       } catch {
         /* ignore */
       }
     }
 
     const name = summary
-      ? summary.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50)
+      ? summary
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '')
+          .slice(0, 50)
       : `conversation-${new Date().getHours().toString().padStart(2, '0')}${new Date().getMinutes().toString().padStart(2, '0')}`;
 
     const conversationsDir = process.env.NANOCLAW_CONVERSATIONS_DIR || '/workspace/agent/conversations';
@@ -326,8 +398,52 @@ function transcriptRotateAgeMs(): number {
 }
 
 function claudeProjectsDir(): string {
-  const base = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || os.homedir(), '.claude');
-  return path.join(base, 'projects');
+  return path.join(claudeConfigDir(), 'projects');
+}
+
+function claudeConfigDir(): string {
+  return process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || os.homedir(), '.claude');
+}
+
+function writeMemorySessionHook(hook: MemorySessionHookRegistration): void {
+  const configDir = claudeConfigDir();
+  const settingsFile = path.join(configDir, 'settings.json');
+  fs.mkdirSync(configDir, { recursive: true });
+
+  const parsed: unknown = fs.existsSync(settingsFile) ? JSON.parse(fs.readFileSync(settingsFile, 'utf-8')) : {};
+  if (!isRecord(parsed)) throw new Error(`${settingsFile} must contain a JSON object`);
+
+  const hooks = parsed.hooks === undefined ? {} : parsed.hooks;
+  if (!isRecord(hooks)) throw new Error(`${settingsFile} hooks must be a JSON object`);
+
+  const sessionStart = hooks.SessionStart === undefined ? [] : hooks.SessionStart;
+  if (!Array.isArray(sessionStart)) throw new Error(`${settingsFile} hooks.SessionStart must be an array`);
+
+  const memoryCommands = new Set([hook.command, ...hook.legacyCommands]);
+  const nextSessionStart = sessionStart
+    .map((entry) => removeMemoryCommands(entry, memoryCommands))
+    .filter((entry) => entry !== undefined);
+  nextSessionStart.push({
+    matcher: hook.sources.join('|'),
+    hooks: [{ type: 'command', command: hook.command, timeout: 10 }],
+  });
+
+  hooks.SessionStart = nextSessionStart;
+  parsed.hooks = hooks;
+  fs.writeFileSync(settingsFile, JSON.stringify(parsed, null, 2) + '\n');
+}
+
+function removeMemoryCommands(value: unknown, commands: ReadonlySet<string>): unknown {
+  if (!isRecord(value) || !Array.isArray(value.hooks)) return value;
+  const hooks = value.hooks.filter((hook) => {
+    if (!isRecord(hook)) return true;
+    return typeof hook.command !== 'string' || !commands.has(hook.command);
+  });
+  return hooks.length > 0 ? { ...value, hooks } : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /**
@@ -403,6 +519,7 @@ export class ClaudeProvider implements AgentProvider {
   private model?: string;
   private effort?: string;
   private thinking?: { type: 'adaptive' | 'enabled' | 'disabled'; budgetTokens?: number };
+  private memorySessionHook?: MemorySessionHookRegistration;
 
   constructor(options: ProviderOptions = {}) {
     this.assistantName = options.assistantName;
@@ -414,7 +531,13 @@ export class ClaudeProvider implements AgentProvider {
     this.env = {
       ...(options.env ?? {}),
       CLAUDE_CODE_AUTO_COMPACT_WINDOW,
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
     };
+  }
+
+  registerMemorySessionHook(hook: MemorySessionHookRegistration): void {
+    writeMemorySessionHook(hook);
+    this.memorySessionHook = hook;
   }
 
   isSessionInvalid(err: unknown): boolean {
@@ -458,6 +581,7 @@ export class ClaudeProvider implements AgentProvider {
   }
 
   query(input: QueryInput): AgentQuery {
+    if (!this.memorySessionHook) throw new Error('Claude memory session hook was not registered');
     const stream = new MessageStream();
     stream.push(input.prompt);
 
@@ -477,15 +601,15 @@ export class ClaudeProvider implements AgentProvider {
         additionalDirectories: this.additionalDirectories,
         resume: input.continuation,
         pathToClaudeCodeExecutable: '/pnpm/claude',
-        ...(this.model ? { model: this.model } : {}),
-        ...(this.effort ? { effort: this.effort } : {}),
-        ...(this.thinking ? { thinking: this.thinking } : {}),
+        // Fork : 1M context beta (§19) — la plomberie model/effort/thinking est
+        // désormais upstream (partie commune ci-dessous).
         betas: ['context-1m-2025-08-07'],
-        systemPrompt: instructions ? { type: 'preset' as const, preset: 'claude_code' as const, append: instructions } : undefined,
-        allowedTools: [
-          ...TOOL_ALLOWLIST,
-          ...Object.keys(this.mcpServers).map(mcpAllowPattern),
-        ],
+        systemPrompt: instructions
+          ? { type: 'preset' as const, preset: 'claude_code' as const, append: instructions }
+          : undefined,
+        allowedTools: [...TOOL_ALLOWLIST, ...Object.keys(this.mcpServers).map(mcpAllowPattern)],
+        // Fork : DISALLOWED_TOOL_PATTERNS bloque les connecteurs claude.ai
+        // (mcp__claude_ai_*, outils différés invisibles à l'init — eb5f260).
         disallowedTools: [...SDK_DISALLOWED_TOOLS, ...DISALLOWED_TOOL_PATTERNS],
         env: this.env,
         model: this.model,
@@ -518,45 +642,71 @@ export class ClaudeProvider implements AgentProvider {
           // Yield activity for every SDK event so the poll loop knows the agent is working
           yield { type: 'activity' };
 
-          if (message.type === 'system' && message.subtype === 'init') {
-            yield { type: 'init', continuation: message.session_id };
-          } else if (message.type === 'result') {
-            // `result` text exists only on subtype:"success"; error subtypes
-            // (e.g. a non-retryable 403 billing_error) carry their message in
-            // `errors[]` instead. Surface either so the poll-loop can deliver a
-            // billing/quota notice to the user rather than dropping the turn.
-            const m = message as { result?: string; is_error?: boolean; errors?: string[] };
-            const text = m.result ?? (m.errors && m.errors.length > 0 ? m.errors.join('\n') : null);
-            yield { type: 'result', text, isError: m.is_error === true };
-          } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
-            yield { type: 'error', message: 'API retry', retryable: true };
-          } else if (message.type === 'rate_limit_event') {
-            yield { type: 'error', message: 'Rate limit', retryable: false, classification: 'quota' };
-          } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary') {
-            // Progress, NOT result: auto-compaction can fire MID-turn, and the
-            // poll-loop treats any result event as end-of-turn — a bg job would
-            // have "Context compacted." recorded as its final answer and the
-            // real result discarded; a fg turn would pause its keepalive and
-            // finalize its live status while the SDK is still working.
-            const meta = (message as { compact_metadata?: { pre_tokens?: number } }).compact_metadata;
-            const detail = meta?.pre_tokens ? ` (${meta.pre_tokens.toLocaleString()} tokens compacted)` : '';
-            yield { type: 'progress', message: `Context compacted${detail}.` };
-          } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
-            const tn = message as { summary?: string };
-            yield { type: 'progress', message: tn.summary || 'Task notification' };
-          } else if (message.type === 'assistant') {
-            // Surface tool calls as progress events so the poll-loop can update
-            // a live status post in the channel (gated by /live toggle, default
-            // ON). Each tool_use block emits one progress event with a brief
-            // human-readable summary (tool name + first 1-2 noteworthy args).
-            const msg = message as { message?: { content?: Array<{ type: string; name?: string; input?: Record<string, unknown> }> } };
-            const blocks = msg.message?.content ?? [];
-            for (const block of blocks) {
-              if (block.type === 'tool_use' && typeof block.name === 'string') {
-                yield { type: 'progress', message: summarizeToolUse(block.name, block.input ?? {}) };
-              }
+        if (message.type === 'system' && message.subtype === 'init') {
+          yield { type: 'init', continuation: message.session_id };
+        } else if (message.type === 'result') {
+          // `result` text exists only on subtype:"success"; error subtypes
+          // (e.g. a non-retryable 403 billing_error) carry their message in
+          // `errors[]` instead. Surface either so the poll-loop can deliver a
+          // billing/quota notice to the user rather than dropping the turn.
+          const m = message as { result?: string; is_error?: boolean; errors?: string[] };
+          const text = m.result ?? (m.errors && m.errors.length > 0 ? m.errors.join('\n') : null);
+          yield { type: 'result', text, isError: m.is_error === true };
+        } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
+          yield { type: 'error', message: 'API retry', retryable: true };
+        } else if (message.type === 'rate_limit_event') {
+          // The SDK emits this "when rate limit info CHANGES" — it is telemetry,
+          // not necessarily an error. `rate_limit_info.status` is usually
+          // 'allowed' (here's your remaining headroom). Treating every one of
+          // these as a terminal quota error logged a spurious rate-limit line
+          // on healthy turns (#3016) — and aborted them outright wherever the
+          // classification is acted on. ONLY 'rejected' is an actual block.
+          //
+          // When it IS rejected the SDK tells us WHY, so we can finally
+          // distinguish the two cases properly instead of guessing:
+          //   errorCode 'credits_required' / overageDisabledReason
+          //   'out_of_credits'  → genuinely out of credits (billing)
+          //   otherwise         → a transient window limit that resets.
+          const info = (message as { rate_limit_info?: SdkRateLimitInfo }).rate_limit_info;
+          const blocked = classifyRateLimitEvent(info);
+          if (!blocked) {
+            // Informational ('allowed' / 'allowed_warning') — never kill the turn.
+            if (info?.status === 'allowed_warning') {
+              log(
+                `rate-limit warning: ${info.rateLimitType ?? 'window'} at ${
+                  info.utilization != null ? `${Math.round(info.utilization * 100)}%` : 'high'
+                } utilization`,
+              );
+            }
+          } else {
+            yield { type: 'error', message: blocked.message, retryable: false, classification: blocked.classification };
+          }
+        } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary') {
+          const meta = (message as { compact_metadata?: { pre_tokens?: number } }).compact_metadata;
+          const detail = meta?.pre_tokens ? ` (${meta.pre_tokens.toLocaleString()} tokens compacted)` : '';
+          // Not a `result`: the poll loop treats result text as the agent's turn
+          // output — a synthetic "Context compacted." result has no <message>
+          // block, so it triggers the "response was not delivered — please
+          // re-send" nudge and the agent duplicates its previous message.
+          // Compaction is bookkeeping: log it, count it as activity only.
+          log(`Context compacted${detail}.`);
+          yield { type: 'activity' };
+        } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
+          const tn = message as { summary?: string };
+          yield { type: 'progress', message: tn.summary || 'Task notification' };
+} else if (message.type === 'assistant') {
+          // Surface tool calls as progress events so the poll-loop can update
+          // a live status post in the channel (gated by /live toggle, default
+          // ON). Each tool_use block emits one progress event with a brief
+          // human-readable summary (tool name + first 1-2 noteworthy args).
+          const msg = message as { message?: { content?: Array<{ type: string; name?: string; input?: Record<string, unknown> }> } };
+          const blocks = msg.message?.content ?? [];
+          for (const block of blocks) {
+            if (block.type === 'tool_use' && typeof block.name === 'string') {
+              yield { type: 'progress', message: summarizeToolUse(block.name, block.input ?? {}) };
             }
           }
+        }
         }
       } catch (err) {
         // A hard abort makes the SDK iterator reject (AbortError) — that's

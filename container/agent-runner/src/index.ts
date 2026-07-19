@@ -28,7 +28,8 @@ import { fileURLToPath } from 'url';
 import { loadConfig } from './config.js';
 import { buildSystemPromptAddendum } from './destinations.js';
 import { getTaskSeriesId } from './db/session-routing.js';
-import { ensureMemoryScaffold } from './memory-scaffold.js';
+import { ensureMemoryScaffold } from './memory/scaffold.js';
+import { MEMORY_SESSION_HOOK } from './memory/session-hook.js';
 // Providers barrel — each enabled provider self-registers on import.
 // Provider skills append imports to providers/index.ts.
 import './providers/index.js';
@@ -47,6 +48,12 @@ async function main(): Promise<void> {
   const providerName = config.provider.toLowerCase() as ProviderName;
 
   log(`Starting v2 agent-runner (provider: ${providerName})`);
+
+  // Every provider shares one persistent memory tree. Legacy imports are an
+  // operator-run migration and never happen in this normal startup path.
+  // (Fork : l'addendum destinations est construit APRÈS createProvider —
+  // voir plus bas — pour tenir compte de structuredDelivery.)
+  ensureMemoryScaffold();
 
   // Discover additional directories mounted at /workspace/extra/*
   const additionalDirectories: string[] = [];
@@ -90,12 +97,7 @@ async function main(): Promise<void> {
     effort: config.effort,
     thinking: config.thinking,
   });
-
-  // Providers that lack native memory opt in via `usesMemoryScaffold`; for them
-  // the runner creates a persistent memory/ tree in its host-backed workspace at
-  // boot (idempotent). Default off — the trunk default (Claude) omits the flag
-  // and keeps its native memory untouched.
-  if (provider.usesMemoryScaffold) ensureMemoryScaffold();
+  provider.registerMemorySessionHook(MEMORY_SESSION_HOOK);
 
   // Runtime-generated system-prompt addendum: agent identity (name) plus the
   // live destinations map. Built after the provider exists so its delivery

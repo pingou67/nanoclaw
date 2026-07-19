@@ -5,6 +5,7 @@ import path from 'path';
 
 import { createOpencodeClient, type OpencodeClient, type ToolPart } from '@opencode-ai/sdk';
 
+import { memoryContextForSessionStart, type MemorySessionHookRegistration } from '../memory/session-hook.js';
 import { registerProvider } from './provider-registry.js';
 import type { AgentProvider, AgentQuery, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
 import { mcpServersToOpenCodeConfig } from './mcp-to-opencode.js';
@@ -350,9 +351,19 @@ export class OpenCodeProvider implements AgentProvider {
   readonly supportsNativeSlashCommands = false;
 
   private readonly options: ProviderOptions;
+  private memorySessionHook?: MemorySessionHookRegistration;
 
   constructor(options: ProviderOptions = {}) {
     this.options = options;
+  }
+
+  // OpenCode n'a pas d'équivalent du hook SessionStart de Claude Code : la
+  // mémoire partagée est injectée dans les instructions système au démarrage
+  // d'une session FRAÎCHE (pas de continuation = nouvelle fenêtre de
+  // contexte — startup ou !clear). Un resume garde son contexte, on ne
+  // réinjecte pas.
+  registerMemorySessionHook(hook: MemorySessionHookRegistration): void {
+    this.memorySessionHook = hook;
   }
 
   isSessionInvalid(err: unknown): boolean {
@@ -374,7 +385,8 @@ export class OpenCodeProvider implements AgentProvider {
     // best-effort server-side session abort.
     let abortClient: OpencodeClient | null = null;
 
-    const systemInstructions = input.systemContext?.instructions;
+    const memorySection = this.memorySessionHook && !input.continuation ? memoryContextForSessionStart('startup') : undefined;
+    const systemInstructions = [input.systemContext?.instructions, memorySection].filter(Boolean).join('\n\n') || undefined;
     pending.push(wrapPromptWithContext(input.prompt, systemInstructions));
 
     const kick = (): void => {

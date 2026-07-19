@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
 
+import { memoryContextForSessionStart, type MemorySessionHookRegistration } from '../memory/session-hook.js';
 import { registerProvider } from './provider-registry.js';
 import { summarizeToolUse } from './summarize.js';
 import type { AgentProvider, AgentQuery, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
@@ -67,7 +68,16 @@ export class AgyProvider implements AgentProvider {
   // Set once the AGENTS.md -> CLAUDE.local.md memory link is in place.
   private memoryLinked = false;
 
+  private memorySessionHook?: MemorySessionHookRegistration;
+
   constructor(private readonly options: ProviderOptions = {}) {}
+
+  // Antigravity n'a pas de hook SessionStart : la mémoire partagée est
+  // injectée dans les <system_instructions> au premier tour d'une session
+  // fraîche (pas de continuation). Un resume garde son contexte.
+  registerMemorySessionHook(hook: MemorySessionHookRegistration): void {
+    this.memorySessionHook = hook;
+  }
 
   isSessionInvalid(err: unknown): boolean {
     return false; // agy handles its own session integrity
@@ -83,6 +93,7 @@ export class AgyProvider implements AgentProvider {
 
     let aborted = false;
     let ended = false;
+    let memoryInjected = false;
     let activeProc: ChildProcess | null = null;
     const pending: string[] = [input.prompt];
     let waiting: (() => void) | null = null;
@@ -113,8 +124,14 @@ export class AgyProvider implements AgentProvider {
         }
 
         let finalPrompt = text;
-        if (input.systemContext?.instructions) {
-          finalPrompt = `<system_instructions>\n${input.systemContext.instructions}\n</system_instructions>\n\n${text}`;
+        const memorySection =
+          provider.memorySessionHook && !input.continuation && !memoryInjected
+            ? memoryContextForSessionStart('startup')
+            : undefined;
+        if (memorySection) memoryInjected = true;
+        const sysParts = [input.systemContext?.instructions, memorySection].filter(Boolean);
+        if (sysParts.length > 0) {
+          finalPrompt = `<system_instructions>\n${sysParts.join('\n\n')}\n</system_instructions>\n\n${text}`;
         }
 
         // List conversations directory before spawning to detect fallback ID creation
