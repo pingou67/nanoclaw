@@ -457,6 +457,9 @@ describe('container configs', () => {
       provider: null,
       model: null,
       effort: null,
+      // Fork : colonnes absentes du tronc (migrations 019-env / 020-thinking).
+      thinking: null,
+      env: '{}',
       image_tag: null,
       assistant_name: null,
       max_messages_per_prompt: null,
