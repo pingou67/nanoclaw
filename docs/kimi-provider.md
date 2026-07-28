@@ -138,6 +138,12 @@ neither model nor effort inherits the operator's `config.toml` untouched.
 |---|---|
 | `container/agent-runner/src/providers/kimi.ts` | The provider (spawn, stream parse, home staging) |
 | `container/agent-runner/src/providers/kimi.test.ts` | Parser / config-overlay / MCP-shape tests |
-| `src/providers/kimi.ts` | Host-side mounts + env |
+| `src/providers/kimi.ts` | Host-side mounts + env, and `proxyClearingArgs` |
 | `src/providers/kimi-registration.test.ts` | Barrel registration guard |
-| `src/container-runner.ts` | Proxy clearing for `kimi` (see gotcha above) |
+| `src/providers/kimi-proxy.test.ts` | Guard for the proxy reach-in |
+| `src/container-runner.ts` | Imports + calls `proxyClearingArgs` (the only reach-in) |
+
+Installed and removed by the **`/add-kimi`** skill; payload lives on the
+`providers` branch. After editing any file above, mirror it with
+`pnpm exec tsx scripts/skills-sync.ts sync add-kimi` — `pnpm test` goes red on
+drift.
