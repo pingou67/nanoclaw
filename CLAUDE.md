@@ -229,6 +229,14 @@ Two rules, no exceptions:
 
 `pnpm-workspace.yaml` sets `minimumReleaseAge: 4320` (3 days). New package versions must exist on the npm registry for 3 days before pnpm resolves them.
 
+**`container/cli-tools.json` is OUTSIDE that policy.** Those tools are installed by `pnpm install -g` *inside the image*, where `pnpm-workspace.yaml` is not in scope — `minimumReleaseAge` does not apply. The same 3-day cooldown is re-imposed by hand:
+
+```bash
+pnpm exec tsx scripts/check-cli-tools.ts     # proposes only versions ≥3 days old; exit 1 if a pin is behind
+```
+
+Reporting only — bumping a pin means an image rebuild plus the E2E suite, so it stays deliberate. A daily user timer (`nanoclaw-cli-tools-watch`, 09:30) runs the same check and DMs when a pin falls behind.
+
 **Rules — do not bypass without explicit human approval:**
 - **`minimumReleaseAgeExclude`**: Never add entries without human sign-off. If a package must bypass the release age gate, the human must approve and the entry must pin the exact version being excluded (e.g. `package@1.2.3`), never a range.
 - **`onlyBuiltDependencies`**: Never add packages to this list without human approval — build scripts execute arbitrary code during install.
@@ -273,7 +281,16 @@ Agent container = **Bun**; host = **Node + pnpm**. Communication only via sessio
 - **Bumping `@anthropic-ai/claude-agent-sdk`, `@modelcontextprotocol/sdk`, or any agent-runner runtime dep** → no `minimumReleaseAge` policy applies. Check release date on npm, pin deliberately, never `bun update` blindly.
 - **Writing a named-param SQL insert/update in the container** → use `$name` in both SQL and JS keys: `.run({ $id: msg.id })`. `bun:sqlite` does not auto-strip the prefix the way `better-sqlite3` does on the host.
 - **Adding a test in `container/agent-runner/src/`** → import from `bun:test`, not `vitest`. Vitest runs on Node and can't load `bun:sqlite`. `vitest.config.ts` excludes this tree.
-- **Adding a Node CLI the agent invokes at runtime** → put it in the Dockerfile's pnpm global-install block, pinned to an exact version via a new `ARG`. Don't use `bun install -g`.
+- **Adding a Node CLI the agent invokes at runtime** → append a `{ "name", "version" }` entry to `container/cli-tools.json`, pinned to an exact version (not the Dockerfile). Don't use `bun install -g`. `"onlyBuilt": true` only for packages with a real postinstall — it opts them into running build scripts.
+- **Adding an MCP server backed by an npm package** → bake it into `cli-tools.json` and call its **bin**, never `npx -y <pkg>`. `/home/node/.npm` is not persisted, so `npx` re-downloads on every cold container; the SDK's MCP startup budget expires first and the server is dropped **silently** — its tools just never appear, and the same group works fine on the next (warm) turn. Cost us a long diagnosis on gmail + google-calendar (2026-07-28).
+
+**Invariant — a container start pulls nothing from the network.** Everything an agent needs at spawn is in the image or on a mount. Two things are legitimately not: a **remote** MCP server (`type: http`/`sse`) is the service itself, not a download, and `vikunja` runs from the bind-mounted `/app/src` tree. Anything else that fetches at startup is a bug: it makes spawn depend on registry availability, silently drops the server when it is slow, and means no two containers necessarily run the same code. Check with:
+
+```bash
+pnpm exec tsx scripts/q.ts data/v2.db \
+  "SELECT count(*) FROM container_configs, json_each(json(mcp_servers)) WHERE json_extract(value,'\$.command')='npx'"
+# must print 0
+```
 - **Changing the Dockerfile entrypoint or the dynamic-spawn command** (`src/container-runner.ts` line ~503) → keep `exec bun ...` so signals forward cleanly.
 - **Changing session-DB pragmas** (`container/agent-runner/src/db/connection.ts`) → `journal_mode=DELETE` is load-bearing for cross-mount visibility.
 
