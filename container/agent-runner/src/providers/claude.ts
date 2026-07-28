@@ -499,6 +499,25 @@ function transcriptStartMs(transcriptPath: string): number | null {
 const CLAUDE_CODE_AUTO_COMPACT_WINDOW = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || '800000';
 
 /**
+ * MCP startup / tool budgets.
+ *
+ * Several of our MCP servers are launched with `npx -y <pkg>`, which downloads
+ * the package on EVERY cold container — `/home/node/.npm` is not persisted, so
+ * there is no warm cache to inherit. The SDK's default startup budget expires
+ * before a fresh `npx` finishes, and a server that misses it is dropped
+ * SILENTLY: no error, its tools simply never appear, and the agent reports
+ * "that MCP server isn't wired". The same group answers correctly on the very
+ * next turn, once the container is warm — which is exactly what makes the
+ * symptom look random (observed on gmail + google-calendar, 2026-07-28).
+ *
+ * Headroom, not a fix: the real fix is baking those packages into the image so
+ * `npx` has nothing to fetch. Operator override via the group env still wins
+ * (see the spread order in the constructor).
+ */
+const MCP_STARTUP_TIMEOUT_MS = process.env.MCP_TIMEOUT || '120000';
+const MCP_TOOL_TIMEOUT_MS = process.env.MCP_TOOL_TIMEOUT || '180000';
+
+/**
  * Stale-session detection. Matches Claude Code's error text when a
  * resumed session can't be found — missing transcript .jsonl, unknown
  * session ID, etc.
@@ -529,6 +548,10 @@ export class ClaudeProvider implements AgentProvider {
     this.effort = options.effort;
     this.thinking = options.thinking;
     this.env = {
+      // MCP_TIMEOUT / MCP_TOOL_TIMEOUT first, so an operator override in the
+      // group env still wins.
+      MCP_TIMEOUT: MCP_STARTUP_TIMEOUT_MS,
+      MCP_TOOL_TIMEOUT: MCP_TOOL_TIMEOUT_MS,
       ...(options.env ?? {}),
       CLAUDE_CODE_AUTO_COMPACT_WINDOW,
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
