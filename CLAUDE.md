@@ -99,6 +99,8 @@ Trunk ships no specific channel adapter or non-default provider. The `channels` 
 
 **Channel defaults.** Each adapter declares wiring-time defaults (`ChannelDefaults`); per-wiring overrides at creation. Undeclared adapters fall back behaviorally — trunk-only updates change nothing. See `src/channels/channel-defaults.ts` and [docs/api-details.md](docs/api-details.md#channel-defaults).
 
+**Exception — `kimi` lives in-tree**, not on the `providers` branch and not behind a skill: `src/providers/kimi.ts` + `container/agent-runner/src/providers/kimi.ts`, both wired into their barrels. It drives the Kimi Code CLI installed and authenticated on the host (`~/.kimi-code`). See [docs/kimi-provider.md](docs/kimi-provider.md).
+
 ## Self-Modification
 
 One tier today: `install_packages` / `add_mcp_server` — DB-level container config changes (apt/npm deps, MCP server). Single admin approval; on approve, rebuilds the image when needed, writes an `on_wake` message, kills the container, respawns via `onExit`. The `on_wake` column on `messages_in` ensures only a fresh container's first poll picks it up — dying containers can never steal it. A second tier (draft/activate source edits) is planned.
@@ -247,6 +249,7 @@ Two rules, no exceptions:
 | [docs/skill-engine-seam.md](docs/skill-engine-seam.md) | Skill-engine consumer contract |
 | [docs/templates.md](docs/templates.md) | Agent templates |
 | [docs/agy-provider.md](docs/agy-provider.md) | The `agy` provider (Gemini) |
+| [docs/kimi-provider.md](docs/kimi-provider.md) | The `kimi` provider (Kimi Code CLI) |
 | [docs/provider-migration.md](docs/provider-migration.md) | Switching providers live |
 | [docs/migration-dev.md](docs/migration-dev.md) | v1→v2 migration dev guide |
 | [docs/customizing.md](docs/customizing.md) | Short intro to customizing |

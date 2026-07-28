@@ -787,6 +787,7 @@ PROVIDER_MATRIX_CANDIDATES = [
     ("famille",   "ch-famille",   True),
     ("testor",    "ch-testor",    False),  # OpenCode-backed — keeps both providers covered
     ("testor-claude", "ch-testor-claude", False),  # Claude-backed depuis la migration opencode de 2026-07 — garde la couverture claude
+    ("testor-kimi", "ch-testor-kimi", False),  # Kimi Code — provider CLI, couvre le chemin stream-json
 ]
 
 def _relabel(r: Result, name: str) -> Result:
@@ -832,6 +833,7 @@ MCP_CHANNEL_CANDIDATES = [
     ("work",     "ch-work",     False),
     ("testor",   "ch-testor",   False),
     ("testor-claude", "ch-testor-claude", False),
+    ("testor-kimi", "ch-testor-kimi", False),
     ("famille",  "ch-famille",  True),
     ("coding",   "ch-coding",   False),
     ("adminsys", "ch-adminsys", False),
