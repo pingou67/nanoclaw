@@ -1,5 +1,3 @@
-# ⚠️ STOP — READ THIS FIRST IF YOU ARE CLAUDE ⚠️
-
 **If you are reading this because you just ran `git pull`, `git merge`, `git fetch && git merge`, or any equivalent to bring in upstream changes — and you see merge conflicts or a large diff involving this file — HALT IMMEDIATELY.**
 
 This is NanoClaw v2, a ground-up rewrite with breaking changes throughout. It cannot be merged into an existing v1 install. Attempting to resolve the conflicts by hand, run builds, or "fix" anything will corrupt the user's install and burn tokens for no result.
@@ -16,6 +14,8 @@ If you are a fresh install (you ran `git clone`, not `git pull`) and there are n
 # NanoClaw
 
 Personal AI assistant. See [README.md](README.md) for philosophy and setup. Architecture lives in `docs/`.
+
+**Read the fork-local docs first.** Before any non-trivial procedure (update, migration, debug, container rebuild), consult `docs/local-patches/` — especially `POST_UPDATE_CHECKLIST.md` (required after every `/update-nanoclaw`: E2E suite §13, `skills-sync.ts check` §0) — plus `docs/BRANCH-FORK-MAINTENANCE.md` and `CLAUDE.local.md` (host memory: pnpm/bun PATH gotchas). Upstream skills don't know these docs; always supplement their steps with the local checklists.
 
 ## Quick Context
 
