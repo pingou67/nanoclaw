@@ -99,7 +99,7 @@ Trunk ships no specific channel adapter or non-default provider. The `channels` 
 
 **Channel defaults.** Each adapter declares wiring-time defaults (`ChannelDefaults`); per-wiring overrides at creation. Undeclared adapters fall back behaviorally — trunk-only updates change nothing. See `src/channels/channel-defaults.ts` and [docs/api-details.md](docs/api-details.md#channel-defaults).
 
-**Exception — `kimi` lives in-tree**, not on the `providers` branch and not behind a skill: `src/providers/kimi.ts` + `container/agent-runner/src/providers/kimi.ts`, both wired into their barrels. It drives the Kimi Code CLI installed and authenticated on the host (`~/.kimi-code`). See [docs/kimi-provider.md](docs/kimi-provider.md).
+**`/add-kimi` carries one reach-in beyond the usual barrel line**: `src/container-runner.ts` must import and call `proxyClearingArgs` from the provider, or every **remote** MCP server dies silently under kimi. Guarded by `skill-sync.json` `requiredLines` + `src/providers/kimi-proxy.test.ts`. See [docs/kimi-provider.md](docs/kimi-provider.md).
 
 ## Self-Modification
 
@@ -166,6 +166,7 @@ Four types. See [CONTRIBUTING.md](CONTRIBUTING.md).
 | `/add-mattermost` | Native Mattermost adapter + E2E harness |
 | `/add-opencode` | OpenCode provider (fork-patched: per-query SSE, plugins, tool-progress) |
 | `/add-agy` | Google Antigravity (Gemini) provider |
+| `/add-kimi` | Kimi Code (MoonshotAI) provider — host binary + OAuth mounted |
 | `/add-rtk` | rtk token-compression (claude hook, opencode plugin, agy rules) |
 | `/add-opencode-memory` | `memory_*` tools for opencode groups |
 | `/add-vikunja` | Vikunja task-management MCP server |

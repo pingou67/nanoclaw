@@ -45,6 +45,9 @@ import { validateAdditionalMounts } from './modules/mount-security/index.js';
 // Provider host-side config barrel — each provider that needs host-side
 // container setup self-registers on import.
 import './providers/index.js';
+// Reach-in owned by /add-kimi: see proxyClearingArgs' doc comment for why the
+// gateway proxy has to be blanked for that provider.
+import { proxyClearingArgs } from './providers/kimi.js';
 import {
   getProviderContainerConfig,
   providerProvidesAgentSurfaces,
@@ -639,29 +642,7 @@ async function buildContainerArgs(
     args.push('-e', 'HTTP_PROXY=');
   }
 
-  // Kimi Code carries its own OAuth credentials (mounted by src/providers/kimi.ts),
-  // so — like claude above — the gateway has no upstream key to inject for it and
-  // the proxy is pure overhead. Leaving it set is actively harmful: kimi's HTTP
-  // client is undici, and OneCLI also exports NODE_USE_ENV_PROXY=1, so every
-  // request is routed through the gateway — including the ones a remote MCP
-  // server on the LAN needs. Those come back as ERR_HPE_INVALID_CONSTANT and
-  // kimi drops the server SILENTLY: its tools simply never appear, which reads
-  // as a broken server rather than a proxied one.
-  //
-  // BOTH cases must be cleared. The claude branch above only clears the
-  // uppercase pair, which is enough for the Anthropic SDK; undici reads the
-  // LOWERCASE `http_proxy` / `https_proxy` too, and those are the ones OneCLI
-  // sets with credentials. Clearing only the uppercase pair looks like a fix
-  // and changes nothing (verified in-container: HTTP_PROXY=<empty> while
-  // http_proxy was still live, and the ha MCP server stayed invisible).
-  // curl hides the problem entirely — it ignores uppercase HTTP_PROXY by
-  // design — so a manual Bash fallback succeeds while the MCP transport fails.
-  if (_provider === 'kimi') {
-    args.push('-e', 'HTTPS_PROXY=');
-    args.push('-e', 'HTTP_PROXY=');
-    args.push('-e', 'https_proxy=');
-    args.push('-e', 'http_proxy=');
-  }
+  args.push(...proxyClearingArgs(_provider));
 
   // Use per-agent-group image if one has been built, otherwise base image
   const imageTag = containerConfig.imageTag || CONTAINER_IMAGE;

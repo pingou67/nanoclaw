@@ -1,0 +1,18 @@
+{
+  "installedMarker": "src/providers/kimi.ts",
+  "branch": "providers",
+  "branchPaths": [
+    "container/agent-runner/src/providers/kimi.ts",
+    "container/agent-runner/src/providers/kimi.test.ts",
+    "src/providers/kimi.ts",
+    "src/providers/kimi-registration.test.ts",
+    "src/providers/kimi-proxy.test.ts",
+    "docs/kimi-provider.md"
+  ],
+  "requiredLines": [
+    { "file": "src/providers/index.ts", "contains": "import './kimi.js';" },
+    { "file": "container/agent-runner/src/providers/index.ts", "contains": "import './kimi.js';" },
+    { "file": "src/container-runner.ts", "contains": "import { proxyClearingArgs } from './providers/kimi.js';" },
+    { "file": "src/container-runner.ts", "contains": "args.push(...proxyClearingArgs(_provider));" }
+  ]
+}

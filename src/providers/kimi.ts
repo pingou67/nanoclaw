@@ -38,6 +38,36 @@ export function hostKimiHome(hostEnv: NodeJS.ProcessEnv): string {
   return hostEnv.KIMI_CODE_HOME || path.join(os.homedir(), '.kimi-code');
 }
 
+/**
+ * Docker `-e` args that blank out the OneCLI proxy, for providers that
+ * authenticate with their OWN mounted credentials. `container-runner.ts` pushes
+ * these after the gateway apply, so the later `-e` wins.
+ *
+ * kimi is such a provider — its OAuth file is mounted below — so the gateway
+ * has no upstream key to inject and the proxy is pure overhead. Leaving it set
+ * is actively harmful: kimi's HTTP client is undici, and OneCLI also exports
+ * NODE_USE_ENV_PROXY=1, so every request is routed through the gateway,
+ * including the ones a remote MCP server on the LAN needs. Those come back as
+ * ERR_HPE_INVALID_CONSTANT and kimi drops the server SILENTLY — its tools
+ * simply never appear, which reads as a broken server rather than a proxied one.
+ *
+ * BOTH pairs must be cleared. The claude path clears only the uppercase one,
+ * which is enough for the Anthropic SDK; undici reads the LOWERCASE
+ * `http_proxy` / `https_proxy` too, and those are the ones OneCLI sets with
+ * credentials. Clearing only the uppercase pair looks like a fix and changes
+ * nothing — verified in-container: `HTTP_PROXY=<empty>` while `http_proxy` was
+ * still live, and the remote MCP server stayed invisible. curl hides the
+ * problem entirely (it ignores uppercase HTTP_PROXY by design), so a manual
+ * Bash fallback succeeds while the MCP transport fails.
+ *
+ * Returns [] for every other provider: opencode and agy need the gateway to
+ * inject their upstream key, and clearing it there strips the auth header.
+ */
+export function proxyClearingArgs(provider: string): string[] {
+  if (provider !== 'kimi') return [];
+  return ['-e', 'HTTPS_PROXY=', '-e', 'HTTP_PROXY=', '-e', 'https_proxy=', '-e', 'http_proxy='];
+}
+
 registerProviderContainerConfig('kimi', (ctx) => {
   const kimiHome = hostKimiHome(ctx.hostEnv);
   const sessionHome = path.join(ctx.sessionDir, 'kimi-home');
