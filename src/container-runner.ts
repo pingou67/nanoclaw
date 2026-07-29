@@ -411,7 +411,8 @@ export function buildMounts(
   // rtk token-compression proxy — mounted RO on the PATH for every group,
   // whatever the provider (claude hook, opencode plugin, agy/codex par
   // instructions). Present only if the host has the container-grade (musl)
-  // binary at ~/.local/bin/rtk, kept current by the nanoclaw-rtk-update timer.
+  // binary at ~/.local/bin/rtk, updated deliberately via
+  // scripts/apply-rtk-update.sh (flagged by the nanoclaw-supply-watch timer).
   const rtkBin = path.join(os.homedir(), '.local', 'bin', 'rtk');
   if (fs.existsSync(rtkBin)) {
     mounts.push({ hostPath: rtkBin, containerPath: '/usr/local/bin/rtk', readonly: true });

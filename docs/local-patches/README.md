@@ -104,7 +104,8 @@ PR upstream :
 
 - **`src/dashboard-health.ts`** (nouveau, fork-owned) — checks de santé :
   expiry OAuth Claude + état des timers systemd (claude-token-refresh,
-  nanoclaw-rtk-update, nanoclaw-upstream-watch), fichiers credentials MCP
+  nanoclaw-supply-watch — la veille unifiée qui a remplacé rtk-update /
+  upstream-watch / cli-tools-watch le 2026-07-29), fichiers credentials MCP
   présents par groupe, token agy, OneCLI UI joignable, économies rtk
   (host + sessions), marqueur E2E, drift skills-sync (1×/h). Sorties :
   clé `health` du snapshot, lignes `[health]` dans la page Logs (sur

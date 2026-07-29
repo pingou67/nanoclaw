@@ -9,7 +9,7 @@
  *    references them (a configured server with no token = agent-visible 401)
  *  - agy (Antigravity) host OAuth token presence
  *  - OneCLI web UI reachability
- *  - systemd maintenance timers (rtk update, upstream watch, token refresh)
+ *  - systemd maintenance timers (supply-watch unifiée, token refresh)
  *  - rtk token savings (host + per-session containers)
  *  - per-session runtime: persisted bg jobs, live_enabled, continuation keys
  *  - last E2E run marker (written by tests/integration/mattermost/run_suite.py)
@@ -96,7 +96,10 @@ function checkClaudeOauth(): HealthCheck {
 /* systemd timers                                                      */
 /* ------------------------------------------------------------------ */
 
-const TIMER_UNITS = ['claude-token-refresh', 'nanoclaw-rtk-update', 'nanoclaw-upstream-watch'];
+// 2026-07-29 : les trois timers de veille (rtk-update, upstream-watch,
+// cli-tools-watch) ont fusionné en nanoclaw-supply-watch — voir
+// scripts/supply-watch.ts.
+const TIMER_UNITS = ['claude-token-refresh', 'nanoclaw-supply-watch'];
 
 function checkTimerUnit(unit: string): Promise<HealthCheck> {
   return new Promise((resolve) => {

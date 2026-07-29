@@ -229,13 +229,14 @@ Two rules, no exceptions:
 
 `pnpm-workspace.yaml` sets `minimumReleaseAge: 4320` (3 days). New package versions must exist on the npm registry for 3 days before pnpm resolves them.
 
-**`container/cli-tools.json` is OUTSIDE that policy.** Those tools are installed by `pnpm install -g` *inside the image*, where `pnpm-workspace.yaml` is not in scope — `minimumReleaseAge` does not apply. The same 3-day cooldown is re-imposed by hand:
+**Everything outside that policy is covered by `scripts/supply-watch.ts`** — the unified supply-chain watch. One rule everywhere: **nothing installs itself, and a version is only proposed once it has been public for ≥ 3 days** (same window as `minimumReleaseAge`). One daily user timer (`nanoclaw-supply-watch`, 09:00) checks every version pin that ends up in the agent image or on the agent PATH — `container/cli-tools.json`, the Dockerfile `*_VERSION` ARGs (opencode, bun, pnpm), the agent-runner runtime deps (resolved from `bun.lock`), the host-mounted binaries (rtk via GitHub releases, kimi via its own CDN manifest) — plus upstream/main drift (commit summary + overlap with our local patches), and sends ONE Mattermost DM digest only when something changed.
 
 ```bash
-pnpm exec tsx scripts/check-cli-tools.ts     # proposes only versions ≥3 days old; exit 1 if a pin is behind
+pnpm exec tsx scripts/supply-watch.ts --dry-run   # print the digest without posting
+scripts/apply-rtk-update.sh [version] [--force]   # the ONLY sanctioned rtk update path (checksum-verified, refuses <3-day releases)
 ```
 
-Reporting only — bumping a pin means an image rebuild plus the E2E suite, so it stays deliberate. A daily user timer (`nanoclaw-cli-tools-watch`, 09:30) runs the same check and DMs when a pin falls behind.
+Applying stays deliberate: bump the pin, rebuild the image, run the E2E suite. Exclusions (documented in the script header): host pnpm deps (already governed by `minimumReleaseAge` at install) and the `agy` binary (no public version feed — update via `agy update` during maintenance).
 
 **Rules — do not bypass without explicit human approval:**
 - **`minimumReleaseAgeExclude`**: Never add entries without human sign-off. If a package must bypass the release age gate, the human must approve and the entry must pin the exact version being excluded (e.g. `package@1.2.3`), never a range.

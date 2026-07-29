@@ -24,7 +24,7 @@ Install [rtk](https://github.com/rtk-ai/rtk) — a CLI proxy delivering 60–90%
 
     After editing the installed copy, mirror it back with `pnpm exec tsx scripts/skills-sync.ts sync add-rtk` (`pnpm test` fails on drift — manifest: `skill-sync.json`).
   - **agy / codex** — rules file (prompt-level), rtk's official tier for these agents (see [supported-agents.md](https://github.com/rtk-ai/rtk/blob/master/docs/guide/getting-started/supported-agents.md)). For agy: `rtk init --agent antigravity` generates `.agents/rules/antigravity-rtk-rules.md`; install it into the group workspace at `groups/<folder>/.agents/rules/`. Antigravity reads `.agents/rules/` as custom instructions. NOT transparent — relies on the model following the rule. Transparent rewriting is blocked upstream: Antigravity's PreToolUse hook is decision-only (agy ignores the `overwrite` field of PreToolHookResult — see rtk-ai/rtk#2093 and the Google bug report linked there). If both get fixed, switch to `rtk hook antigravity`.
-- **Updates**: systemd user timer `nanoclaw-rtk-update.timer` (daily 09:15) runs `~/.nanoclaw-rtk-update/check.sh`: compares installed version to the latest GitHub release, downloads the musl build, verifies sha256 against `checksums.txt`, replaces the binary atomically, and notifies the Mattermost DM (reuses `~/.nanoclaw-upstream-watch/post.js`). Running containers keep the old inode; every new spawn gets the new version. `FORCE=1` to test a full cycle.
+- **Updates (2026-07-29 — aligned on the fleet-wide policy)**: nothing auto-installs. The unified daily watch (`nanoclaw-supply-watch.timer`, 09:00 → `scripts/supply-watch.ts`) flags a new rtk release in the DM digest once it is ≥ 3 days old; applying it is deliberate via `scripts/apply-rtk-update.sh [version] [--force]` — same download/sha256/sanity/atomic-mv pipeline the old auto-updater had, plus the 3-day supply-chain gate (a younger release is refused without `--force`). Running containers keep the old inode; every new spawn gets the new version.
 
 ## Verify
 
@@ -39,9 +39,10 @@ jq '.hooks.PreToolUse' data/v2-sessions/<gid>/.claude-shared/settings.json
 # OpenCode: plugin loaded? (look for "loading plugin ... rtk.js")
 grep -i plugin data/v2-sessions/<gid>/<sid>/opencode-xdg/opencode/log/*.log
 
-# Update timer
-systemctl --user list-timers nanoclaw-rtk-update.timer
-tail ~/.nanoclaw-rtk-update/update.log
+# Watch timer (unified) + manual update path
+systemctl --user list-timers nanoclaw-supply-watch.timer
+tail ~/.nanoclaw-supply-watch/watch.log
+scripts/apply-rtk-update.sh          # applies the newest ≥3-day-old release
 ```
 
 ## Troubleshooting
