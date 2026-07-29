@@ -85,14 +85,34 @@ export function pickEligibleVersion(
   times: Record<string, string>,
   now: number,
   cooldownDays = COOLDOWN_DAYS,
+  /** Borne EXCLUSIVE posée par un hold (scripts/supply-holds.json). */
+  below?: string,
 ): { version: string; published: string } | null {
   const eligible = Object.entries(times)
     .filter(([v]) => v !== 'created' && v !== 'modified')
     .filter(([v]) => !v.includes('-'))
     .filter(([, d]) => (now - Date.parse(d)) / 86_400_000 >= cooldownDays)
+    .filter(([v]) => !below || compareVersions(v, below) < 0)
     .sort((a, b) => compareVersions(a[0], b[0]));
   const last = eligible[eligible.length - 1];
   return last ? { version: last[0], published: last[1] } : null;
+}
+
+export interface Hold {
+  below: string;
+  reason: string;
+}
+
+/** Charge les retenues documentées ; toute entrée sans `below` est ignorée. */
+export function loadHolds(raw: string): Record<string, Hold> {
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  const holds: Record<string, Hold> = {};
+  for (const [name, v] of Object.entries(parsed)) {
+    if (name === '//') continue;
+    const h = v as Partial<Hold>;
+    if (h?.below && h?.reason) holds[name] = { below: h.below, reason: h.reason };
+  }
+  return holds;
 }
 
 /** Extrait les ARGs de version du Dockerfile qu'on surveille. */
@@ -112,6 +132,8 @@ export interface WatchItem {
   behind: boolean;
   /** Comment appliquer (affiché dans le digest). */
   applyHint: string;
+  /** Raison du hold quand la proposition est plafonnée (visible en --json). */
+  hold?: string;
 }
 
 export interface UpstreamNews {
@@ -269,16 +291,23 @@ function collectNpmTargets(errors: string[]): NpmTarget[] {
   return targets;
 }
 
-async function checkNpm(targets: NpmTarget[], now: number, errors: string[]): Promise<WatchItem[]> {
+async function checkNpm(
+  targets: NpmTarget[],
+  now: number,
+  errors: string[],
+  holds: Record<string, Hold> = {},
+): Promise<WatchItem[]> {
   const items: WatchItem[] = [];
   for (const t of targets) {
     try {
-      const eligible = pickEligibleVersion(await registryTimes(t.name), now);
+      const hold = holds[t.name];
+      const eligible = pickEligibleVersion(await registryTimes(t.name), now, COOLDOWN_DAYS, hold?.below);
       items.push({
         ...t,
         eligible: eligible?.version ?? null,
         published: eligible?.published?.slice(0, 10) ?? null,
         behind: eligible ? compareVersions(t.current, eligible.version) < 0 : false,
+        ...(hold ? { hold: hold.reason } : {}),
       });
     } catch (e) {
       errors.push(`npm ${t.name}: ${e instanceof Error ? e.message : e}`);
@@ -452,7 +481,13 @@ async function main(): Promise<void> {
   const errors: string[] = [];
   const state = readState();
 
-  const items: WatchItem[] = await checkNpm(collectNpmTargets(errors), now, errors);
+  let holds: Record<string, Hold> = {};
+  try {
+    holds = loadHolds(fs.readFileSync(path.join(ROOT, 'scripts', 'supply-holds.json'), 'utf-8'));
+  } catch {
+    /* pas de holds — comportement par défaut */
+  }
+  const items: WatchItem[] = await checkNpm(collectNpmTargets(errors), now, errors, holds);
   const rtk = await checkRtk(now, errors);
   if (rtk) items.push(rtk);
   const kimi = checkKimi(now);

@@ -13,6 +13,7 @@ import {
   evaluateKimi,
   fingerprint,
   parseDockerfileArgs,
+  loadHolds,
   pickEligibleVersion,
   resolvedFromBunLock,
   stripRange,
@@ -77,6 +78,24 @@ describe('pickEligibleVersion', () => {
   it('ne traite jamais created/modified comme des versions', () => {
     const picked = pickEligibleVersion({ created: daysAgo(400), modified: daysAgo(1), '1.0.0': daysAgo(30) }, NOW, 3);
     expect(picked?.version).toBe('1.0.0');
+  });
+
+  it('respecte la borne exclusive d’un hold', () => {
+    const times = { '10.33.0': daysAgo(60), '10.34.0': daysAgo(10), '11.17.0': daysAgo(6) };
+    expect(pickEligibleVersion(times, NOW, 3, '11.0.0')?.version).toBe('10.34.0');
+    expect(pickEligibleVersion(times, NOW, 3)?.version).toBe('11.17.0');
+  });
+});
+
+describe('loadHolds', () => {
+  it('charge les retenues et ignore le commentaire //', () => {
+    const holds = loadHolds(JSON.stringify({ '//': 'doc', pnpm: { below: '11.0.0', reason: 'postinstall cassé' } }));
+    expect(holds.pnpm).toEqual({ below: '11.0.0', reason: 'postinstall cassé' });
+    expect(Object.keys(holds)).toEqual(['pnpm']);
+  });
+
+  it('ignore une entrée incomplète (sans below ou sans reason)', () => {
+    expect(loadHolds(JSON.stringify({ a: { below: '2.0.0' }, b: { reason: 'x' } }))).toEqual({});
   });
 });
 

@@ -1,0 +1,11 @@
+{
+  "//": "Retenues DOCUMENTÉES de la veille supply-chain (scripts/supply-watch.ts). Une entrée plafonne la version proposée pour un paquet (`below` = borne exclusive) avec la raison — la seule façon légitime de ne pas suivre une version éligible. Retirer l'entrée quand la cause disparaît.",
+  "pnpm": {
+    "below": "11.0.0",
+    "reason": "pnpm 11 n'honore plus only-built-dependencies[] en install global : le postinstall du binaire natif claude-code et le chmod d'agent-browser sont sautés SILENCIEUSEMENT et l'agent crashe au runtime (commentaire container/Dockerfile). Reste aussi en lockstep avec le packageManager du host."
+  },
+  "zod": {
+    "below": "4.4.0",
+    "reason": "zod 4.4 change le typage interne (ZodString sans _parse/_getType) et casse ZodRawShapeCompat de @modelcontextprotocol/sdk 1.29.0 — 4 erreurs TS2769 dans mcp-servers/memory/server.ts. Réévaluer au prochain bump du SDK MCP."
+  }
+}

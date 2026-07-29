@@ -6,5 +6,5 @@
   { "name": "@gongrzhe/server-gmail-autoauth-mcp", "version": "1.1.11" },
   { "name": "@cocal/google-calendar-mcp", "version": "2.6.2" },
   { "name": "imap-mcp-server", "version": "1.5.2" },
-  { "name": "mcp-searxng", "version": "1.11.1" }
+  { "name": "mcp-searxng", "version": "1.12.0" }
 ]

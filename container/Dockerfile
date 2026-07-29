@@ -22,8 +22,8 @@ ARG INSTALL_CJK_FONTS=false
 # pinned in cli-tools.json so a skill can add one with a json-merge; Bun (the
 # runtime) and the opencode binary (provider-runtime, not an MCP tool) are
 # pinned here because they install from a different source.
-ARG BUN_VERSION=1.3.12
-ARG OPENCODE_VERSION=1.4.17
+ARG BUN_VERSION=1.3.14
+ARG OPENCODE_VERSION=1.18.5
 
 # ---- System dependencies -----------------------------------------------------
 # tini: correct PID 1 / signal forwarding so outbound.db writes finalize on
@@ -97,8 +97,17 @@ ENV PATH="$PNPM_HOME:$PATH"
 # silently skips claude-code's native-binary postinstall and agent-browser's
 # bin chmod — the agent then crashes at runtime with "native binary not
 # installed". Keep this in lockstep with package.json's `packageManager`.
-ARG PNPM_VERSION=10.33.0
-RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
+ARG PNPM_VERSION=10.34.5
+# COREPACK_HOME partagé + lisible par l'uid agent : préparé sous root au build,
+# le cache corepack par défaut (~/.cache) serait INVISIBLE au runtime (uid
+# 3000, HOME=/home/node) et corepack téléchargerait alors le DERNIER pnpm du
+# registre à la première invocation — réseau au runtime ET contournement du
+# hold pnpm<11 (supply-holds.json). DEFAULT_TO_LATEST=0 interdit à corepack
+# toute résolution réseau de « latest ».
+ENV COREPACK_HOME=/opt/corepack \
+    COREPACK_DEFAULT_TO_LATEST=0
+RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate && \
+    chmod -R a+rX /opt/corepack
 
 # Global Node CLIs the agent invokes at runtime live in cli-tools.json so a
 # skill can add one with a json-merge instead of editing this Dockerfile.
@@ -111,7 +120,11 @@ RUN --mount=type=cache,target=/root/.cache/pnpm \
 # OpenCode provider runtime — not a Node MCP tool but a global CLI the
 # opencode provider spawns (via `opencode serve`). Installed in its own
 # layer so bumping it doesn't invalidate the cli-tools install above.
+# Since 1.18.x opencode-ai installs its native binary via a postinstall
+# script (like claude-code); without the opt-in pnpm skips it and every
+# `opencode` invocation dies with "postinstall script was not run".
 RUN --mount=type=cache,target=/root/.cache/pnpm \
+    echo "only-built-dependencies[]=opencode-ai" >> /root/.npmrc && \
     pnpm install -g "opencode-ai@${OPENCODE_VERSION}"
 
 # ---- ncl CLI wrapper ----------------------------------------------------------

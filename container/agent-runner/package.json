@@ -9,12 +9,12 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.220",
-    "@anthropic-ai/sdk": "^0.108.0",
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "@opencode-ai/sdk": "^1.4.17",
-    "cron-parser": "^5.0.0",
-    "zod": "^4.0.0"
+    "@anthropic-ai/claude-agent-sdk": "0.3.220",
+    "@anthropic-ai/sdk": "0.115.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@opencode-ai/sdk": "1.18.5",
+    "cron-parser": "5.6.2",
+    "zod": "4.3.6"
   },
   "devDependencies": {
     "@types/bun": "^1.1.0",
