@@ -176,9 +176,11 @@ pnpm exec tsx scripts/q.ts data/v2.db \
 pnpm exec tsx scripts/q.ts data/v2.db \
   "SELECT substr(g.id,15), (SELECT group_concat(key,',') FROM json_each(json(c.mcp_servers))), c.additional_mounts
    FROM agent_groups g JOIN container_configs c ON c.agent_group_id=g.id"
-onecli agents list                                        # secretMode + périmètre côté passerelle
+pnpm exec tsx scripts/check-secret-scope.ts               # périmètre OneCLI vs besoin réel (sort 1 si écart)
 pnpm exec tsx scripts/sync-vault-to-onecli.ts --check      # coffre lisible, cibles prêtes
 ```
+
+`check-secret-scope.ts` compare les deux moitiés de la règle, qui vivent à des endroits différents et dérivent en silence : le **périmètre** se déclare côté passerelle (`agents set-secrets`), le **besoin** se déclare en base (`container_configs.mcp_servers`). Il signale les deux sens — un secret porté sans le serveur MCP qui le justifie, mais aussi un serveur MCP sans son secret, dont le symptôme est un 401 lointain et non un problème de sécurité apparent. Le lien besoin↔secret se déclare par `requiredBy` dans `scripts/vault-onecli-map.json` ; un secret sans `requiredBy` n'est pas auditable et n'est que signalé. Un agent créé automatiquement naît en mode `all` : le remettre en `selective` fait partie de l'ajout d'un groupe.
 
 **Prérequis d'exploitation** : le coffre doit être déverrouillé pour que les containers démarrent (pinentry automatique, `lock_timeout` long). Si `rbw` est verrouillé, les groupes concernés refusent de spawner avec un message nommant la référence — c'est voulu.
 
