@@ -20,12 +20,13 @@ import {
   initSessionFolder,
   inboundDbPath,
   outboundDbPath,
+  reconcileContainerStatusOnBoot,
   sessionDir,
   writeOutboundDirect,
   writeSessionMessage,
 } from './session-manager.js';
 import { initTestDb, closeDb, runMigrations, createAgentGroup } from './db/index.js';
-import { createSession } from './db/sessions.js';
+import { createSession, getSession } from './db/sessions.js';
 import type { Session } from './types.js';
 
 const TEST_DIR = '/tmp/nanoclaw-test-write-outbound';
@@ -174,5 +175,57 @@ describe('writeSessionMessage re-provisions a deleted session folder', () => {
     } finally {
       db.close();
     }
+  });
+});
+
+/**
+ * `container_status` est le miroir en base d'un état qui vit en mémoire. Un
+ * arrêt brutal de l'hôte n'émet jamais l'événement `close` qui le remet à
+ * `stopped` : sans réconciliation au démarrage, la ligne reste « running »
+ * pour toujours, et le balayage continue d'interroger une session fantôme.
+ */
+describe('reconcileContainerStatusOnBoot', () => {
+  beforeEach(() => {
+    const db = initTestDb();
+    runMigrations(db);
+    createAgentGroup({
+      id: 'ag-reconcile',
+      name: 'Reconcile',
+      folder: 'reconcile',
+      agent_provider: null,
+      created_at: new Date().toISOString(),
+    });
+    const mk = (id: string, container_status: 'running' | 'idle' | 'stopped') => {
+      const sess: Session = {
+        id,
+        agent_group_id: 'ag-reconcile',
+        messaging_group_id: null,
+        thread_id: null,
+        agent_provider: null,
+        status: 'active',
+        container_status,
+        last_active: null,
+        created_at: new Date().toISOString(),
+      };
+      createSession(sess);
+    };
+    mk('sess-rec-run', 'running');
+    mk('sess-rec-idle', 'idle');
+    mk('sess-rec-stop', 'stopped');
+  });
+
+  afterEach(() => {
+    closeDb();
+  });
+
+  it('remet à stopped tout ce qui se disait running ou idle', () => {
+    expect(reconcileContainerStatusOnBoot()).toBe(2);
+    expect(getSession('sess-rec-run')?.container_status).toBe('stopped');
+    expect(getSession('sess-rec-idle')?.container_status).toBe('stopped');
+  });
+
+  it('est idempotent — un second démarrage n’a plus rien à réconcilier', () => {
+    reconcileContainerStatusOnBoot();
+    expect(reconcileContainerStatusOnBoot()).toBe(0);
   });
 });

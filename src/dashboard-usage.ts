@@ -321,7 +321,9 @@ export function deriveAccessRights(config: {
         rights.push('Google Calendar (complet)');
       }
     } else if (name === 'imap') {
-      rights.push(hasImapCreds ? 'Mail Unistra (imap)' : 'Mail Unistra (imap) ⚠ aucun compte déclaré (passwordRef manquant)');
+      rights.push(
+        hasImapCreds ? 'Mail Unistra (imap)' : 'Mail Unistra (imap) ⚠ aucun compte déclaré (passwordRef manquant)',
+      );
     } else if (name === 'vikunja') {
       const scope = server.env?.VIKUNJA_PROJECT_SCOPE ?? 'ALL';
       rights.push(scope === 'ALL' || scope === '' ? 'Vikunja (tous projets)' : `Vikunja (projet ${scope})`);

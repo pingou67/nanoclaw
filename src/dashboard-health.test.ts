@@ -29,6 +29,39 @@ describe('containerPathToHost', () => {
     expect(p).toMatch(/groups\/mattermost_agc\/google-oauth\/gmail-token\.json$/);
   });
 
+  // Un credential mutualisé vit sur un mount, pas dans le dossier du groupe.
+  // Ne résoudre que /workspace/agent/ laissait ce cas hors surveillance pour
+  // TOUS les groupes concernés, sans que rien ne devienne rouge.
+  it('résout un chemin servi par un mount (containerPath relatif)', () => {
+    const p = containerPathToHost('mattermost_dm', '/workspace/extra/google-mcp/gcp-oauth.keys.json', [
+      { hostPath: '/home/u/.google-mcp', containerPath: 'google-mcp' },
+    ]);
+    expect(p).toBe('/home/u/.google-mcp/gcp-oauth.keys.json');
+  });
+
+  it('résout aussi un mount déclaré en chemin absolu', () => {
+    const p = containerPathToHost('g', '/workspace/extra/.imap-mcp/accounts.json', [
+      { hostPath: '/var/lib/sess/imap-creds', containerPath: '/workspace/extra/.imap-mcp' },
+    ]);
+    expect(p).toBe('/var/lib/sess/imap-creds/accounts.json');
+  });
+
+  it('choisit le mount le plus spécifique quand deux s’emboîtent', () => {
+    const p = containerPathToHost('g', '/workspace/extra/dev/sub/creds.json', [
+      { hostPath: '/mnt/dev', containerPath: 'dev' },
+      { hostPath: '/mnt/sub', containerPath: 'dev/sub' },
+    ]);
+    expect(p).toBe('/mnt/sub/creds.json');
+  });
+
+  it('ne confond pas un préfixe de nom avec un préfixe de chemin', () => {
+    expect(
+      containerPathToHost('g', '/workspace/extra/google-mcp-old/x.json', [
+        { hostPath: '/home/u/.google-mcp', containerPath: 'google-mcp' },
+      ]),
+    ).toBeNull();
+  });
+
   it('returns null for paths outside the group dir', () => {
     expect(containerPathToHost('g', '/tmp/whatever.json')).toBeNull();
     expect(containerPathToHost('g', 'relative.json')).toBeNull();

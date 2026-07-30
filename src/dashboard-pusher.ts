@@ -27,6 +27,7 @@ import { getActiveAdapters, getRegisteredChannelNames } from './channels/channel
 import { DATA_DIR, ASSISTANT_NAME } from './config.js';
 import { getDb } from './db/connection.js';
 import { getContainerConfig } from './db/container-configs.js';
+import { redactContainerConfig } from './dashboard-redact.js';
 import { log } from './log.js';
 import { readEnvFile } from './env.js';
 
@@ -233,7 +234,10 @@ function collectAgentGroups() {
       name: g.name,
       folder: g.folder,
       agent_provider: g.agent_provider,
-      container_config: getContainerConfig(g.id) ?? null,
+      // Caviardé : le tableau de bord écoute sur 0.0.0.0 et n'a besoin d'aucun
+      // credential. Voir src/dashboard-redact.ts — c'est le même traitement que
+      // le journal MCP, qui n'imprime déjà que l'`origin` d'un serveur distant.
+      container_config: redactContainerConfig(getContainerConfig(g.id) ?? null),
       sessionCount: sessions.length,
       runningSessions: running.length,
       wirings,

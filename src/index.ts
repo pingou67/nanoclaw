@@ -15,6 +15,7 @@ import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runti
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
 import { routeInbound } from './router.js';
+import { reconcileContainerStatusOnBoot } from './session-manager.js';
 import { log } from './log.js';
 import { enforceUpgradeTripwire } from './upgrade-state.js';
 
@@ -81,6 +82,11 @@ async function main(): Promise<void> {
   // 2. Container runtime
   ensureContainerRuntimeRunning();
   cleanupOrphans();
+  // Les containers viennent d'être arrêtés : « rien ne tourne » est un fait à
+  // cet instant. On remet la base d'accord avec lui — sans quoi une session
+  // laissée « running » par un arrêt brutal l'est définitivement.
+  const reconciled = reconcileContainerStatusOnBoot();
+  if (reconciled > 0) log.info('Sessions marquées arrêtées au démarrage', { count: reconciled });
 
   // 3. Channel adapters
   await initChannelAdapters((adapter: ChannelAdapter): ChannelSetup => {

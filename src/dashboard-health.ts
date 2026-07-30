@@ -162,11 +162,43 @@ function checkOneCli(): Promise<HealthCheck> {
 /* Google / agy credential files referenced by MCP configs             */
 /* ------------------------------------------------------------------ */
 
-/** Map a /workspace/agent/… container path to the group folder on the host. */
-export function containerPathToHost(groupFolder: string, containerPath: string): string | null {
+export interface HealthMount {
+  hostPath: string;
+  /** Absolu, ou relatif — auquel cas il se résout sous /workspace/extra/. */
+  containerPath: string;
+}
+
+/**
+ * Traduit un chemin vu du container en chemin hôte, pour aller vérifier que le
+ * fichier existe vraiment.
+ *
+ * Deux origines possibles, et c'est tout l'enjeu : le dossier du groupe
+ * (`/workspace/agent/…` → `groups/<folder>/…`) ou n'importe quel mount déclaré.
+ * Ne traiter que la première laisse un angle mort silencieux — un credential
+ * mutualisé sur un mount n'est alors surveillé pour AUCUN groupe, et le
+ * contrôle reste vert en affirmant plus qu'il n'a vérifié. C'est ce qui est
+ * arrivé aux credentials Google après leur passage sur `~/.google-mcp`.
+ */
+export function containerPathToHost(
+  groupFolder: string,
+  containerPath: string,
+  mounts: HealthMount[] = [],
+): string | null {
   const prefix = '/workspace/agent/';
-  if (!containerPath.startsWith(prefix)) return null;
-  return path.resolve(process.cwd(), 'groups', groupFolder, containerPath.slice(prefix.length));
+  if (containerPath.startsWith(prefix)) {
+    return path.resolve(process.cwd(), 'groups', groupFolder, containerPath.slice(prefix.length));
+  }
+  // Le mount le plus spécifique gagne : deux mounts peuvent s'emboîter.
+  const candidates = mounts
+    .map((m) => ({
+      hostPath: m.hostPath,
+      containerPath: m.containerPath.startsWith('/') ? m.containerPath : `/workspace/extra/${m.containerPath}`,
+    }))
+    .filter((m) => containerPath === m.containerPath || containerPath.startsWith(m.containerPath + '/'))
+    .sort((a, b) => b.containerPath.length - a.containerPath.length);
+  const best = candidates[0];
+  if (!best) return null;
+  return path.resolve(best.hostPath, containerPath.slice(best.containerPath.length).replace(/^\//, ''));
 }
 
 function checkMcpCredentialFiles(): HealthCheck[] {
@@ -177,15 +209,21 @@ function checkMcpCredentialFiles(): HealthCheck[] {
     if (!config) continue;
     if (config.provider === 'agy') agyUsed = true;
     let servers: Record<string, { env?: Record<string, string> }> = {};
+    let mounts: HealthMount[] = [];
     try {
       servers = JSON.parse(config.mcp_servers || '{}');
     } catch {
       servers = {};
     }
+    try {
+      mounts = JSON.parse(config.additional_mounts || '[]');
+    } catch {
+      mounts = [];
+    }
     for (const [serverName, server] of Object.entries(servers)) {
       for (const value of Object.values(server.env ?? {})) {
         if (!/\.(json|keys\.json)$/.test(value)) continue;
-        const hostPath = containerPathToHost(group.folder, value);
+        const hostPath = containerPathToHost(group.folder, value, mounts);
         if (!hostPath) continue;
         if (!fs.existsSync(hostPath)) {
           checks.push({

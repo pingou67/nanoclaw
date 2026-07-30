@@ -80,7 +80,9 @@ describe('deriveAccessRights', () => {
   it('ignore un mount .imap-mcp hérité d’avant le coffre', () => {
     const rights = deriveAccessRights({
       mcp_servers: '{}',
-      additional_mounts: JSON.stringify([{ hostPath: '/home/x/.imap-mcp', containerPath: '.imap-mcp', readonly: true }]),
+      additional_mounts: JSON.stringify([
+        { hostPath: '/home/x/.imap-mcp', containerPath: '.imap-mcp', readonly: true },
+      ]),
       cli_scope: 'group',
     });
     expect(rights).toEqual([]);

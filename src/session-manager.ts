@@ -25,6 +25,7 @@ import {
   findSystemSession,
   findSessionByAgentGroup,
   findSessionForAgent,
+  getRunningSessions,
   getSession,
   taskThreadId,
   updateSession,
@@ -564,6 +565,31 @@ export function markContainerRunning(sessionId: string): void {
 /** Mark a container as idle for a session. */
 export function markContainerIdle(sessionId: string): void {
   updateSession(sessionId, { container_status: 'idle' });
+}
+
+/**
+ * Remet `container_status` à la réalité au démarrage de l'hôte.
+ *
+ * `container_status` est le miroir en base d'un état qui vit en mémoire
+ * (`activeContainers`) : il ne repasse à `stopped` que sur l'événement `close`
+ * du processus enfant. Si l'hôte s'arrête — redémarrage de service, plantage,
+ * machine coupée — cet événement n'arrive jamais et la ligne reste `running`
+ * pour toujours. Rien ne le rattrapait : `cleanupOrphans()` arrête bien les
+ * containers survivants, mais ne touche pas la base.
+ *
+ * Conséquences observées le 2026-07-30 : 37 sessions « running » pour zéro
+ * container, la plus ancienne datant de six semaines. Le tableau de bord
+ * affichait ce compte, et surtout `getActiveSessions()` faisait ouvrir et
+ * interroger la base sortante de ces sessions fantômes à chaque balayage.
+ *
+ * À appeler APRÈS `cleanupOrphans()`, qui garantit qu'aucun container de cette
+ * installation ne tourne plus : à cet instant, « tout est arrêté » est un fait,
+ * pas une supposition. L'hôte ne sait pas se rattacher à un container existant.
+ */
+export function reconcileContainerStatusOnBoot(): number {
+  const stale = getRunningSessions();
+  for (const session of stale) updateSession(session.id, { container_status: 'stopped' });
+  return stale.length;
 }
 
 /** Mark a container as stopped for a session. */
