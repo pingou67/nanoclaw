@@ -1,0 +1,7 @@
+{
+  "//": "Secrets HTTP dont Bitwarden est la SOURCE DE VÉRITÉ et OneCLI la couche d'injection. Clé = nom du secret OneCLI, `vaultRef` = élément[/champ] du coffre. Rotation : changer la valeur dans Bitwarden puis `pnpm exec tsx scripts/sync-vault-to-onecli.ts`. N'y mettre QUE des secrets qui voyagent dans un en-tête HTTP — le reste passe par une référence `vault:` résolue au spawn (voir CLAUDE.md § Secrets).",
+  "Vikunja": {
+    "vaultRef": "vikunja/token",
+    "note": "Bearer sur vikunja.pegs.fr — consommé par le serveur MCP vikunja, jamais présent dans un container."
+  }
+}

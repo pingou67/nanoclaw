@@ -42,6 +42,9 @@ import { initGroupFilesystem } from './group-init.js';
 import { stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
 import { validateAdditionalMounts } from './modules/mount-security/index.js';
+// Doctrine secrets (CLAUDE.md) : branche non-HTTP — résolution au spawn.
+import { imapAccountSpecs, materializeImapCreds } from './secrets/imap-creds.js';
+import { hasVaultRefs, resolveVaultRefs } from './secrets/vault.js';
 // Provider host-side config barrel — each provider that needs host-side
 // container setup self-registers on import.
 import './providers/index.js';
@@ -141,6 +144,17 @@ async function spawnContainer(session: Session): Promise<void> {
   // the config object, threaded through provider resolution, buildMounts,
   // and buildContainerArgs so we don't re-read.
   const containerConfig = materializeContainerJson(agentGroup.id);
+
+  // Doctrine secrets, branche non-HTTP : les `vault:élément/champ` de l'env du
+  // groupe sont résolus ICI, et une seule fois — APRÈS l'écriture de
+  // container.json (qui ne doit contenir que des références, jamais des
+  // valeurs) et AVANT la contribution du provider, qui recopie `groupEnv`
+  // dans son propre bloc d'env et écraserait sinon la valeur résolue par la
+  // référence brute (vécu : opencode réémettait OPENCODE_API_KEY tel quel).
+  // Une référence illisible lève et le spawn est refusé.
+  if (hasVaultRefs(containerConfig.env)) {
+    containerConfig.env = resolveVaultRefs(containerConfig.env!);
+  }
 
   // Per-group filesystem state lives forever after first creation. Init is
   // idempotent: it only writes paths that don't already exist, so this call
@@ -424,6 +438,18 @@ export function buildMounts(
     mounts.push(...validated);
   }
 
+  // Credentials imap générés au spawn depuis le coffre (doctrine secrets,
+  // branche non-HTTP) : plus aucun accounts.json permanent sur l'hôte. Le
+  // couple {accounts.json,.key} est éphémère, par session, avec une clé tirée
+  // à chaque fois. Monté en lecture seule là où le serveur le cherche
+  // (HOME=/workspace/extra → $HOME/.imap-mcp).
+  const imapAccounts = imapAccountSpecs(containerConfig);
+  if (imapAccounts.length > 0) {
+    const credsDir = path.join(sessionDir(agentGroup.id, session.id), 'imap-creds');
+    materializeImapCreds(credsDir, imapAccounts);
+    mounts.push({ hostPath: credsDir, containerPath: '/workspace/extra/.imap-mcp', readonly: true });
+  }
+
   // Provider-contributed mounts (e.g. opencode-xdg)
   if (providerContribution.mounts) {
     mounts.push(...providerContribution.mounts);
@@ -550,6 +576,8 @@ async function buildContainerArgs(
   // `ncl groups config env-set` works for EVERY provider (claude included),
   // not only those whose host-side contribution forwards a whitelist.
   if (containerConfig.env) {
+    // Les `vault:` ont déjà été résolus en amont (spawnContainer), avant la
+    // contribution du provider — voir le commentaire là-bas.
     const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
     for (const [key, value] of Object.entries(containerConfig.env)) {
       if (!ENV_KEY_RE.test(key)) {

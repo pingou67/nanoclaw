@@ -150,22 +150,37 @@ Auto-created agents default to `all` secret mode (every matching secret injected
 
 **Un secret n'est mis à disposition que des groupes qui en ont un usage fonctionnel.** Pas « tous les groupes similaires », pas « par symétrie », pas « au cas où » : chaque groupe qui détient un secret doit avoir une raison nommable. À appliquer à toute évolution — nouveau groupe, nouveau serveur MCP, clonage d'un canal.
 
-Ordre de préférence, du plus sûr au moins sûr :
+**Bitwarden/Vaultwarden est la source de vérité unique** (compte de service `appvault@`, accès par `rbw`). Deux voies de livraison seulement, choisies non pas par préférence mais par ce que **le protocole permet** :
 
-1. **Injection à la requête (OneCLI)** — pour tout secret qui voyage dans un en-tête HTTP. Le container ne détient qu'un marqueur (`onecli-injected`) ; la passerelle réécrit l'en-tête. Le périmètre se déclare **côté serveur** avec `agents set-secrets` (mode `selective`), pas dans un fichier. C'est le cas de Vikunja : secret générique `vikunja.pegs.fr` → `Authorization: Bearer {value}`, assigné à dm/famille/work/agc uniquement.
-2. **Mount hôte en lecture seule** — quand le consommateur lit un fichier et ne peut pas être proxifié (imap-mcp lit `accounts.json`). Le mount ne va que dans les groupes qui l'utilisent, et disparaît avec le serveur MCP qui le justifiait.
-3. **Valeur en clair dans `container_configs`** — dernier recours. Rappel : ça se retrouve aussi dans `groups/<folder>/container.json` (écrit en 0600 par `materializeContainerJson`, verrouillé par `container-config.secrets.test.ts`).
+| | Livraison | Le container voit-il le secret ? | Alimentation |
+|---|---|---|---|
+| Secret dans un **en-tête HTTP** | OneCLI réécrit l'en-tête à la requête | **non, jamais** | coffre → `scripts/sync-vault-to-onecli.ts` |
+| **Tout le reste** (IMAP, fichiers, non-HTTP) | référence `vault:` résolue au spawn | oui, inévitablement | coffre directement |
+
+1. **Injection à la requête (OneCLI)** — dès que le secret voyage dans un en-tête. Le container ne détient qu'un marqueur (`onecli-injected`) ; le périmètre se déclare **côté passerelle** (`agents set-secrets`, mode `selective`), donc un clonage de groupe ne peut pas le recopier. Manifeste : `scripts/vault-onecli-map.json`. Rotation = changer dans Bitwarden puis lancer la synchro ; aucun container à redémarrer, la passerelle résout par requête.
+2. **Référence de coffre résolue au spawn** — quand l'injection est impossible. Une valeur d'`env` (ou un `passwordRef`) s'écrit `vault:élément[/champ]` ; `src/secrets/vault.ts` la résout côté hôte au `docker run`. Une référence illisible **refuse le spawn** — jamais de démarrage avec une variable vide dont l'échec surgirait ailleurs. Cas particulier de l'IMAP : `src/secrets/imap-creds.ts` génère un couple `{accounts.json,.key}` **éphémère par session** (clé tirée à chaque fois), monté RO — il n'existe plus aucun `accounts.json` permanent sur l'hôte.
+3. **Valeur en clair dans `container_configs`** — dernier recours, à justifier. Ça se retrouve aussi dans `groups/<folder>/container.json` (0600 via `materializeContainerJson`, verrouillé par `container-config.secrets.test.ts`).
+
+> **Ordre de résolution — piège vécu (2026-07-30).** Les `vault:` sont résolus dans `spawnContainer`, **après** l'écriture de `container.json` (qui ne doit contenir que des références) et **avant** `resolveProviderContribution` — car la contribution du provider opencode recopie `groupEnv` et écraserait sinon la valeur résolue par la référence brute. Le symptôme est distant et trompeur (« No credentials configured for opencode.ai »). Verrouillé par `src/secrets/spawn-order.test.ts`.
 
 Ce qui **ne peut pas** être protégé par la passerelle : un secret porté par le **chemin d'une URL** (ha-mcp, `…/private_<token>`) — il n'y a pas d'en-tête à réécrire. Pour ceux-là, la seule mesure est de réduire le nombre de groupes, et de ne jamais les journaliser (le log MCP au démarrage n'imprime que l'`origin`, jamais l'URL complète — voir `container/agent-runner/src/index.ts`).
 
 Vérifier l'état réel à tout moment :
 
 ```bash
+# Aucun secret en clair ne doit subsister en base (doit valoir 0)
+pnpm exec tsx scripts/q.ts data/v2.db \
+  "SELECT count(*) FROM container_configs WHERE mcp_servers LIKE '%sk-%' OR env LIKE '%sk-%'
+                                             OR mcp_servers LIKE '%tk_%' OR env LIKE '%tk_%'"
+# Qui détient quoi
 pnpm exec tsx scripts/q.ts data/v2.db \
   "SELECT substr(g.id,15), (SELECT group_concat(key,',') FROM json_each(json(c.mcp_servers))), c.additional_mounts
    FROM agent_groups g JOIN container_configs c ON c.agent_group_id=g.id"
-onecli agents list      # secretMode + périmètre côté passerelle
+onecli agents list                                        # secretMode + périmètre côté passerelle
+pnpm exec tsx scripts/sync-vault-to-onecli.ts --check      # coffre lisible, cibles prêtes
 ```
+
+**Prérequis d'exploitation** : le coffre doit être déverrouillé pour que les containers démarrent (pinentry automatique, `lock_timeout` long). Si `rbw` est verrouillé, les groupes concernés refusent de spawner avec un message nommant la référence — c'est voulu.
 
 **Approval-gating credentialed actions** is two-sided:
 - **Server-side** (OneCLI gateway): decides when to hold + emit pending approval. As of `onecli@2.2.5` the CLI does NOT expose this; configure via web UI at `http://127.0.0.1:10254`.
