@@ -98,7 +98,12 @@ export function materializeContainerJson(agentGroupId: string): ContainerConfig 
   const p = path.join(GROUPS_DIR, group.folder, 'container.json');
   const dir = path.dirname(p);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(config, null, 2) + '\n');
+  // 0600 : ce fichier est la copie disque des secrets du groupe (tokens d'API
+  // des serveurs MCP, env du provider). Il était écrit avec l'umask par défaut
+  // (0664, lisible par tous). `mode` ne s'applique qu'à la CRÉATION, d'où le
+  // chmod explicite pour rattraper les fichiers déjà présents.
+  fs.writeFileSync(p, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+  fs.chmodSync(p, 0o600);
 
   return config;
 }

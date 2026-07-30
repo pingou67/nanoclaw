@@ -146,6 +146,27 @@ API keys, OAuth tokens, auth credentials are managed by the OneCLI gateway. Secr
 
 Auto-created agents default to `all` secret mode (every matching secret injected). Selective mode = no secrets until assigned (401s on APIs whose credential is in the vault). Use `onecli agents set-secret-mode` or `onecli agents set-secrets`. No container restart needed — the gateway looks up secrets per request.
 
+### Règle — moindre exposition des secrets (2026-07-30)
+
+**Un secret n'est mis à disposition que des groupes qui en ont un usage fonctionnel.** Pas « tous les groupes similaires », pas « par symétrie », pas « au cas où » : chaque groupe qui détient un secret doit avoir une raison nommable. À appliquer à toute évolution — nouveau groupe, nouveau serveur MCP, clonage d'un canal.
+
+Ordre de préférence, du plus sûr au moins sûr :
+
+1. **Injection à la requête (OneCLI)** — pour tout secret qui voyage dans un en-tête HTTP. Le container ne détient qu'un marqueur (`onecli-injected`) ; la passerelle réécrit l'en-tête. Le périmètre se déclare **côté serveur** avec `agents set-secrets` (mode `selective`), pas dans un fichier. C'est le cas de Vikunja : secret générique `vikunja.pegs.fr` → `Authorization: Bearer {value}`, assigné à dm/famille/work/agc uniquement.
+2. **Mount hôte en lecture seule** — quand le consommateur lit un fichier et ne peut pas être proxifié (imap-mcp lit `accounts.json`). Le mount ne va que dans les groupes qui l'utilisent, et disparaît avec le serveur MCP qui le justifiait.
+3. **Valeur en clair dans `container_configs`** — dernier recours. Rappel : ça se retrouve aussi dans `groups/<folder>/container.json` (écrit en 0600 par `materializeContainerJson`, verrouillé par `container-config.secrets.test.ts`).
+
+Ce qui **ne peut pas** être protégé par la passerelle : un secret porté par le **chemin d'une URL** (ha-mcp, `…/private_<token>`) — il n'y a pas d'en-tête à réécrire. Pour ceux-là, la seule mesure est de réduire le nombre de groupes, et de ne jamais les journaliser (le log MCP au démarrage n'imprime que l'`origin`, jamais l'URL complète — voir `container/agent-runner/src/index.ts`).
+
+Vérifier l'état réel à tout moment :
+
+```bash
+pnpm exec tsx scripts/q.ts data/v2.db \
+  "SELECT substr(g.id,15), (SELECT group_concat(key,',') FROM json_each(json(c.mcp_servers))), c.additional_mounts
+   FROM agent_groups g JOIN container_configs c ON c.agent_group_id=g.id"
+onecli agents list      # secretMode + périmètre côté passerelle
+```
+
 **Approval-gating credentialed actions** is two-sided:
 - **Server-side** (OneCLI gateway): decides when to hold + emit pending approval. As of `onecli@2.2.5` the CLI does NOT expose this; configure via web UI at `http://127.0.0.1:10254`.
 - **Host-side**: `onecli.configureManualApproval(cb)` long-polls pending approvals and routes to a human via `pickApprover` + `pickApprovalDelivery`. Approvers from `user_roles` (scoped admins → global admins → owners). No env var like `NANOCLAW_ADMIN_USER_IDS`; roles in DB only.

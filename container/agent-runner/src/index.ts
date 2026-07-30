@@ -85,7 +85,12 @@ async function main(): Promise<void> {
 
   for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
     mcpServers[name] = serverConfig;
-    log(`Additional MCP server: ${name} (${serverConfig.command ?? serverConfig.url})`);
+    // L'URL d'un serveur distant peut PORTER le secret dans son chemin
+    // (ha-mcp : `http://hôte:port/private_<token>`). Ce log part sur stderr,
+    // que le host recopie dans `stderrTail` de logs/nanoclaw.error.log — un
+    // fichier durable et lisible. On ne journalise donc que l'origine.
+    const origin = serverConfig.command ?? (serverConfig.url ? new URL(serverConfig.url).origin : '?');
+    log(`Additional MCP server: ${name} (${origin})`);
   }
 
   const provider = createProvider(providerName, {
