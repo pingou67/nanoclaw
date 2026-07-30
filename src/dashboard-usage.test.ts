@@ -17,13 +17,12 @@ describe('deriveAccessRights', () => {
         nanoclaw: {},
         'gmail-perso': { env: {} },
         'google-calendar': { instructions: 'calendrier Famille en écriture, les autres en LECTURE SEULE' },
-        imap: {},
+        imap: { accounts: [{ name: 'unistra', host: 'partage.example', passwordRef: 'vault:mail_unistra' }] },
         vikunja: { env: { VIKUNJA_PROJECT_SCOPE: 'WORK' } },
         memory: {},
         'brave-search': {},
       }),
       additional_mounts: JSON.stringify([
-        { hostPath: '/home/x/.imap-mcp', containerPath: '.imap-mcp', readonly: true },
         { hostPath: '/mnt/home/x/DEV', containerPath: '/workspace/extra/dev', readonly: false },
       ]),
       cli_scope: 'global',
@@ -54,12 +53,36 @@ describe('deriveAccessRights', () => {
     );
   });
 
-  it('flags imap without its credentials mount', () => {
+  // Depuis le passage au coffre, les credentials imap sont générés au spawn :
+  // ce qui manque n'est plus un mount mais la DÉCLARATION du compte. Un
+  // `passwordRef` absent est le seul cas où le serveur démarre sans credential
+  // — une référence de coffre illisible, elle, fait échouer le spawn.
+  it('signale un serveur imap sans compte déclaré', () => {
     const rights = deriveAccessRights({
       mcp_servers: JSON.stringify({ imap: {} }),
       additional_mounts: '[]',
       cli_scope: 'group',
     });
-    expect(rights[0]).toContain('⚠ mount .imap-mcp absent');
+    expect(rights[0]).toContain('⚠ aucun compte déclaré');
+  });
+
+  it('ne signale rien quand le compte est déclaré, sans mount permanent', () => {
+    const rights = deriveAccessRights({
+      mcp_servers: JSON.stringify({
+        imap: { accounts: [{ name: 'unistra', host: 'partage.example', passwordRef: 'vault:mail_unistra' }] },
+      }),
+      additional_mounts: '[]',
+      cli_scope: 'group',
+    });
+    expect(rights[0]).toBe('Mail Unistra (imap)');
+  });
+
+  it('ignore un mount .imap-mcp hérité d’avant le coffre', () => {
+    const rights = deriveAccessRights({
+      mcp_servers: '{}',
+      additional_mounts: JSON.stringify([{ hostPath: '/home/x/.imap-mcp', containerPath: '.imap-mcp', readonly: true }]),
+      cli_scope: 'group',
+    });
+    expect(rights).toEqual([]);
   });
 });

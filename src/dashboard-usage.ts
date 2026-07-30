@@ -22,6 +22,7 @@ import Database from 'better-sqlite3';
 import { getAllAgentGroups } from './db/agent-groups.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { getAllMessagingGroups, getMessagingGroupAgents } from './db/messaging-groups.js';
+import { imapAccountSpecs } from './secrets/imap-creds.js';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 
@@ -297,7 +298,12 @@ export function deriveAccessRights(config: {
     /* ignore */
   }
 
-  const hasImapMount = mounts.some((m) => m.hostPath.includes('.imap-mcp'));
+  // Les credentials imap ne sont plus un mount permanent : ils sont générés au
+  // spawn depuis le coffre. On interroge donc la MÊME fonction que le spawn
+  // plutôt qu'un second indice qui dériverait — c'est elle qui décide si un
+  // `{accounts.json,.key}` sera écrit. Une référence de coffre illisible fait
+  // échouer le spawn bruyamment, elle n'a pas à être devinée ici.
+  const hasImapCreds = imapAccountSpecs({ mcpServers: servers }).length > 0;
   for (const [name, server] of Object.entries(servers)) {
     if (name === 'nanoclaw') continue;
     if (name === 'gmail' || name === 'gmail-perso') {
@@ -315,7 +321,7 @@ export function deriveAccessRights(config: {
         rights.push('Google Calendar (complet)');
       }
     } else if (name === 'imap') {
-      rights.push(hasImapMount ? 'Mail Unistra (imap)' : 'Mail Unistra (imap) ⚠ mount .imap-mcp absent');
+      rights.push(hasImapCreds ? 'Mail Unistra (imap)' : 'Mail Unistra (imap) ⚠ aucun compte déclaré (passwordRef manquant)');
     } else if (name === 'vikunja') {
       const scope = server.env?.VIKUNJA_PROJECT_SCOPE ?? 'ALL';
       rights.push(scope === 'ALL' || scope === '' ? 'Vikunja (tous projets)' : `Vikunja (projet ${scope})`);
@@ -328,7 +334,9 @@ export function deriveAccessRights(config: {
     }
   }
   for (const m of mounts) {
-    if (m.hostPath.includes('.imap-mcp')) continue; // already reported via imap
+    // Un `.imap-mcp` en dur ne subsiste que dans une config antérieure au coffre
+    // (le mount est désormais créé au spawn) — déjà couvert par la ligne imap.
+    if (m.hostPath.includes('.imap-mcp')) continue;
     rights.push(`Mount ${m.readonly === false ? 'RW' : 'RO'} ${m.hostPath}`);
   }
   if (config.cli_scope === 'global') rights.push('ncl GLOBAL (admin complet)');
