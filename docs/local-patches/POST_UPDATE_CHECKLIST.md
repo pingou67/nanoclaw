@@ -40,17 +40,69 @@ pnpm test                                    # inclut scripts/skills-sync.test.t
 cd /home/pegon/nanoclaw && bash -c '
 fail=0
 grep -q "claudeCredentials" src/container-runner.ts && echo "✓ 1. OAuth patch OK" || { echo "✗ 1. OAuth patch MISSING (see §1)"; fail=1; }
-grep -q "Local patch: keep groups/global" src/claude-md-compose.ts && echo "✓ 2. global-dir preservation OK" || { echo "✗ 2. global-dir preservation MISSING (see §2)"; fail=1; }
+# (2. groups/global — contrôle retiré le 2026-07-30, sans objet : voir §2)
 [ -f src/channels/mattermost.ts ] && echo "✓ 3. MattermostAdapter present" || { echo "✗ 3. MattermostAdapter MISSING (see §3)"; fail=1; }
 grep -q "import .\\./mattermost" src/channels/index.ts && echo "✓ 4. Mattermost imported in registry" || { echo "✗ 4. import missing (see §4)"; fail=1; }
 grep -q "\"ws\":" package.json && echo "✓ 5. ws dependency present" || { echo "✗ 5. ws dependency missing (see §5)"; fail=1; }
 which libreoffice >/dev/null 2>&1 && echo "✓ 5b. libreoffice installed" || { echo "✗ 5b. libreoffice missing — sudo apt install libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress"; fail=1; }
 [ -f data/mattermost.json ] && echo "✓ 6. data/mattermost.json present" || { echo "✗ 6. data/mattermost.json missing (see §6) — gitignored, restore from backup"; fail=1; }
-n=$(ls groups/mattermost_*/CLAUDE.md 2>/dev/null | wc -l)
-[ "$n" = "7" ] && echo "✓ 7. CLAUDE.md present in 7 mattermost_* groups" || { echo "✗ 7. only $n/7 CLAUDE.md present (see §7)"; fail=1; }
+# Compte derive du disque, jamais code en dur : un seuil fige finit par crier
+# au loup (7 etait faux, il y a 10 groupes). Pas dapostrophe ici : tout le bloc
+# vit dans un bash -c "..." en quotes simples.
+g=$(ls -d groups/mattermost_*/ 2>/dev/null | wc -l); n=$(ls groups/mattermost_*/CLAUDE.md 2>/dev/null | wc -l)
+[ "$n" = "$g" ] && echo "✓ 7. CLAUDE.md présent dans les $g groupes mattermost_*" || { echo "✗ 7. seulement $n/$g CLAUDE.md (voir §7)"; fail=1; }
+[ -f src/secrets/vault.ts ] && grep -q "resolveVaultRefs" src/container-runner.ts && echo "✓ 8. résolution vault câblée au spawn" || { echo "✗ 8. patch coffre MANQUANT (voir §S)"; fail=1; }
+grep -q "redactContainerConfig" src/dashboard-pusher.ts && echo "✓ 9. caviardage dashboard actif" || { echo "✗ 9. caviardage dashboard MANQUANT — secrets publiés sur 0.0.0.0 (voir §S)"; fail=1; }
 [ "$fail" = "0" ] && echo "" && echo "ALL CHECKS PASS — safe to restart" || { echo ""; echo "Reapply missing patches before restart"; exit 1; }
 '
 ```
+
+---
+
+## §S. Secrets — coffre, périmètre, caviardage (2026-07-30)
+
+Ces quatre contrôles ne demandent que quelques secondes et attrapent des
+défaillances **silencieuses** : rien ne casse quand ils échouent, un secret est
+simplement joignable par qui n'en a plus l'usage, ou un contrôle reste vert en
+ayant cessé de vérifier quoi que ce soit.
+
+```bash
+cd /home/pegon/nanoclaw
+
+# 1. Aucun secret en clair en base (doit valoir 0)
+pnpm exec tsx scripts/q.ts data/v2.db \
+  "SELECT count(*) FROM container_configs WHERE mcp_servers LIKE '%sk-%' OR env LIKE '%sk-%'
+                                             OR mcp_servers LIKE '%tk_%' OR env LIKE '%tk_%'"
+
+# 2. Périmètre OneCLI == besoin réel (sort 1 si écart ; un agent auto-créé naît en mode `all`)
+pnpm exec tsx scripts/check-secret-scope.ts
+
+# 3. Coffre lisible et cibles d'injection prêtes
+pnpm exec tsx scripts/sync-vault-to-onecli.ts --check
+
+# 4. Rien de secret ne sort vers le dashboard (doit être vide)
+TOKEN=$(curl -s http://127.0.0.1:3100/dashboard | grep -oP 'dashboard-token" content="\K[^"]+')
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:3100/api/agent-groups \
+  | grep -oE 'private_[A-Za-z0-9_-]{6,}|sk-[A-Za-z0-9]{20,}|tk_[A-Za-z0-9]{20,}'
+```
+
+Vérifier aussi que l'ordre de résolution des références de coffre a survécu au
+merge — `pnpm test` couvre le cas, mais l'échec est sinon distant et trompeur
+(« No credentials configured for opencode.ai ») :
+
+```bash
+pnpm exec vitest run src/secrets/ src/dashboard-redact.test.ts
+```
+
+**Écart connu et assumé au 2026-07-30** : le contrôle 2 sort en 1 à cause de
+l'agent `default` de la passerelle, laissé en mode `all`. Nanoclaw ne l'utilise
+jamais (`ensureAgent` crée toujours une identité par groupe), mais c'est
+l'identité de repli d'OneCLI, hors périmètre nanoclaw — décision de Pegs, en
+attente. **Un seul écart attendu : si le script en signale d'autres, ils sont
+nouveaux.**
+
+Si le paquet `@nanoco/nanoclaw-dashboard` a changé de version, re-porter le
+patch pnpm (page Agents + actions) — voir `docs/local-patches/README.md`.
 
 ---
 
@@ -81,9 +133,22 @@ n=$(ls groups/mattermost_*/CLAUDE.md 2>/dev/null | wc -l)
 
 ---
 
-## §2. Preserve `groups/global/` on startup (`src/claude-md-compose.ts`)
+## §2. ~~Preserve `groups/global/` on startup~~ — SANS OBJET depuis le 2026-07-30
 
-**Verify:** `grep -q "Local patch: keep groups/global" src/claude-md-compose.ts && echo OK || echo MISSING`.
+**Ne rien reporter.** Vérifié ce jour : `migrateGroupsToClaudeLocal()` n'existe
+plus nulle part dans `src/` (la fonction de migration v1→v2 a été retirée en
+amont), `groups/global/` n'existe pas sur disque, et aucun code ne le supprime
+— `group-folder.ts` se contente de réserver le nom. Le contrôle a donc été
+retiré du one-liner : il aurait signalé « MISSING » indéfiniment pour un patch
+qui n'a plus rien à protéger, et **un contrôle qui crie au loup apprend à
+ignorer toute la checklist**.
+
+Si un jour un mécanisme réintroduit la suppression de `groups/global/`, c'est
+la note historique ci-dessous qui explique pourquoi le fork la préservait.
+
+<details><summary>Note historique</summary>
+
+**Verify (obsolète) :** `grep -q "Local patch: keep groups/global" src/claude-md-compose.ts && echo OK || echo MISSING`.
 
 **If missing**, find the block in `migrateGroupsToClaudeLocal()` near the bottom:
 ```typescript
@@ -102,6 +167,8 @@ Replace with:
 ```
 
 **Why:** v2 considers `groups/global/` obsolete and wipes it on every startup. Notre fork préserve ce dossier comme safety net pour des futurs agent groups qui voudraient leur propre mount partagé, et pour ne pas perdre silencieusement un `groups/global/CLAUDE.md` customisé entre deux restarts. See `project_v2_migration.md` §8.
+
+</details>
 
 ---
 

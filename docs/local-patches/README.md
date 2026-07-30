@@ -151,3 +151,52 @@ PR upstream :
   dashboard. Le patch pnpm ajoute POST /api/actions (401/403/413) et les
   contrôles UI sur la page Agents (token demandé au premier usage, stocké
   en localStorage du navigateur).
+
+### Coffre Bitwarden — secrets hors HTTP (2026-07-30)
+
+Doctrine complète dans `CLAUDE.md` § *Secrets / Credentials / OneCLI* ;
+nuance ajoutée à `docs/SECURITY.md` §4, dont la garantie « aucun credential
+n'entre dans un container » ne vaut que pour HTTP. Fichiers **fork-owned** :
+
+- **`src/secrets/vault.ts`** (nouveau) — résout une valeur `vault:élément[/champ]`
+  via `rbw`. Lève si la référence est illisible : **le spawn est refusé**,
+  jamais démarré avec une variable vide dont l'échec surgirait ailleurs.
+- **`src/secrets/imap-creds.ts`** (nouveau) — génère `{accounts.json,.key}`
+  éphémère **par session** (clé aléatoire à chaque spawn), monté RO. Reproduit
+  le format AES **non documenté** d'`imap-mcp-server` → à revérifier à chaque
+  bump du paquet ; `imapCredsRoundTrip` + le scénario E2E `mcp imap @#work`
+  sont les garde-fous.
+- **`src/container-runner.ts`** — ⚠️ **l'ordre est load-bearing** : la
+  résolution a lieu dans `spawnContainer`, APRÈS `materializeContainerJson`
+  (le fichier ne doit contenir que des références) et AVANT
+  `resolveProviderContribution` (la contribution opencode recopie `groupEnv` et
+  écraserait la valeur résolue par la référence brute — symptôme distant et
+  trompeur : « No credentials configured for opencode.ai »). Verrouillé par
+  `src/secrets/spawn-order.test.ts`, dont un test interdit une SECONDE
+  résolution, laquelle masquerait la régression.
+- **`scripts/sync-vault-to-onecli.ts`** + **`scripts/vault-onecli-map.json`** —
+  synchro one-way coffre → OneCLI pour les secrets en en-tête HTTP. Refuse de
+  pousser vers un secret sans `injectionConfig` (piège CLI 2.2.5 : `secrets
+  create --header-name` ne le pose pas, le secret existe alors sans jamais
+  être injecté).
+- **`scripts/check-secret-scope.ts`** — audit du périmètre (voir §S ci-dessous).
+
+### Caviardage + cohérence d'état du dashboard (2026-07-30)
+
+- **`src/dashboard-redact.ts`** (nouveau, fork-owned) — caviarde
+  `container_config` avant publication. Le dashboard est servi sur `0.0.0.0`
+  **en dur par le paquet upstream**, avec le jeton d'API dans un `<meta>` de la
+  page `/dashboard` servie sans authentification : tout ce qui y est poussé est
+  lisible du réseau local. Les URL sont réduites à leur origine (le jeton de
+  `ha` vit dans le CHEMIN), en-têtes et valeurs sous clé sensible masqués ; les
+  DÉSIGNATIONS (`vault:…`, `onecli-injected`) restent lisibles à dessein.
+- **`src/dashboard-health.ts`** — `containerPathToHost` résout aussi les
+  chemins servis par un mount. Ne traiter que `/workspace/agent/…` laissait 12
+  des 14 credentials MCP hors surveillance **en silence**, le contrôle restant
+  vert.
+- **`src/session-manager.ts` + `src/index.ts`** — `reconcileContainerStatusOnBoot()`
+  après `cleanupOrphans()`. `container_status` ne repasse à `stopped` que sur
+  l'événement `close` du processus enfant, jamais émis si l'hôte s'arrête : 37
+  sessions fantômes s'étaient accumulées, et `getRunningSessions()` pilote
+  `pollActive` **à 1 s**. ⚠️ `getActiveSessions()` filtre sur `status='active'`
+  (notion de session), PAS sur `container_status`.

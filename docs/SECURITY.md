@@ -124,6 +124,24 @@ Each NanoClaw group gets its own OneCLI agent identity. This allows different cr
 - The mount allowlist — external (`~/.config/nanoclaw/…`), never mounted.
 - Real credentials — injected per request by the OneCLI gateway, never written into any mount.
 
+> **Fork-local — the guarantee above holds only for HTTP.** OneCLI's whole model
+> is header rewriting (`hostPattern` / `injectionConfig`): it can protect a
+> credential *only* when that credential travels in an HTTP header. A password
+> carried inside a protocol stream (IMAP), read from a file by an MCP server, or
+> placed in a URL **path** has no header to rewrite, so the claim "agents cannot
+> discover real credentials — not in environment, files, or `/proc`" is **not**
+> universally true on this install.
+>
+> Those secrets are resolved host-side at spawn from a `vault:item[/field]`
+> reference (Bitwarden via `rbw`), which means the value **does** enter the
+> container and **is** readable by the agent — verified: a `-e` at `docker run`
+> shows up both in the agent's own environment and in `/proc/1/environ`. That is
+> the reason the two branches exist and why the choice between them is dictated
+> by the protocol, never by preference: **never move a secret out of OneCLI that
+> OneCLI is able to inject.** See CLAUDE.md § *Secrets / Credentials / OneCLI*
+> for the full doctrine, `src/secrets/` for the implementation, and
+> `scripts/check-secret-scope.ts` to audit who is actually allowed what.
+
 ### 5. Egress Lockdown (Forced Proxy)
 
 The `HTTPS_PROXY` env var only redirects *proxy-aware* clients — a tool that
