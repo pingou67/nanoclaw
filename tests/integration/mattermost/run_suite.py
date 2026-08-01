@@ -1080,7 +1080,7 @@ def main() -> int:
         marker = {
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "passed": passed,
-            "failed": len(results) - passed,
+            "failed": len(results) - passed - skipped,
             "skipped": skipped,
             "total": len(results),
         }
