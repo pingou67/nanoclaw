@@ -6,9 +6,94 @@ originSessionId: 7b0faab2-f973-4d6c-8c92-9292fadef9aa
 ---
 ## When to run
 
-After every `/update-nanoclaw`, BEFORE `systemctl --user restart nanoclaw`.
+Les sections numérotées se passent après chaque `/update-nanoclaw` et **avant**
+`systemctl --user restart nanoclaw`. Le **§−1 ci-dessous se lit AVANT de lancer
+la mise à jour** — il n'a plus d'utilité une fois le merge fait.
 
 If you ran `pnpm run build` and the build failed, this checklist tells you what to reapply.
+
+---
+
+## §−1. Avant de lancer la mise à jour — les cinq façons connues de se coûter cher
+
+Ces règles ne viennent pas d'une théorie mais de dégâts constatés. Le skill
+`/update-nanoclaw` d'upstream ignore tout de cet hôte : il ne dira rien de ce
+qui suit.
+
+### 1. Arrêter le service AVANT le merge
+
+```bash
+systemctl --user stop nanoclaw
+# merge → pnpm install → build → tests → stamp
+pnpm exec tsx scripts/upgrade-state.ts set "" update-nanoclaw
+systemctl --user start nanoclaw
+```
+
+**Pourquoi.** Le merge fait bouger la version de `package.json` avant que le
+marqueur d'upgrade soit posé. Le service, lui, continue de redémarrer : à chaque
+tentative le tripwire refuse de démarrer (« install not on the sanctioned path »)
+et le circuit breaker double son délai — 10 s, 30 s, 120 s, 300 s, **900 s**. Le
+1er août 2026 ça a donné une douzaine de minutes d'indisponibilité pour rien, et
+le délai en cours aurait tenu un quart d'heure de plus sans intervention.
+
+Corollaire : ne pas « réparer » le tripwire en le contournant. Il fait
+exactement son travail — c'est de le déclencher inutilement qu'il faut éviter.
+
+### 2. `/usr/bin` en tête du PATH pour tout `install` / `rebuild`
+
+```bash
+export PNPM_HOME="$HOME/.local/share/pnpm"
+export PATH="/usr/bin:$PNPM_HOME:$PATH"    # node 20 = celui du service
+```
+
+**Pourquoi.** Le PATH interactif met souvent en avant le node 22 de pi-node.
+`better-sqlite3` est natif : compilé sous 22 (`NODE_MODULE_VERSION 127`), il est
+illisible par le node 20 du service (`115`), et l'hôte crash-loop. Vécu le
+2026-08-01 : seize crashes d'affilée. Voir `CLAUDE.local.md`.
+
+Ne pas remplacer le PATH complet non plus — `rtk` et `onecli` doivent y rester,
+sinon les commandes de cette checklist échouent avec un `command not found`
+trompeur.
+
+### 3. Conserver la sortie de la suite E2E
+
+```bash
+python3 -u tests/integration/mattermost/run_suite.py 2>&1 | tee logs/e2e-run-$(date +%Y%m%d-%H%M).log
+```
+
+**Pourquoi.** `logs/e2e-last-run.json` n'est qu'un résumé chiffré : **l'identité
+d'un scénario en échec ne vit que dans stdout**. Le 2026-08-01, un run est sorti
+à 28/29 ; la sortie n'ayant pas été gardée, le scénario rouge est resté
+inconnu et l'est encore. Un run vert ensuite ne prouve rien sur celui d'avant.
+
+Lecture du résultat, sans ambiguïté : un skip est construit
+`Result(..., True, skipped=True)`, donc **compté dans `passed`**. La suite est
+verte si et seulement si `passed == total`. `29/29 (1 skipped)` est vert ;
+`28/29 (1 skipped)` veut dire qu'un scénario a échoué.
+
+### 4. Ne pas corriger un compteur sans avoir reproduit l'échec
+
+C'est la faute la plus coûteuse parce qu'elle est invisible : le 2026-08-01, un
+échec E2E réel a été « corrigé » en modifiant l'arithmétique du marqueur, qui
+s'est mis à annoncer zéro échec — et `dashboard-health.ts` lit ce fichier, donc
+la santé affichait vert sur une suite rouge.
+
+La règle : **écrire le cas de test avant de toucher la ligne**. Trois lignes de
+Python auraient montré que la formule était juste et que le rouge venait
+d'ailleurs. Un chiffre qui surprend est une information, pas un bug à faire
+taire.
+
+### 5. Terminer le travail
+
+- **Fichier skill-owned modifié** (`src/channels/mattermost.ts`,
+  `tests/integration/mattermost/run_suite.py`, `src/providers/opencode.ts`…) →
+  `pnpm exec tsx scripts/skills-sync.ts sync <skill>`, sinon `pnpm test` vire au
+  rouge à la prochaine exécution.
+- **Pousser les deux remotes** — `origin` ET `gitea`. Un seul des deux poussé
+  laisse une divergence qu'on ne découvre qu'au merge suivant.
+- **Arbre propre après le dernier commit** — le hook de commit lance
+  `prettier --write` : s'il reformate un fichier déjà commité, la modification
+  reste dehors. Un `git status --porcelain` vide est la seule preuve d'avoir fini.
 
 ---
 

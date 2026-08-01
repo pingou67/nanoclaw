@@ -15,7 +15,7 @@ If you are a fresh install (you ran `git clone`, not `git pull`) and there are n
 
 Personal AI assistant. See [README.md](README.md) for philosophy and setup. Architecture lives in `docs/`.
 
-**Read the fork-local docs first.** Before any non-trivial procedure (update, migration, debug, container rebuild), consult `docs/local-patches/` — especially `POST_UPDATE_CHECKLIST.md` (required after every `/update-nanoclaw`: E2E suite §13, `skills-sync.ts check` §0, secrets/périmètre/caviardage §S) — plus `docs/BRANCH-FORK-MAINTENANCE.md` and `CLAUDE.local.md` (host memory: pnpm/bun PATH gotchas). Upstream skills don't know these docs; always supplement their steps with the local checklists.
+**Read the fork-local docs first.** Before any non-trivial procedure (update, migration, debug, container rebuild), consult `docs/local-patches/` — especially `POST_UPDATE_CHECKLIST.md` — its **§−1 is read BEFORE launching an update** (stop the service first, `/usr/bin` ahead on PATH, keep the E2E stdout), the rest after (E2E suite §13, `skills-sync.ts check` §0, mounts §M, secrets/périmètre/caviardage §S) — plus `docs/BRANCH-FORK-MAINTENANCE.md` and `CLAUDE.local.md` (host memory: pnpm/bun PATH gotchas). Upstream skills don't know these docs; always supplement their steps with the local checklists.
 
 ## Quick Context
 
