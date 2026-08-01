@@ -59,6 +59,34 @@ grep -q "redactContainerConfig" src/dashboard-pusher.ts && echo "✓ 9. caviarda
 
 ---
 
+## §M. Mounts — un `containerPath` absolu est refusé en silence (2026-08-01)
+
+`validateMount` exige un `containerPath` **relatif** (il préfixe lui-même
+`/workspace/extra/`). Un chemin absolu en base n'empêche pas le container de
+démarrer : le mount est simplement écarté, avec un `WARN` noyé dans le journal.
+Le groupe tourne alors sans son répertoire, et le symptôme remonte des semaines
+plus tard sous la forme « l'agent ne trouve plus mes dépôts ». Vécu sur `coding`
+(`/workspace/extra/dev` au lieu de `dev`), 130 rejets avant qu'on le voie.
+
+```bash
+# Doit valoir 0 — tout containerPath commençant par « / » sera rejeté au spawn
+pnpm exec tsx scripts/q.ts data/v2.db \
+  "SELECT count(*) FROM container_configs, json_each(json(additional_mounts))
+   WHERE json_extract(value, '\$.containerPath') LIKE '/%'"
+```
+
+Correction : réécrire la valeur en relatif, puis vérifier qu'aucun
+`Additional mount REJECTED` ne suit le prochain spawn du groupe.
+
+Même logique pour la clé `nonMainReadOnly` de
+`~/.config/nanoclaw/mount-allowlist.json` : `setup/mounts.ts` l'écrit encore,
+mais le validateur ne la connaît pas et proteste à **chaque** chargement de
+l'allowlist. Son défaut côté setup vaut `true` — la retirer du fichier ne change
+donc rien au comportement et rend le journal lisible. Un avertissement permanent
+qu'on apprend à ignorer masque le suivant.
+
+---
+
 ## §S. Secrets — coffre, périmètre, caviardage (2026-07-30)
 
 Ces quatre contrôles ne demandent que quelques secondes et attrapent des

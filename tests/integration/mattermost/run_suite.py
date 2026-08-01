@@ -1076,11 +1076,18 @@ def main() -> int:
     # Persist a last-run marker for the dashboard health collector
     # (src/dashboard-health.ts reads logs/e2e-last-run.json). Best effort —
     # a marker failure must never flip the suite's exit code.
+    #
+    # Les échecs se comptent, ils ne se déduisent pas. Un skip est construit
+    # `Result(..., True, skipped=True)` : il est donc DÉJÀ dans `passed`, et
+    # toute soustraction de `skipped` retranche une seconde fois — le marqueur
+    # annonce alors zéro échec pendant qu'un scénario est rouge, et la santé du
+    # tableau de bord passe au vert sur une suite en échec.
+    failed = sum(1 for r in results if not r.passed)
     try:
         marker = {
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "passed": passed,
-            "failed": len(results) - passed - skipped,
+            "failed": failed,
             "skipped": skipped,
             "total": len(results),
         }
