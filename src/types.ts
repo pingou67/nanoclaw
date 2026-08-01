@@ -33,6 +33,7 @@ export interface ContainerConfigRow {
    * Empty `{}` for groups with no overrides.
    */
   env: string;
+  timezone: string | null; // IANA id; NULL = follow the install-global timezone
   updated_at: string;
 }
 

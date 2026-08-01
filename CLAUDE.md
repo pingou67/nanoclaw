@@ -59,29 +59,37 @@ For ad-hoc queries, use the in-tree wrapper rather than the `sqlite3` CLI: `pnpm
 
 | File | Purpose |
 |------|---------|
-| `src/index.ts` | Entry point |
-| `src/router.ts` | Inbound routing |
-| `src/delivery.ts` | Polls outbound, delivers via adapter |
-| `src/delivery-guard.ts` | Guard-consult pipeline for privileged delivery |
-| `src/host-sweep.ts` | 60s sweep (acks, stale, due-wake, recurrence) |
-| `src/session-manager.ts` | Session resolution, DB open, heartbeat |
-| `src/container-runner.ts` | Spawns per-group Docker containers |
-| `src/container-runtime.ts` | Docker CLI wrapper |
-| `src/guard/` | Privileged-action decision seam (`guard(action, input)`) |
-| `src/modules/permissions/access.ts` | `canAccessAgentGroup` |
-| `src/modules/approvals/primitive.ts` | Approval registry + `pickApprover` |
-| `src/command-gate.ts` | Router-side admin command gate |
-| `src/modules/permissions/user-dm.ts` | Cold-DM resolution |
-| `src/group-init.ts` | Per-group filesystem scaffold |
-| `src/db/` | DB layer + migrations |
-| `src/channels/`, `src/channels/channel-defaults.ts` | Channel adapter infra + wiring defaults |
-| `src/providers/` | Host-side provider configs |
-| `container/agent-runner/src/` | Agent-runner (poll, formatter, provider, MCP) |
-| `container/skills/` | Container skills mounted into every session |
-| `groups/<folder>/` | Per-agent-group filesystem |
-| `scripts/skill-apply.ts` | SKILL.md applier (`nc:` directive fences) |
-| `setup/` | Setup wizard + skill driver |
-| `migrate-v2.sh` | v1→v2 migration script |
+| `src/index.ts` | Entry point: init DB, migrations, channel adapters, delivery polls, sweep, shutdown |
+| `src/router.ts` | Inbound routing: messaging group → agent group → session → `inbound.db` → wake |
+| `src/delivery.ts` | Polls `outbound.db`, delivers via adapter, handles system actions (schedule, approvals, etc.) |
+| `src/delivery-guard.ts` | `DeliveryGuardSpec` + `runGuarded` — the guard-consult pipeline for privileged delivery actions (registry stays in `delivery.ts`) |
+| `src/host-sweep.ts` | 60s sweep: `processing_ack` sync, stale detection, due-message wake, recurrence |
+| `src/session-manager.ts` | Resolves sessions; opens `inbound.db` / `outbound.db`; manages heartbeat path |
+| `src/container-runner.ts` | Spawns per-agent-group Docker containers with session DB + outbox mounts, OneCLI `ensureAgent` |
+| `src/container-runtime.ts` | Docker CLI wrapper (runtime binary, host-gateway args, mount args), orphan cleanup |
+| `src/guard/` | Privileged-action decision seam: `guard(action, input)` → allow \| hold \| deny. Module-edge `guard.ts` adapters (cli, agent-to-agent, self-mod, permissions) define each action's decision; ncl commands + delivery actions demand a guard at registration; approved replays carry the approval row as a grant and re-run the checks. Conformance test: `src/guard/conformance.test.ts` |
+| `src/modules/permissions/access.ts` | `canAccessAgentGroup` — owner / global admin / scoped admin / member resolution against `user_roles` + `agent_group_members` |
+| `src/modules/approvals/primitive.ts` | `pickApprover`, `pickApprovalDelivery`, `requestApproval`, approval-handler registry |
+| `src/command-gate.ts` | Router-side admin command gate — queries `user_roles` directly (no env var, no container-side check) |
+| `src/modules/approvals/onecli-approvals.ts` | OneCLI credentialed-action approval bridge |
+| `src/modules/permissions/user-dm.ts` | Cold-DM resolution + `user_dms` cache |
+| `src/group-init.ts` | Per-agent-group filesystem scaffold (CLAUDE.md, skills) — agent-runner source is a shared read-only mount, not copied per group |
+| `src/db/container-configs.ts` | CRUD for `container_configs` table (per-group container runtime config) |
+| `src/backfill-container-configs.ts` | Migrates legacy `container.json` files into the DB on startup |
+| `src/container-restart.ts` | Kill + on-wake respawn for agent group containers |
+| `src/db/` | DB layer — agent_groups, messaging_groups, sessions, container_configs, user_roles, user_dms, pending_*, migrations |
+| `src/channels/` | Channel adapter infra (registry, Chat SDK bridge); specific channel adapters are skill-installed from the `channels` branch |
+| `src/channels/channel-defaults.ts` | Wiring-creation helpers over adapter-declared channel defaults (`resolveWiringDefaults`, `resolveThreadPolicy`, engage validation) |
+| `src/providers/` | Host-side provider container-config (`claude` baked in; `opencode` etc. installed from the `providers` branch) |
+| `container/agent-runner/src/` | Agent-runner: poll loop, formatter, provider abstraction, MCP tools, destinations |
+| `container/skills/` | Container skills mounted into every agent session (`agent-browser`, `frontend-engineer`, `onecli-gateway`, `self-customize`, `welcome`; opt-in skills like `vercel-cli`, `slack-formatting` and `whatsapp-formatting` install with the `/add-*` skill that adds their capability) |
+| `groups/<folder>/` | Per-agent-group filesystem (CLAUDE.md, skills) — agent-runner source is a shared read-only mount, not copied per group |
+| `scripts/init-first-agent.ts` | Bootstrap the first DM-wired agent (used by `/init-first-agent` skill) |
+| `scripts/skill-apply.ts` | Deterministic SKILL.md applier — executes `nc:` directive fences; declare/emit core, journaled + idempotent |
+| `scripts/skill-directives.ts` + `scripts/skill-policy.ts` | `nc:` grammar parser + lint; UI-free driver policy derived from document structure (gate confirm, URL offer) |
+| `setup/lib/skill-driver.ts` + `setup/channels/run-channel-skill.ts` | Setup wizard's skill consumer: clack rendering of engine events + the generic channel-install flow |
+| `migrate-v2.sh` + `setup/migrate-v2/` | v1→v2 migration. Standalone script: `bash migrate-v2.sh`. Seeds DB, copies groups/sessions, installs channels, builds container, offers service switchover, then hands off to `/migrate-from-v1` skill for owner setup and CLAUDE.md cleanup. See [docs/migration-dev.md](docs/migration-dev.md). |
+| `nanoclaw.sh --uninstall` + `setup/uninstall/` | Uninstall this copy only (slug-scoped): service, containers + image, `data/`, `logs/`, `groups/`, this copy's OneCLI agents. Confirms per group; `--dry-run` previews, `--yes` skips prompts. Other copies and the shared OneCLI app are untouched. Bypasses bootstrap entirely; `uninstall.sh` is a pointer that execs it. |
 
 ## Admin CLI (`ncl`)
 
@@ -192,10 +200,10 @@ pnpm exec tsx scripts/sync-vault-to-onecli.ts --check      # coffre lisible, cib
 
 Four types. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-- **Channel/provider install skills** — `/add-discord`, `/add-slack`, …, `/add-opencode`
-- **Utility skills** — code files + `SKILL.md`
-- **Operational skills** — `/setup`, `/debug`, `/customize`, `/init-first-agent`, `/manage-channels`, `/init-onecli`, `/update-nanoclaw`
-- **Container skills** — `container/skills/`: `agent-browser`, `frontend-engineer`, `onecli-gateway`, `self-customize`, `vercel-cli`, `welcome` (channel-specific like `slack-formatting` install with their channel)
+- **Channel/provider install skills** — copy the relevant module(s) in from the `channels` or `providers` branch, wire imports, install pinned deps (e.g. `/add-discord`, `/add-slack`, `/add-whatsapp`, `/add-opencode`).
+- **Utility skills** — ship code files alongside `SKILL.md` (e.g. a `scripts/` CLI or helper).
+- **Operational skills** — instruction-only workflows (`/setup`, `/debug`, `/customize`, `/init-first-agent`, `/manage-channels`, `/init-onecli`, `/update-nanoclaw`).
+- **Container skills** — loaded inside agent containers at runtime (`container/skills/`: `agent-browser`, `frontend-engineer`, `onecli-gateway`, `self-customize`, `welcome`; opt-in skills like `vercel-cli` and the channel formatters are copied in by the `/add-*` skill that adds their capability).
 
 ### Fork-local skills (this install)
 
@@ -263,6 +271,8 @@ Two rules, no exceptions:
 - **Storage**: every timestamp written from JS is `new Date().toISOString()` (ISO-8601 UTC with `Z`). Never `datetime('now')`. In pure-SQL contexts use `strftime('%Y-%m-%dT%H:%M:%fZ','now')`. SQL-side *comparisons* wrap both sides in `datetime()`.
 - **Display**: anything shown to an agent or a user renders in the install timezone — `formatLocalTime` / `formatLocalStamp` from `src/timezone.ts` / `container/agent-runner/src/timezone.ts`. `--json` output, DB values, and operator logs stay ISO.
 
+An agent group can override the install timezone (`ncl groups config update --timezone <IANA>`, `""` clears; approval-gated for agent callers). The override grounds that group's scheduling (cron interpretation, `--process-after`, run-log stamps — effective immediately) and the container's `TZ` env (effective on respawn). Host-side operator display (`ncl` human output) stays in the install timezone. Resolution: `resolveGroupTimezone` in `src/container-config.ts` — group override → install global.
+
 ## Supply Chain Security (pnpm)
 
 `pnpm-workspace.yaml` sets `minimumReleaseAge: 4320` (3 days). New package versions must exist on the npm registry for 3 days before pnpm resolves them.
@@ -287,24 +297,27 @@ Applying stays deliberate: bump the pin, rebuild the image, run the E2E suite. E
 |-----|---------|
 | [docs/architecture.md](docs/architecture.md) | Full architecture writeup |
 | [docs/api-details.md](docs/api-details.md) | Host API + DB schema details |
-| [docs/db.md](docs/db.md) | DB architecture overview |
-| [docs/db-central.md](docs/db-central.md) | Central DB schema + migrations |
-| [docs/db-session.md](docs/db-session.md) | Per-session DB schemas + seq parity |
-| [docs/agent-runner-details.md](docs/agent-runner-details.md) | Agent-runner internals + MCP |
-| [docs/isolation-model.md](docs/isolation-model.md) | Three-level channel isolation |
-| [docs/SECURITY.md](docs/SECURITY.md) | Modèle de sécurité — §4 porte la nuance fork : la garantie « aucun credential dans le container » ne vaut que pour HTTP |
-| [docs/build-and-runtime.md](docs/build-and-runtime.md) | Runtime split, lockfiles, image build |
-| [docs/skill-directives.md](docs/skill-directives.md) | `nc:` directive reference |
-| [docs/skill-engine-seam.md](docs/skill-engine-seam.md) | Skill-engine consumer contract |
-| [docs/templates.md](docs/templates.md) | Agent templates |
+| [docs/db.md](docs/db.md) | DB architecture overview: three-DB model, cross-mount rules, readers/writers map |
+| [docs/db-central.md](docs/db-central.md) | Central DB (`data/v2.db`) — every table + migration system |
+| [docs/db-session.md](docs/db-session.md) | Per-session `inbound.db` + `outbound.db` schemas + seq parity |
+| [docs/agent-runner-details.md](docs/agent-runner-details.md) | Agent-runner internals + MCP tool interface |
+| [docs/isolation-model.md](docs/isolation-model.md) | Three-level channel isolation model |
+| [docs/setup-wiring.md](docs/setup-wiring.md) | What's wired, what's open in the setup flow |
+| [docs/architecture-diagram.md](docs/architecture-diagram.md) | Diagram version of the architecture |
+| [docs/build-and-runtime.md](docs/build-and-runtime.md) | Runtime split (Node host + Bun container), lockfiles, image build surface, CI, key invariants |
+| [docs/v1-to-v2-changes.md](docs/v1-to-v2-changes.md) | v1→v2 architecture diff — vocabulary for where v1 things moved |
+| [docs/migration-dev.md](docs/migration-dev.md) | Migration development guide — testing, debugging, dev loop |
+| [docs/provider-migration.md](docs/provider-migration.md) | Switching a live agent group between providers (e.g. Claude → Codex) — what carries over, rollback |
+| [docs/customizing.md](docs/customizing.md) | Short intro to customizing via skills |
+| [docs/skills-model.md](docs/skills-model.md) | The skills model in full: recipes, tests, upgrades, migrations |
+| [docs/skill-guidelines.md](docs/skill-guidelines.md) | Authoritative checklist for writing a skill |
+| [docs/skill-directives.md](docs/skill-directives.md) | `nc:` directive reference: fence grammar, the eight kinds, effects, guards, lint |
+| [docs/skill-engine-seam.md](docs/skill-engine-seam.md) | Skill-engine consumer contract (wizard / pipeline / agent-relay) + boundary-rule rationale |
+| [docs/templates.md](docs/templates.md) | Agent templates: what they are, stamping via `ncl groups create --template` + the setup wizard, the OneCLI/MCP-credential model, supported providers, and how to contribute one |
+| [docs/hardened-image.md](docs/hardened-image.md) | Opt-in: pull the agent image from a registry instead of building it |
 | [docs/agy-provider.md](docs/agy-provider.md) | The `agy` provider (Gemini) |
 | [docs/kimi-provider.md](docs/kimi-provider.md) | The `kimi` provider (Kimi Code CLI) |
-| [docs/provider-migration.md](docs/provider-migration.md) | Switching providers live |
-| [docs/migration-dev.md](docs/migration-dev.md) | v1→v2 migration dev guide |
-| [docs/customizing.md](docs/customizing.md) | Short intro to customizing |
-| [docs/skills-model.md](docs/skills-model.md) | Skills model in full |
-| [docs/skill-guidelines.md](docs/skill-guidelines.md) | Skill-writing checklist |
-| [docs/v1-to-v2-changes.md](docs/v1-to-v2-changes.md) | v1→v2 architecture diff |
+| [docs/SECURITY.md](docs/SECURITY.md) | Modèle de sécurité — §4 porte la nuance fork : la garantie « aucun credential dans le container » ne vaut que pour HTTP |
 | [docs/local-patches/README.md](docs/local-patches/README.md) | Fork-local patch map |
 
 ## Container Build Cache

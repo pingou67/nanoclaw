@@ -558,7 +558,7 @@ async function buildContainerArgs(
 
   // Environment — only vars read by code we don't own.
   // Everything NanoClaw-specific is in container.json (read by runner at startup).
-  args.push('-e', `TZ=${TIMEZONE}`);
+  args.push('-e', `TZ=${containerConfig.timezone ?? TIMEZONE}`);
 
   // Passthrough for runner-level tunables that the user might set on the host
   // (e.g. to disable auto-background or live-status during E2E tests). The
@@ -707,6 +707,18 @@ export async function buildAgentGroupImage(agentGroupId: string): Promise<void> 
   const badNpm = npmPackages.find((p) => !NPM_RE.test(p));
   if (badNpm) throw new Error(`Invalid npm package name in container config: ${badNpm}`);
 
+  // Which bytes this is built on. Recorded on the derived image so an operator
+  // can tell which base a group's packages were layered onto — the image id
+  // rather than a RepoDigest, because a locally built base has no RepoDigest at
+  // all and an id is unambiguous either way.
+  let baseId = '';
+  try {
+    const { stdout } = await execFileAsync(CONTAINER_RUNTIME_BIN, ['image', 'inspect', '--format', '{{.Id}}', CONTAINER_IMAGE]);
+    baseId = stdout.trim();
+  } catch {
+    // Non-fatal: the build below fails on its own if the base is really absent.
+  }
+
   let dockerfile = `FROM ${CONTAINER_IMAGE}\nUSER root\n`;
   if (aptPackages.length > 0) {
     dockerfile += `RUN apt-get update && apt-get install -y ${aptPackages.join(' ')} && rm -rf /var/lib/apt/lists/*\n`;
@@ -720,6 +732,17 @@ export async function buildAgentGroupImage(agentGroupId: string): Promise<void> 
     dockerfile += `RUN ${allowlist} && pnpm install -g ${npmPackages.join(' ')}\n`;
   }
   dockerfile += 'USER node\n';
+
+  // Overwrite the provenance label rather than letting it be inherited.
+  //
+  // `dev.nanoclaw.image-source` is documented as the one claim a retag cannot
+  // forge, and --status treats it as the trustworthy answer. But a derived
+  // build inherits the base's labels, so without this a group that has just
+  // added arbitrary apt/npm packages would keep asserting `hardened` — the
+  // vendor's claim, over bytes the vendor never saw. `derived` is the honest
+  // answer, and `derived-from` says what it was layered onto.
+  dockerfile += 'LABEL dev.nanoclaw.image-source="derived"\n';
+  if (baseId) dockerfile += `LABEL dev.nanoclaw.derived-from="${baseId}"\n`;
 
   const imageTag = `${CONTAINER_IMAGE_BASE}:${agentGroupId}`;
 
