@@ -713,7 +713,13 @@ export async function buildAgentGroupImage(agentGroupId: string): Promise<void> 
   // all and an id is unambiguous either way.
   let baseId = '';
   try {
-    const { stdout } = await execFileAsync(CONTAINER_RUNTIME_BIN, ['image', 'inspect', '--format', '{{.Id}}', CONTAINER_IMAGE]);
+    const { stdout } = await execFileAsync(CONTAINER_RUNTIME_BIN, [
+      'image',
+      'inspect',
+      '--format',
+      '{{.Id}}',
+      CONTAINER_IMAGE,
+    ]);
     baseId = stdout.trim();
   } catch {
     // Non-fatal: the build below fails on its own if the base is really absent.
