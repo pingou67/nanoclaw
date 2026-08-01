@@ -1,5 +1,4 @@
 [
-  { "name": "vercel", "version": "57.0.0" },
   { "name": "agent-browser", "version": "0.33.0", "onlyBuilt": true },
   { "name": "@anthropic-ai/claude-code", "version": "2.1.220", "onlyBuilt": true },
   { "name": "opencode-claude-memory", "version": "1.7.2" },
