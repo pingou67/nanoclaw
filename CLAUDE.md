@@ -107,7 +107,7 @@ Trunk ships no specific channel adapter or non-default provider. The `channels` 
 
 **Channel defaults.** Each adapter declares wiring-time defaults (`ChannelDefaults`); per-wiring overrides at creation. Undeclared adapters fall back behaviorally — trunk-only updates change nothing. See `src/channels/channel-defaults.ts` and [docs/api-details.md](docs/api-details.md#channel-defaults).
 
-**`/add-kimi` carries one reach-in beyond the usual barrel line**: `src/container-runner.ts` must import and call `proxyClearingArgs` from the provider, or every **remote** MCP server dies silently under kimi. Guarded by `skill-sync.json` `requiredLines` + `src/providers/kimi-proxy.test.ts`. See [docs/kimi-provider.md](docs/kimi-provider.md).
+**`/add-kimi` is not installed** (removed 2026-08-02). If it is ever reinstalled, note that it carries one reach-in beyond the usual barrel line: `src/container-runner.ts` must import and call `proxyClearingArgs` from the provider, or every **remote** MCP server dies silently under kimi. Its `skill-sync.json` `requiredLines` guard that. Reinstalling also means re-adding the host-binary entry to `scripts/supply-watch.ts`, which the skill does **not** own — the removal took it out.
 
 ## Self-Modification
 
@@ -277,7 +277,7 @@ An agent group can override the install timezone (`ncl groups config update --ti
 
 `pnpm-workspace.yaml` sets `minimumReleaseAge: 4320` (3 days). New package versions must exist on the npm registry for 3 days before pnpm resolves them.
 
-**Everything outside that policy is covered by `scripts/supply-watch.ts`** — the unified supply-chain watch. One rule everywhere: **nothing installs itself, and a version is only proposed once it has been public for ≥ 3 days** (same window as `minimumReleaseAge`). One daily user timer (`nanoclaw-supply-watch`, 09:00) checks every version pin that ends up in the agent image or on the agent PATH — `container/cli-tools.json`, the Dockerfile `*_VERSION` ARGs (opencode, bun, pnpm), the agent-runner runtime deps (resolved from `bun.lock`), the host-mounted binaries (rtk via GitHub releases, kimi via its own CDN manifest) — plus upstream/main drift (commit summary + overlap with our local patches), and sends ONE Mattermost DM digest only when something changed.
+**Everything outside that policy is covered by `scripts/supply-watch.ts`** — the unified supply-chain watch. One rule everywhere: **nothing installs itself, and a version is only proposed once it has been public for ≥ 3 days** (same window as `minimumReleaseAge`). One daily user timer (`nanoclaw-supply-watch`, 09:00) checks every version pin that ends up in the agent image or on the agent PATH — `container/cli-tools.json`, the Dockerfile `*_VERSION` ARGs (opencode, bun, pnpm), the agent-runner runtime deps (resolved from `bun.lock`), the host-mounted binaries (rtk via GitHub releases) — plus upstream/main drift (commit summary + overlap with our local patches), and sends ONE Mattermost DM digest only when something changed.
 
 ```bash
 pnpm exec tsx scripts/supply-watch.ts --dry-run   # print the digest without posting
@@ -316,7 +316,6 @@ Applying stays deliberate: bump the pin, rebuild the image, run the E2E suite. E
 | [docs/templates.md](docs/templates.md) | Agent templates: what they are, stamping via `ncl groups create --template` + the setup wizard, the OneCLI/MCP-credential model, supported providers, and how to contribute one |
 | [docs/hardened-image.md](docs/hardened-image.md) | Opt-in: pull the agent image from a registry instead of building it |
 | [docs/agy-provider.md](docs/agy-provider.md) | The `agy` provider (Gemini) |
-| [docs/kimi-provider.md](docs/kimi-provider.md) | The `kimi` provider (Kimi Code CLI) |
 | [docs/SECURITY.md](docs/SECURITY.md) | Modèle de sécurité — §4 porte la nuance fork : la garantie « aucun credential dans le container » ne vaut que pour HTTP |
 | [docs/local-patches/README.md](docs/local-patches/README.md) | Fork-local patch map |
 

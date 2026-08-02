@@ -48,9 +48,6 @@ import { hasVaultRefs, resolveVaultRefs } from './secrets/vault.js';
 // Provider host-side config barrel — each provider that needs host-side
 // container setup self-registers on import.
 import './providers/index.js';
-// Reach-in owned by /add-kimi: see proxyClearingArgs' doc comment for why the
-// gateway proxy has to be blanked for that provider.
-import { proxyClearingArgs } from './providers/kimi.js';
 import {
   getProviderContainerConfig,
   providerProvidesAgentSurfaces,
@@ -670,8 +667,6 @@ async function buildContainerArgs(
     args.push('-e', 'HTTPS_PROXY=');
     args.push('-e', 'HTTP_PROXY=');
   }
-
-  args.push(...proxyClearingArgs(_provider));
 
   // Use per-agent-group image if one has been built, otherwise base image
   const imageTag = containerConfig.imageTag || CONTAINER_IMAGE;

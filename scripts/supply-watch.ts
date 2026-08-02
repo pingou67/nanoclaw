@@ -6,7 +6,7 @@
  *   - les pins npm de `container/cli-tools.json`
  *   - les ARGs de version du Dockerfile (opencode, bun, pnpm)
  *   - les deps runtime de `container/agent-runner/package.json`
- *   - les binaires hôte montés dans les containers (rtk, kimi)
+ *   - les binaires hôte montés dans les containers (rtk)
  *   - l'avancée d'`upstream/main` (résumé + analyse d'impact sur nos patchs)
  *
  * LA règle : rien ne s'installe tout seul, et une version n'est proposée que
@@ -350,45 +350,6 @@ async function checkRtk(now: number, errors: string[]): Promise<WatchItem | null
   }
 }
 
-/**
- * kimi : le CLI entretient lui-même ~/.kimi-code/updates/latest.json (manifest
- * CDN avec publishedAt) — on le lit au lieu d'interroger un endpoint non
- * documenté. S'il est trop vieux (> 14 j), on ne conclut rien.
- */
-export function evaluateKimi(
-  current: string | null,
-  latestJson: { checkedAt?: string; latest?: string; manifest?: { publishedAt?: string } } | null,
-  now: number,
-  cooldownDays = COOLDOWN_DAYS,
-): WatchItem | null {
-  if (!current || !latestJson?.latest) return null;
-  const checkedAge = latestJson.checkedAt ? (now - Date.parse(latestJson.checkedAt)) / 86_400_000 : Infinity;
-  if (checkedAge > 14) return null; // manifest périmé — pas de conclusion
-  const published = latestJson.manifest?.publishedAt ?? null;
-  const oldEnough = published ? (now - Date.parse(published)) / 86_400_000 >= cooldownDays : false;
-  return {
-    name: 'kimi',
-    origin: 'host-binary',
-    current,
-    eligible: oldEnough ? latestJson.latest : null,
-    published: oldEnough && published ? published.slice(0, 10) : null,
-    behind: oldEnough ? compareVersions(current, latestJson.latest) < 0 : false,
-    applyHint: '`kimi upgrade` sur le host (les containers montent le binaire)',
-  };
-}
-
-function checkKimi(now: number): WatchItem | null {
-  const home = process.env.KIMI_CODE_HOME || path.join(os.homedir(), '.kimi-code');
-  const current = binaryVersion(path.join(home, 'bin', 'kimi'));
-  let latest: Parameters<typeof evaluateKimi>[1] = null;
-  try {
-    latest = JSON.parse(fs.readFileSync(path.join(home, 'updates', 'latest.json'), 'utf-8'));
-  } catch {
-    /* pas de manifest — pas de conclusion */
-  }
-  return evaluateKimi(current, latest, now);
-}
-
 /** Upstream : fetch + résumé lisible + impact sur nos fichiers patchés. */
 function checkUpstream(lastSeen: string | null, errors: string[]): { news: UpstreamNews | null; head: string | null } {
   try {
@@ -490,8 +451,6 @@ async function main(): Promise<void> {
   const items: WatchItem[] = await checkNpm(collectNpmTargets(errors), now, errors, holds);
   const rtk = await checkRtk(now, errors);
   if (rtk) items.push(rtk);
-  const kimi = checkKimi(now);
-  if (kimi) items.push(kimi);
   const { news: upstream, head: upstreamHead } = checkUpstream(state.upstreamLastSeen ?? null, errors);
 
   const report: Report = { checkedAt: new Date(now).toISOString(), items, upstream, errors };

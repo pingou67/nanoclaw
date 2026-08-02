@@ -10,7 +10,6 @@ import { describe, expect, it } from 'vitest';
 import {
   buildDigest,
   compareVersions,
-  evaluateKimi,
   fingerprint,
   parseDockerfileArgs,
   loadHolds,
@@ -125,35 +124,6 @@ describe('parseDockerfileArgs', () => {
       ),
     );
     expect(args).toEqual({ BUN_VERSION: '1.3.12', OPENCODE_VERSION: '1.4.17', PNPM_VERSION: '10.33.0' });
-  });
-});
-
-describe('evaluateKimi', () => {
-  const manifest = (published: string, checked: string) => ({
-    checkedAt: checked,
-    latest: '0.30.0',
-    manifest: { publishedAt: published },
-  });
-
-  it('signale un retard quand le manifest est frais et la release assez vieille', () => {
-    const item = evaluateKimi('0.29.2', manifest(daysAgo(5), daysAgo(1)), NOW, 3);
-    expect(item?.behind).toBe(true);
-    expect(item?.eligible).toBe('0.30.0');
-  });
-
-  it('ne propose rien tant que la release est dans la fenêtre de cooldown', () => {
-    const item = evaluateKimi('0.29.2', manifest(daysAgo(1), daysAgo(0)), NOW, 3);
-    expect(item?.behind).toBe(false);
-    expect(item?.eligible).toBeNull();
-  });
-
-  it('ne conclut rien sur un manifest périmé (> 14 j)', () => {
-    expect(evaluateKimi('0.29.2', manifest(daysAgo(30), daysAgo(20)), NOW, 3)).toBeNull();
-  });
-
-  it('ne conclut rien sans binaire ou sans manifest', () => {
-    expect(evaluateKimi(null, manifest(daysAgo(5), daysAgo(1)), NOW, 3)).toBeNull();
-    expect(evaluateKimi('0.29.2', null, NOW, 3)).toBeNull();
   });
 });
 

@@ -5,4 +5,3 @@
 import './claude.js';
 import './opencode.js';
 import './agy.js';
-import './kimi.js';

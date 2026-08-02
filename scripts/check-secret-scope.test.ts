@@ -12,7 +12,7 @@ const REQUIRED_BY = { Vikunja: 'vikunja' };
 describe('identifierForGroup', () => {
   it('reproduit la convention d’ensureAgent (underscores -> tirets)', () => {
     expect(identifierForGroup('ag-mattermost_work')).toBe('ag-mattermost-work');
-    expect(identifierForGroup('ag-mattermost_testor-kimi')).toBe('ag-mattermost-testor-kimi');
+    expect(identifierForGroup('ag-mattermost_testor-claude')).toBe('ag-mattermost-testor-claude');
   });
 });
 
