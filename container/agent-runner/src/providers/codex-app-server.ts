@@ -91,7 +91,13 @@ function isRemote(s: CodexMcpServer): s is CodexRemoteMcpServer {
   return typeof (s as CodexRemoteMcpServer).url === 'string';
 }
 
-export type CodexReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+/**
+ * `max` a été introduit avec la famille GPT-5.6 (GA 2026-07-09) : il étend le
+ * budget de chaîne de pensée au-delà de `xhigh`. Le payload upstream, épinglé
+ * sur codex-cli 0.138.0 (2026-06-08), est antérieur d'un mois et ne le
+ * connaissait pas — d'où son absence ici jusqu'au 2026-08-03.
+ */
+export type CodexReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 // Codex runs unrestricted inside the container. NanoClaw's container isolation and
 // the OneCLI allow-list are the security boundary — not Codex's own sandbox/approval

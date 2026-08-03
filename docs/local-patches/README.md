@@ -120,6 +120,15 @@ compile pas** contre `upstream/main` tel quel :
 3. **Contexte de test** — `src/providers/codex-host-contribution.test.ts` reçoit
    `groupEnv` + `containerConfig`, requis par notre `ProviderContainerContext`
    et absents du payload upstream.
+4. **Palier d'effort `max`** (2026-08-03) — introduit par la famille GPT-5.6
+   (GA 2026-07-09), au-dessus de `xhigh`. Absent du payload, épinglé sur
+   codex-cli 0.138.0 publiée un mois plus tôt. Ajouté à `CodexReasoningEffort`
+   et à `SUPPORTED_EFFORTS`. ⚠️ **`codex.factory.test.ts` affirmait l'inverse**
+   (« rejects … `max` ») : le test est inversé chez nous, attendre un conflit
+   à cet endroit le jour où upstream bump son pin. `adaptive`, lui, reste
+   refusé — codex n'a **pas** d'effort adaptatif, c'est un palier fixe pour
+   tous les tours, sans équivalent du `thinking: {type:'adaptive'}` de claude
+   (que le provider codex ne lit pas du tout).
 
 Écart de pin assumé : le SKILL.md épingle `@openai/codex` **0.146.0** au lieu
 du `0.138.0` upstream, qui date du 2026-06-08 — un mois avant la GA de la
