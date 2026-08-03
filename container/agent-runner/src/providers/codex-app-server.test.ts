@@ -81,6 +81,35 @@ describe('Codex config TOML', () => {
     expect(CODEX_APP_SERVER_ARGS).toContain('--dangerously-bypass-hook-trust');
   });
 
+  /**
+   * La forme exacte a été obtenue en faisant écrire codex lui-même
+   * (`codex mcp add distant --url … --bearer-token-env-var …` sous codex-cli
+   * 0.146), pas déduite d'une doc. Émettre `command` pour un serveur distant
+   * produirait `command = "undefined"` et un démarrage en échec silencieux.
+   */
+  it('écrit la forme `url` pour un serveur distant, jamais `command`', () => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
+    process.env.HOME = tmpHome;
+
+    writeCodexConfigToml(
+      {
+        ha: { url: 'http://192.168.1.113:9583/private_xyz' },
+        jeton: { url: 'https://exemple.net/mcp', bearerTokenEnvVar: 'HA_TOKEN' },
+        local: { command: 'bun', args: ['run', 'x.ts'] },
+      },
+      MEMORY_SESSION_HOOK,
+    );
+
+    const content = fs.readFileSync(path.join(tmpHome, '.codex', 'config.toml'), 'utf-8');
+    expect(content).toContain('[mcp_servers.ha]\nurl = "http://192.168.1.113:9583/private_xyz"');
+    expect(content).toContain('bearer_token_env_var = "HA_TOKEN"');
+    // Le stdio garde sa forme, et le distant n'emprunte JAMAIS `command`.
+    expect(content).toContain('[mcp_servers.local]\ncommand = "bun"');
+    const remoteBlock = content.slice(content.indexOf('[mcp_servers.ha]'), content.indexOf('[mcp_servers.jeton]'));
+    expect(remoteBlock).not.toContain('command');
+    expect(remoteBlock).not.toContain('undefined');
+  });
+
   it('preserves unrelated hooks and refreshes only the NanoClaw memory entry', () => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
     process.env.HOME = tmpHome;

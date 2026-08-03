@@ -63,10 +63,32 @@ export interface AppServer {
   exitHandlers: Array<(err: Error) => void>;
 }
 
-export interface CodexMcpServer {
+/** Serveur MCP lancé par codex lui-même (transport stdio). */
+export interface CodexStdioMcpServer {
   command: string;
   args?: string[];
   env?: Record<string, string>;
+}
+
+/**
+ * Serveur MCP **distant**. Codex n'a qu'un seul transport distant, le
+ * streamable HTTP (`codex mcp add <nom> --url …`) — il n'expose pas de
+ * transport SSE séparé.
+ *
+ * `bearerTokenEnvVar` nomme une variable d'environnement où codex ira lire un
+ * jeton porteur. C'est la SEULE forme d'authentification par en-tête qu'il
+ * sache exprimer : pas d'en-têtes arbitraires. Un serveur qui en exige
+ * (`McpServerConfig.headers`) reste hors de portée — voir `toCodexMcpServers`.
+ */
+export interface CodexRemoteMcpServer {
+  url: string;
+  bearerTokenEnvVar?: string;
+}
+
+export type CodexMcpServer = CodexStdioMcpServer | CodexRemoteMcpServer;
+
+function isRemote(s: CodexMcpServer): s is CodexRemoteMcpServer {
+  return typeof (s as CodexRemoteMcpServer).url === 'string';
 }
 
 export type CodexReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
@@ -410,8 +432,18 @@ export function writeCodexConfigToml(
   lines.push('generate_memories = false');
   lines.push('');
 
+  // Deux formes, celles que `codex mcp add` écrit lui-même (vérifié contre
+  // codex-cli 0.146) : `url` pour un serveur distant, `command`/`args`/`env`
+  // pour un stdio. Émettre `command` pour un serveur distant produirait
+  // `command = "undefined"` et un démarrage en échec.
   for (const [name, config] of Object.entries(servers)) {
     lines.push(`[mcp_servers.${name}]`);
+    if (isRemote(config)) {
+      lines.push(`url = ${tomlBasicString(config.url)}`);
+      if (config.bearerTokenEnvVar) lines.push(`bearer_token_env_var = ${tomlBasicString(config.bearerTokenEnvVar)}`);
+      lines.push('');
+      continue;
+    }
     lines.push(`command = ${tomlBasicString(config.command)}`);
     if (config.args && config.args.length > 0) {
       lines.push(`args = [${config.args.map(tomlBasicString).join(', ')}]`);

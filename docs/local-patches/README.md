@@ -96,12 +96,27 @@ compile pas** contre `upstream/main` tel quel :
    prochain merge qui intègre cette PR, attendre un conflit sur `poll-loop.ts`
    (notre `deliverToOrigin`/`deliverErrorResult` cohabite avec leur
    `deliverHarnessFile`) et garder les deux.
-2. **`toCodexMcpServers()`** dans `container/agent-runner/src/providers/codex.ts`
-   — notre `McpServerConfig.command` est optionnel (support des serveurs MCP
-   **distants**, patch `e8808f2`), `CodexMcpServer.command` est requis. La
-   fonction ne laisse passer que le stdio et **journalise nommément** chaque
-   serveur distant écarté (un MCP droppé en silence nous avait coûté un long
-   diagnostic sous kimi le 2026-07-28).
+2. **Serveurs MCP distants — `CodexMcpServer` élargi + `toCodexMcpServers()`.**
+   Notre `McpServerConfig.command` est optionnel (support des serveurs MCP
+   **distants**, patch `e8808f2`) là où le payload upstream ne modélisait que
+   le stdio — leur cœur exige `command`, leur provider codex n'avait donc
+   aucune raison de prévoir autre chose.
+
+   ⚠️ **Ne pas répéter l'erreur de diagnostic du 2026-08-03** : ce n'est PAS
+   une limite de codex. `codex mcp add <nom> --url <URL>` existe, et codex écrit
+   alors `url = "…"` (+ `bearer_token_env_var` optionnel) au lieu de `command`.
+   `CodexMcpServer` est désormais une union stdio | distant, et
+   `writeCodexConfigToml` émet la forme correspondante — forme obtenue en
+   faisant écrire codex lui-même sous 0.146, pas déduite d'une doc.
+
+   La seule chose que codex ne sait vraiment pas exprimer, ce sont des
+   **en-têtes arbitraires** : il n'offre que `bearer_token_env_var`. Un serveur
+   distant portant `headers` est donc écarté — mais **jamais en silence**, la
+   fonction le nomme sur stderr (un MCP droppé sans une ligne de log nous avait
+   coûté un long diagnostic sous kimi le 2026-07-28). Notre seul serveur
+   distant réel, `ha`, porte son jeton dans le chemin de l'URL et aucun
+   en-tête : il passe. Tests : `codex-mcp-shapes.test.ts` (conversion) et
+   `codex-app-server.test.ts` (forme TOML).
 3. **Contexte de test** — `src/providers/codex-host-contribution.test.ts` reçoit
    `groupEnv` + `containerConfig`, requis par notre `ProviderContainerContext`
    et absents du payload upstream.
