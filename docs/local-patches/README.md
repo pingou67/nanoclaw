@@ -79,6 +79,44 @@ La suite E2E (`tests/integration/mattermost/run_suite.py`) **skippe**
 proprement les scénarios des skills absents (matrix opencode, provider
 switch) et sort en SKIP global si l'adapter Mattermost n'est pas installé.
 
+### Provider codex — un patch porté EN AVANCE sur upstream (2026-08-03)
+
+Installé via `/add-codex` (skill upstream, payload branche `providers`) pour le
+groupe `testor-codex` (GPT-5.6 Terra, effort `medium`, compte ChatGPT Plus).
+Trois écarts fork à connaître, tous nécessaires — le payload publié **ne
+compile pas** contre `upstream/main` tel quel :
+
+1. **`a6a46621` cherry-pické** (`fix(codex): deliver harness file events + add
+   `file` to ProviderEvent`) — le provider codex émet `{type:'file'}` pour les
+   images qu'il génère, événement qu'aucune branche `types.ts` ne déclare : le
+   correctif vit dans `upstream/fix/codex-file-event`, **non mergé**. Il ajoute
+   la variante à l'union, extrait `enqueueFileOut()` dans
+   `container/agent-runner/src/outbox.ts` et fait livrer les fichiers par le
+   poll-loop. ⚠️ **Nous portons donc du code en avance sur upstream** : au
+   prochain merge qui intègre cette PR, attendre un conflit sur `poll-loop.ts`
+   (notre `deliverToOrigin`/`deliverErrorResult` cohabite avec leur
+   `deliverHarnessFile`) et garder les deux.
+2. **`toCodexMcpServers()`** dans `container/agent-runner/src/providers/codex.ts`
+   — notre `McpServerConfig.command` est optionnel (support des serveurs MCP
+   **distants**, patch `e8808f2`), `CodexMcpServer.command` est requis. La
+   fonction ne laisse passer que le stdio et **journalise nommément** chaque
+   serveur distant écarté (un MCP droppé en silence nous avait coûté un long
+   diagnostic sous kimi le 2026-07-28).
+3. **Contexte de test** — `src/providers/codex-host-contribution.test.ts` reçoit
+   `groupEnv` + `containerConfig`, requis par notre `ProviderContainerContext`
+   et absents du payload upstream.
+
+Écart de pin assumé : le SKILL.md épingle `@openai/codex` **0.146.0** au lieu
+du `0.138.0` upstream, qui date du 2026-06-08 — un mois avant la GA de la
+famille GPT-5.6 et donc incapable de sélectionner Terra. Justifié dans le
+SKILL.md lui-même. La veille `scripts/supply-watch.ts` suit l'entrée
+automatiquement (elle est dans `cli-tools.json`).
+
+rtk : pas de hook natif possible (`rtk hook` parle claude/cursor/gemini/copilot/
+droid, **pas codex**) — la consigne vit dans
+`groups/mattermost_testor-codex/instructions.prepend.md`, que
+`readGroupPersona` injecte en section *Persona* de l'`AGENTS.md` composé.
+
 ### Reliquat (statu quo : /update-nanoclaw + POST_UPDATE_CHECKLIST)
 
 Les patchs **in-place** de fichiers upstream restent gérés par merge — les
