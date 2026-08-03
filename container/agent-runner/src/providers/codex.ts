@@ -12,6 +12,7 @@ import type {
   QueryInput,
 } from './types.js';
 import { archiveProviderExchange } from './exchange-archive.js';
+import { summarizeToolUse } from './summarize.js';
 import {
   type AppServer,
   type CodexMcpServer,
@@ -72,6 +73,59 @@ function normalizeEffort(effort: string | undefined): CodexReasoningEffort | und
     throw new Error(`Unsupported Codex reasoning effort: ${effort}`);
   }
   return normalized as CodexReasoningEffort;
+}
+
+/**
+ * Items que codex émet et qui constituent une ACTION visible pour l'utilisateur.
+ * `reasoning` et `agentMessage` en sont volontairement absents : ce sont le
+ * modèle qui pense et qui parle, pas des outils. Les compter donnerait des
+ * décomptes d'« actions » sans rapport avec ce que l'agent a fait.
+ */
+const ACTION_ITEM_TYPES = new Set(['commandExecution', 'fileChange', 'mcpToolCall', 'webSearch']);
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
+
+/** Première clé présente dont la valeur est une chaîne non vide. */
+function firstString(o: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const k of keys) if (typeof o[k] === 'string' && o[k]) return o[k] as string;
+  return undefined;
+}
+
+/**
+ * Résume un item codex pour le post de statut, dans le MÊME format que claude
+ * et opencode (`summarizeToolUse`), ou `null` si ce n'est pas une action.
+ *
+ * Volontairement défensif sur les noms de champs : le protocole app-server
+ * n'est pas figé, et le pire cas doit rester un libellé générique mais juste
+ * (`Bash`, `Edit`) — jamais un `[object Object]`, ni une action fantôme.
+ */
+export function summarizeCodexItem(item: unknown): string | null {
+  if (!isRecord(item)) return null;
+  const type = typeof item.type === 'string' ? item.type : '';
+  if (!ACTION_ITEM_TYPES.has(type)) return null;
+
+  switch (type) {
+    case 'commandExecution': {
+      const command = firstString(item, ['command', 'commandLine', 'cmd']);
+      return command ? summarizeToolUse('Bash', { command }) : 'Bash';
+    }
+    case 'fileChange': {
+      const path = firstString(item, ['path', 'file_path', 'filePath']);
+      return path ? summarizeToolUse('Edit', { path }) : 'Edit';
+    }
+    case 'mcpToolCall': {
+      const name =
+        [firstString(item, ['server', 'serverName']), firstString(item, ['tool', 'toolName', 'name'])]
+          .filter(Boolean)
+          .join('.') || 'MCP tool';
+      const args = isRecord(item.arguments) ? item.arguments : isRecord(item.input) ? item.input : {};
+      return summarizeToolUse(name, args);
+    }
+    default: {
+      const query = firstString(item, ['query', 'q']);
+      return query ? summarizeToolUse('Web search', { query }) : 'Web search';
+    }
+  }
 }
 
 /**
@@ -330,14 +384,28 @@ async function* runOneTurn(
         if (delta) resultText += delta;
         break;
       }
+      case 'item/started': {
+        // Les VRAIS outils passent par ici. Le poll-loop compte chaque
+        // `progress` comme une action et l'affiche dans le post de statut :
+        // n'émettre que pour un item qui est réellement une action.
+        const summary = summarizeCodexItem(params.item);
+        buffer.push(summary ? { type: 'progress', message: summary } : { type: 'activity' });
+        break;
+      }
       case 'item/completed': {
         const item = params.item as { type?: string; text?: string } | undefined;
         if (item?.type === 'agentMessage' && item.text) resultText = item.text;
         break;
       }
       case 'thread/status/changed': {
-        const status = params.status as string | undefined;
-        if (status) buffer.push({ type: 'progress', message: `status: ${status}` });
+        // Signal de LIVENESS, pas une action. L'émettre en `progress` faisait
+        // deux choses fausses à la fois (vécu le 2026-08-03 sur un simple
+        // « Hello ») : un post « 🔧 status: [object Object] » dans le canal —
+        // `params.status` est un objet depuis 0.14x, pas une chaîne — et
+        // surtout un décompte « 2 actions • 10s » pour un tour SANS le moindre
+        // appel d'outil. `activity` est exactement fait pour ça : garder le
+        // minuteur d'inactivité honnête sans rien afficher.
+        buffer.push({ type: 'activity' });
         break;
       }
       case 'error': {
