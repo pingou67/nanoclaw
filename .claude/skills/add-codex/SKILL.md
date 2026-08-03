@@ -114,6 +114,22 @@ pnpm exec tsx setup/index.ts --step provider-auth codex
 
 The same walk-through fresh installs get from the setup picker: ChatGPT subscription (browser login or device pairing) or an OpenAI API key, landed in the OneCLI vault. Idempotent — it short-circuits when a matching secret already exists. It finishes with the install check.
 
+> **Écart fork assumé (2026-08-03) — sur cet hôte, utiliser `scripts/codex-vault-login.sh`.**
+>
+> Le walk-through ci-dessus lance `codex login` sur l'**hôte** et s'arrête net
+> si le binaire y est absent (« The Codex CLI is not installed on this
+> machine »). Or nous n'installons pas codex sur l'hôte : il vit dans l'image
+> agent, épinglé dans `container/cli-tools.json`. Un second exemplaire hôte
+> serait une surface d'approvisionnement de plus, hors de portée de
+> `scripts/supply-watch.ts`, et libre de dériver de la version que les
+> containers exécutent — donc de rendre l'auth valide ici et cassée là-bas.
+>
+> `scripts/codex-vault-login.sh` fait le `codex login --device-auth` **dans
+> l'image**, sous un `CODEX_HOME` jetable détruit sur chaque chemin de sortie,
+> puis dépose exactement le même secret que le wizard (`--name Codex --type
+> openai --host-pattern chatgpt.com`). L'option API key du wizard, elle, ne
+> touche pas au binaire et reste utilisable telle quelle.
+
 ## Use it
 
 Per group:

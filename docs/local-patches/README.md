@@ -117,6 +117,43 @@ droid, **pas codex**) — la consigne vit dans
 `groups/mattermost_testor-codex/instructions.prepend.md`, que
 `readGroupPersona` injecte en section *Persona* de l'`AGENTS.md` composé.
 
+### OneCLI — ce que `docs/onecli-upgrades.md` ne dit pas de CETTE installation (2026-08-03)
+
+Trois écarts constatés en appliquant le doc upstream. Les connaître évite de
+lancer une migration de passerelle qui n'avait pas lieu d'être.
+
+1. **La passerelle est en AVANCE sur le pin, pas en retard.** L'image qui
+   tourne est `ghcr.io/onecli/onecli:latest`, étiquetée **v1.37.0**, au-dessus
+   du `onecli-gateway: 1.36.0` de `versions.json`. Ne pas « corriger » ça : ce
+   serait un downgrade. Vérifier avec
+   `docker inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' onecli-app-1`.
+2. **`onecli version` renvoie la version du CLI, pas de la passerelle.** Le
+   `1.1.0` qu'il affichait était le binaire hôte, face au pin
+   `onecli-cli: 2.2.5` — c'était le seul vrai écart. Le CLI est *stateless*
+   (le coffre vit dans la passerelle) : le remplacer ne perd rien, et c'est
+   sans commune mesure avec une migration de passerelle.
+3. **Notre `~/.onecli/docker-compose.yml` date de mars et diffère du doc** : le
+   service s'appelle `app` (pas `onecli`) et l'image est figée sur `latest`
+   sans variable `${ONECLI_VERSION}`. La commande
+   `ONECLI_VERSION=… docker compose pull onecli` du doc **ne s'applique pas
+   telle quelle** — il faudrait d'abord paramétrer le tag.
+
+**Rupture de format à retenir.** Le CLI a changé de sortie entre majeures :
+1.x rendait un tableau nu, 2.x rend `{ "hint": …, "data": [...] }`. La montée
+a cassé d'un coup `check-secret-scope.ts` et `sync-vault-to-onecli.ts`.
+`scripts/onecli-cli.ts` (+ son test) absorbe désormais les deux formes et
+**lève** sur une troisième — parce qu'un audit qui rend une liste vide conclut
+« conforme » au lieu de « je n'ai rien pu lire ».
+
+**Durcissement Postgres (même date).** `~/.onecli/docker-compose.yml` publiait
+`5432` sur `0.0.0.0` avec le mot de passe par défaut `onecli/onecli` : la base
+du coffre à credentials était joignable depuis tout le LAN. La publication est
+restreinte au loopback (`127.0.0.1:5432`), l'application joignant Postgres par
+le réseau compose. Sauvegarde du fichier d'origine à côté, en
+`docker-compose.yml.bak-*`. ⚠️ **Reste à faire** : le mot de passe est toujours
+`onecli` — défense en profondeur seulement, désormais, mais à changer (il faut
+`ALTER USER` + `DATABASE_URL` dans le même mouvement).
+
 ### Reliquat (statu quo : /update-nanoclaw + POST_UPDATE_CHECKLIST)
 
 Les patchs **in-place** de fichiers upstream restent gérés par merge — les

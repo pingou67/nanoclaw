@@ -16,12 +16,13 @@
  *
  * Sort en 1 dès qu'un écart est trouvé, pour être utilisable en vérification.
  */
-import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 import Database from 'better-sqlite3';
+
+import { onecliJson } from './onecli-cli.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -113,10 +114,6 @@ export function auditScope(
   return findings;
 }
 
-function onecli(args: string[]): string {
-  return execFileSync(process.env.ONECLI_BIN || 'onecli', args, { encoding: 'utf-8', timeout: 60_000 });
-}
-
 function collect(): { agents: AgentScope[]; needs: GroupNeeds; requiredBy: Record<string, string | undefined> } {
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'scripts', 'vault-onecli-map.json'), 'utf-8'));
   const requiredBy: Record<string, string | undefined> = {};
@@ -124,19 +121,17 @@ function collect(): { agents: AgentScope[]; needs: GroupNeeds; requiredBy: Recor
     if (name !== '//') requiredBy[name] = entry?.requiredBy;
   }
 
-  const secrets = JSON.parse(onecli(['secrets', 'list'])) as { id: string; name: string }[];
+  const secrets = onecliJson<{ id: string; name: string }>(['secrets', 'list']);
   const nameById = new Map(secrets.map((s) => [s.id, s.name]));
 
-  const agents = (JSON.parse(onecli(['agents', 'list'])) as { id: string; identifier: string; secretMode: string }[]).map(
-    (a) => ({
-      identifier: a.identifier,
-      secretMode: a.secretMode,
-      secrets:
-        a.secretMode === 'selective'
-          ? (JSON.parse(onecli(['agents', 'secrets', '--id', a.id])) as string[]).map((id) => nameById.get(id) ?? id)
-          : secrets.map((s) => s.name),
-    }),
-  );
+  const agents = onecliJson<{ id: string; identifier: string; secretMode: string }>(['agents', 'list']).map((a) => ({
+    identifier: a.identifier,
+    secretMode: a.secretMode,
+    secrets:
+      a.secretMode === 'selective'
+        ? onecliJson<string>(['agents', 'secrets', '--id', a.id]).map((id) => nameById.get(id) ?? id)
+        : secrets.map((s) => s.name),
+  }));
 
   const db = new Database(path.join(ROOT, 'data', 'v2.db'), { fileMustExist: true, readonly: true });
   const needs: GroupNeeds = {};

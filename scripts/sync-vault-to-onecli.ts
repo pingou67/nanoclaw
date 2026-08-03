@@ -25,6 +25,8 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
+import { onecli, onecliJson } from './onecli-cli.js';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MAP_PATH = path.join(ROOT, 'scripts', 'vault-onecli-map.json');
 
@@ -56,10 +58,6 @@ function rbw(args: string[]): string {
   return execFileSync(bin, args, { encoding: 'utf-8', timeout: 30_000 }).replace(/\r?\n$/, '');
 }
 
-function onecli(args: string[]): string {
-  return execFileSync(process.env.ONECLI_BIN || 'onecli', args, { encoding: 'utf-8', timeout: 60_000 });
-}
-
 interface OneCliSecret {
   id: string;
   name: string;
@@ -70,7 +68,7 @@ interface OneCliSecret {
 async function main(): Promise<void> {
   const check = process.argv.includes('--check');
   const mapping = loadMapping(fs.readFileSync(MAP_PATH, 'utf-8'));
-  const secrets = JSON.parse(onecli(['secrets', 'list'])) as OneCliSecret[];
+  const secrets = onecliJson<OneCliSecret>(['secrets', 'list']);
   const byName = new Map(secrets.map((s) => [s.name, s]));
 
   let problems = 0;
