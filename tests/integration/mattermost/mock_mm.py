@@ -51,7 +51,9 @@ CHANNELS = {
     # OpenCode group now that main/adminsys/coding moved to Claude.
     "testor":       {"id": "ch-testor",       "type": "O"},
     "testor-claude": {"id": "ch-testor-claude", "type": "O"},
-    "testor-kimi":  {"id": "ch-testor-kimi",  "type": "O"},
+    # Codex-backed (GPT-5.6 Terra, effort medium) — couvre le 4e provider et,
+    # avec lui, le chemin app-server JSON-RPC + AGENTS.md.
+    "testor-codex": {"id": "ch-testor-codex", "type": "O"},
     "dm":           {"id": "ch-dm",           "type": "D"},
     # Dedicated throwaway channel for the provider-switch regression test —
     # backs a test-only agent group the harness flips opencode↔claude, so no
