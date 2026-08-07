@@ -4,6 +4,16 @@
     "below": "11.0.0",
     "reason": "pnpm 11 n'honore plus only-built-dependencies[] en install global : le postinstall du binaire natif claude-code et le chmod d'agent-browser sont sautés SILENCIEUSEMENT et l'agent crashe au runtime (commentaire container/Dockerfile). Reste aussi en lockstep avec le packageManager du host."
   },
+  "better-sqlite3": {
+    "below": "13.0.0",
+    "reason": "better-sqlite3 13 déclare `engines: { node: \">=22\" }` et ABANDONNE node 20 — or le service tourne sous /usr/bin/node v20 (ExecStart du unit systemd). Installée, elle compile sans broncher puis le processus MEURT SILENCIEUSEMENT à l'ouverture : `pnpm test` part en « Worker exited unexpectedly » sur tous les fichiers touchant la DB, sans message exploitable. La 12.x reste explicitement compatible (`20.x || 22.x || …`), d'où le plafond. Lever cette retenue le jour où le service passera à node 22+ — voir CLAUDE.local.md § node, et se rappeler qu'un binding natif n'a qu'un ABI à la fois. Constaté le 2026-08-07 en tentant 11.10.0 → 13.0.2.",
+    "//": "supply-watch ne lit pas le champ `engines` : cette retenue en tient lieu."
+  },
+  "chat": {
+    "below": "4.29.1",
+    "reason": "Le cœur `chat` et la famille `@chat-adapter/*` bougent EN BLOC — `validate()` dans scripts/skill-directives.ts refuse un adaptateur dont le pin diffère du cœur (garde posée après le décalage 4.27.0 vs chat@4.26.0). Huit skills de canaux upstream (add-slack, add-discord, add-gchat, add-github, add-linear, add-teams, add-telegram, add-whatsapp-cloud) épinglent `@chat-adapter/…@4.29.0`. Monter `chat` seul rend `pnpm test` rouge sur 9 cas ; monter les huit skills créerait de la dérive sur des fichiers upstream qu'on ne possède pas et qu'on n'utilise pas (aucun @chat-adapter installé ici, notre canal est Mattermost). Upstream livre le cœur et ses adaptateurs dans le même commit : lever cette retenue au merge upstream qui les déplace ensemble. Constaté le 2026-08-07 en tentant 4.29.0 → 4.36.0.",
+    "//": "Vérifier avec: pnpm vitest run scripts/skill-conformance.test.ts scripts/skill-directives.test.ts"
+  },
   "zod": {
     "below": "4.4.0",
     "reason": "zod 4.4 change le typage interne (ZodString sans _parse/_getType) et casse ZodRawShapeCompat de @modelcontextprotocol/sdk 1.29.0 — 4 erreurs TS2769 dans mcp-servers/memory/server.ts. Réévaluer au prochain bump du SDK MCP."

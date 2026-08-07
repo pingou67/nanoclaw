@@ -181,7 +181,18 @@ else
     echo "Building NanoClaw agent container image..."
     echo "Image: ${IMAGE_NAME}:${TAG}"
 
-    ${CONTAINER_RUNTIME} build "${BUILD_ARGS[@]}" -t "${IMAGE_NAME}:${TAG}" .
+    # --pull : re-tirer l'image de base à chaque construction (patch fork,
+    # 2026-08-07). Sans lui, docker réutilise indéfiniment le node:22-slim
+    # présent localement — le nôtre avait QUATRE MOIS, si bien qu'un rebuild
+    # remontait fidèlement toutes nos versions npm en laissant la Debian
+    # dessous inchangée, correctifs de sécurité compris. C'est précisément la
+    # fraîcheur que l'image durcie vend ; ici elle coûte une requête HEAD.
+    # NANOCLAW_NO_PULL_BASE=true pour construire hors ligne.
+    PULL_BASE=()
+    if [ "${NANOCLAW_NO_PULL_BASE:-false}" != "true" ]; then
+        PULL_BASE=(--pull)
+    fi
+    ${CONTAINER_RUNTIME} build "${PULL_BASE[@]}" "${BUILD_ARGS[@]}" -t "${IMAGE_NAME}:${TAG}" .
 fi
 
 echo ""

@@ -178,6 +178,36 @@ le réseau compose. Sauvegarde du fichier d'origine à côté, en
 `onecli` — défense en profondeur seulement, désormais, mais à changer (il faut
 `ALTER USER` + `DATABASE_URL` dans le même mouvement).
 
+### Image de base re-tirée à chaque build, et pourquoi pas l'image durcie (2026-08-07)
+
+**Patch : `--pull` dans `container/build.sh`.** Sans lui, docker réutilise
+indéfiniment le `node:22-slim` présent localement. Le nôtre avait **quatre
+mois** : chaque rebuild remontait fidèlement nos versions npm en laissant la
+Debian dessous inchangée, correctifs de sécurité compris. `NANOCLAW_NO_PULL_BASE=true`
+pour construire hors ligne.
+
+**Pourquoi on ne bascule PAS sur l'image durcie** (question posée le 2026-08-07,
+étude faite, décision : non pour l'instant) :
+
+1. **Le verrou `bun.lock` interdit le chemin `pull`.** L'image porte le label
+   `dev.nanoclaw.agent-runner-lock-sha256` ; `build.sh` le compare au
+   `container/agent-runner/bun.lock` du checkout et **refuse** en cas d'écart
+   (lignes ~74-96). Notre lock est celui du fork et bouge à chaque bump de dep
+   agent-runner — une image publiée contre un autre lock sera toujours rejetée.
+2. **Nos providers ne sont pas dedans.** La doc est explicite : « Non-Claude
+   providers: only if the publisher baked the CLI, or you add it ». opencode,
+   codex et agy sont à nous, plus les 8 entrées de `cli-tools.json`.
+3. **Les images dérivées sont par groupe et effacées au refresh** — le
+   mécanisme `install_packages` construit bien `FROM ${CONTAINER_IMAGE}`
+   (`src/container-runner.ts:723`), mais « a refresh clears these pins ».
+
+La variante *« `FROM <durcie>` dans NOTRE Dockerfile, en construisant
+localement »* échapperait aux points 1 et 3 — c'est une ligne à changer. Elle
+reste non évaluée : il faudrait d'abord tirer l'image (compte NanoClaw, adresse
+e-mail collectée, ~800 Mo depuis us-east-1), et son contenu recoupe largement ce
+que notre Dockerfile installe déjà. À rouvrir si la fraîcheur de Chromium
+devient un sujet — c'est `agent-browser` qui le pilote.
+
 ### Reliquat (statu quo : /update-nanoclaw + POST_UPDATE_CHECKLIST)
 
 Les patchs **in-place** de fichiers upstream restent gérés par merge — les

@@ -30,10 +30,10 @@
     "@clack/core": "^1.2.0",
     "@clack/prompts": "^1.2.0",
     "@nanoco/nanoclaw-dashboard": "^0.3.0",
-    "@onecli-sh/sdk": "2.2.1",
-    "better-sqlite3": "11.10.0",
+    "@onecli-sh/sdk": "3.1.0",
+    "better-sqlite3": "12.11.1",
     "chat": "4.29.0",
-    "cron-parser": "5.5.0",
+    "cron-parser": "5.7.0",
     "kleur": "^4.1.5",
     "ws": "^8.20.0",
     "yaml": "^2.9.0"

@@ -6,6 +6,7 @@
  *   - les pins npm de `container/cli-tools.json`
  *   - les ARGs de version du Dockerfile (opencode, bun, pnpm)
  *   - les deps runtime de `container/agent-runner/package.json`
+ *   - les deps HÔTE épinglées exactement (`package.json` racine)
  *   - les binaires hôte montés dans les containers (rtk)
  *   - l'avancée d'`upstream/main` (résumé + analyse d'impact sur nos patchs)
  *
@@ -16,8 +17,15 @@
  * délibéré : bump + rebuild + E2E, ou `scripts/apply-rtk-update.sh` pour rtk.
  *
  * Exclusions documentées :
- *   - deps du host : déjà gouvernées par `minimumReleaseAge` dans
- *     pnpm-workspace.yaml à chaque install.
+ *   - deps HÔTE en RANGE (`^`, `~`) : `minimumReleaseAge` les gouverne
+ *     réellement — un `pnpm install` les fait avancer, sans jamais prendre une
+ *     version trop fraîche. Rien à signaler tant qu'on installe.
+ *     ⚠️ Ce raisonnement ne vaut PAS pour un pin EXACT, qui ne bouge jamais
+ *     tout seul : `minimumReleaseAge` empêche d'installer trop frais, il ne
+ *     dit pas qu'on est en retard. Découvert le 2026-08-05 avec
+ *     `@onecli-sh/sdk` figé en 2.2.1 face à une 3.1.0 publiée — deux majeures
+ *     d'écart sur une dépendance qui intervient à CHAQUE spawn de container,
+ *     et que personne ne surveillait. D'où l'origine `host-deps`.
  *   - binaire agy : pas de flux de version public interrogeable ; se met à
  *     jour via `agy update` lors des maintenances.
  *
@@ -48,6 +56,19 @@ export const COOLDOWN_DAYS = Number(process.env.SUPPLY_WATCH_COOLDOWN_DAYS || '3
 // ---------------------------------------------------------------------------
 // Helpers purs (exportés pour les tests)
 // ---------------------------------------------------------------------------
+
+/**
+ * Une spécification de dépendance est-elle un pin EXACT ?
+ *
+ * C'est la frontière de ce que `minimumReleaseAge` gouverne réellement. Une
+ * range avance au prochain `pnpm install` (sans jamais prendre trop frais) ;
+ * un pin exact ne bouge jamais tout seul et sort donc du radar — d'où sa
+ * surveillance. `1.x` commence par un chiffre mais reste une range : c'est
+ * exactement le genre de cas que le test verrouille.
+ */
+export function isExactPin(range: string): boolean {
+  return /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(range.trim());
+}
 
 /** Comparaison numérique de versions pointées (pas lexicographique). */
 export function compareVersions(a: string, b: string): number {
@@ -125,7 +146,7 @@ export function parseDockerfileArgs(dockerfile: string): Record<string, string> 
 export interface WatchItem {
   name: string;
   /** Où la version est fixée — dit à l'opérateur quoi éditer. */
-  origin: 'cli-tools.json' | 'Dockerfile' | 'agent-runner' | 'host-binary';
+  origin: 'cli-tools.json' | 'Dockerfile' | 'agent-runner' | 'host-binary' | 'host-deps';
   current: string;
   eligible: string | null;
   published: string | null;
@@ -286,6 +307,31 @@ function collectNpmTargets(errors: string[]): NpmTarget[] {
       });
   } catch (e) {
     errors.push(`agent-runner/package.json: ${e instanceof Error ? e.message : e}`);
+  }
+
+  // Deps HÔTE épinglées EXACTEMENT — voir l'en-tête pour pourquoi les ranges
+  // n'y sont pas. Le processus hôte n'est pas dans l'image, mais il parle à la
+  // passerelle et pilote chaque spawn : un retard s'y paie aussi cher.
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8')) as {
+      dependencies?: Record<string, string>;
+    };
+    for (const [name, range] of Object.entries(pkg.dependencies ?? {})) {
+      if (!isExactPin(range)) continue; // une range est gouvernée par minimumReleaseAge
+      targets.push({
+        name,
+        origin: 'host-deps',
+        current: range,
+        applyHint:
+          name === 'better-sqlite3'
+            ? // Piège vécu : binding natif, un seul ABI à la fois. Recompilé sous
+              // le node 22 de pi-node, le service (node 20) crash-loope.
+              'package.json + `pnpm install` SOUS NODE 20 (`PATH=/usr/bin:…`) + `pnpm rebuild better-sqlite3` + tests'
+            : 'package.json + `pnpm install` + `pnpm run build` + tests',
+      });
+    }
+  } catch (e) {
+    errors.push(`package.json (hôte): ${e instanceof Error ? e.message : e}`);
   }
 
   return targets;

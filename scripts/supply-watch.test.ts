@@ -11,6 +11,7 @@ import {
   buildDigest,
   compareVersions,
   fingerprint,
+  isExactPin,
   parseDockerfileArgs,
   loadHolds,
   pickEligibleVersion,
@@ -19,6 +20,33 @@ import {
   type Report,
   type WatchItem,
 } from './supply-watch.js';
+
+/**
+ * La frontière de ce que `minimumReleaseAge` gouverne. Une range avance au
+ * prochain install ; un pin exact ne bouge jamais tout seul et sort du radar.
+ * Angle mort découvert le 2026-08-05 : `@onecli-sh/sdk` figé en 2.2.1 face à
+ * une 3.1.0 publiée, sur une dépendance présente à chaque spawn.
+ */
+describe('isExactPin', () => {
+  it('reconnaît un pin exact, prérelease comprise', () => {
+    expect(isExactPin('2.2.1')).toBe(true);
+    expect(isExactPin('11.10.0')).toBe(true);
+    expect(isExactPin('1.2.3-beta.1')).toBe(true);
+    expect(isExactPin(' 4.29.0 ')).toBe(true);
+  });
+
+  it('écarte toute forme de range — y compris celles qui commencent par un chiffre', () => {
+    for (const r of ['^1.2.0', '~1.2.3', '>=1.0.0', '1.x', '1.2.x', '*', 'latest', '1 || 2']) {
+      expect(isExactPin(r)).toBe(false);
+    }
+  });
+
+  it('écarte les protocoles non-registre', () => {
+    expect(isExactPin('workspace:*')).toBe(false);
+    expect(isExactPin('npm:autre@1.2.3')).toBe(false);
+    expect(isExactPin('file:../local')).toBe(false);
+  });
+});
 
 const NOW = Date.parse('2026-07-29T12:00:00Z');
 const daysAgo = (n: number) => new Date(NOW - n * 86_400_000).toISOString();
