@@ -885,6 +885,17 @@ def _group_mcp_servers(label: str) -> set[str]:
     except json.JSONDecodeError:
         return set()
 
+# Signaux qu'un appel MCP a échoué, même si la réponse cite le marqueur
+# attendu. Volontairement étroits : ce sont des formulations d'ERREUR, pas des
+# mots qu'une réponse réussie emploierait (une liste de dossiers IMAP ou
+# d'entity_id n'en contient aucun).
+MCP_FAILURE_MARKERS = (
+    "502", "503", "504", "bad gateway", "gateway timeout",
+    "impossible de", "n'a pas pu", "erreur", "error:", "failed",
+    "unauthorized", "timed out", "indisponible",
+)
+
+
 def run_mcp_matrix() -> list[Result]:
     out: list[Result] = []
     servers_by_label = {label: _group_mcp_servers(label) for label, _, _ in MCP_CHANNEL_CANDIDATES}
@@ -918,8 +929,17 @@ def run_mcp_matrix() -> list[Result]:
             out.append(Result(rname, False, "no reply within timeout"))
             continue
         msg = reply.get("message", "")
-        out.append(Result(rname, expected.lower() in msg.lower(),
-                          f"expected {expected!r} — got {msg[:80]!r}"))
+        # Un marqueur attendu peut apparaître DANS un message d'échec : l'agent
+        # annonce que l'appel a raté et cite au passage l'entité demandée. Vécu
+        # le 2026-08-07 — ha-mcp renvoyait 502, la réponse disait « impossible
+        # de lister les entités … liste_dachats … », et le scénario passait au
+        # vert. Un serveur MCP en panne doit être ROUGE : sinon la suite couvre
+        # la panne au lieu de la révéler.
+        failure = next((m for m in MCP_FAILURE_MARKERS if m in msg.lower()), None)
+        ok = expected.lower() in msg.lower() and failure is None
+        detail = (f"marqueur d'échec {failure!r} dans la réponse — serveur MCP en panne ? "
+                  f"got {msg[:80]!r}") if failure else f"expected {expected!r} — got {msg[:80]!r}"
+        out.append(Result(rname, ok, detail))
         print(f"  {out[-1]}", flush=True)
     return out
 
