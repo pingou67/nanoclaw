@@ -87,10 +87,11 @@ registerProviderContainerConfig('opencode', (ctx) => {
     env.OPENCODE_REASONING_EFFORT = ctx.containerConfig.effort;
   }
 
-  // Per-group opt-in for opencode npm plugins (e.g. `opencode-claude-memory`
-  // for shared persistent memory). The host passes this through the group's
-  // `env` map (set via `ncl groups config env-set`). Empty by default so
-  // groups without a memory plugin don't pay the cost.
+  // Per-group opt-in for opencode npm plugins. The host passes this through the
+  // group's `env` map (set via `ncl groups config env-set`). No group uses it
+  // today — its last consumer, opencode-claude-memory, was removed on
+  // 2026-08-11. The extension point stays: it costs nothing while empty, and
+  // the shim filter below is what makes a plugin usable behind the proxy.
   const plugins = ctx.groupEnv.NANOCLAW_OPENCODE_PLUGINS ?? ctx.hostEnv.NANOCLAW_OPENCODE_PLUGINS;
   if (plugins) env.NANOCLAW_OPENCODE_PLUGINS = plugins;
 
