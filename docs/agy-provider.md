@@ -157,11 +157,6 @@ the same shared file. Any pre-existing `AGENTS.md` content is folded into
 all three providers** — switch a group's `provider` and its accumulated memory
 follows.
 
-> Caveat: an opencode group that enables the `opencode-claude-memory` plugin
-> (`memory_*` tools) writes to a separate structured store, not `CLAUDE.local.md`
-> — that path is not covered by this symlink. The default (no plugin) uses
-> `CLAUDE.local.md`.
-
 ## See also
 
 - `.claude/skills/add-agy/SKILL.md` — install + auth + configuration.
