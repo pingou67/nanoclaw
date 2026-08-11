@@ -181,9 +181,9 @@ export class AgyProvider implements AgentProvider {
             }
             const cleanServers: Record<string, unknown> = {};
             for (const [name, cfg] of Object.entries(options.mcpServers)) {
-              if (cfg.url) {
+              if (cfg.type === 'http') {
                 // Gemini extensions support remote MCP via httpUrl.
-                cleanServers[name] = { httpUrl: cfg.url, ...(cfg.headers ? { headers: cfg.headers } : {}) };
+                cleanServers[name] = { httpUrl: cfg.url };
               } else {
                 cleanServers[name] = { command: cfg.command, args: cfg.args, env: cfg.env };
               }
