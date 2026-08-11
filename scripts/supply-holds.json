@@ -16,6 +16,6 @@
   },
   "zod": {
     "below": "4.4.0",
-    "reason": "zod 4.4 change le typage interne (ZodString sans _parse/_getType) et casse ZodRawShapeCompat de @modelcontextprotocol/sdk 1.29.0 — 4 erreurs TS2769 dans mcp-servers/memory/server.ts. Réévaluer au prochain bump du SDK MCP."
+    "reason": "zod 4.4 change le typage interne (ZodString sans _parse/_getType) et casse ZodRawShapeCompat de @modelcontextprotocol/sdk — constaté en 1.29.0 par 4 erreurs TS2769 dans mcp-servers/memory/server.ts. ⚠️ Ce fichier a été SUPPRIMÉ le 2026-08-11 (code mort) et le SDK est passé en 1.30.0 : la justification d'origine n'est plus vérifiable telle quelle. La retenue est maintenue par prudence, pas par preuve — mcp-servers/vikunja/server.ts utilise le même couple zod + SDK et retomberait probablement dessus. À trancher en tentant zod 4.4 et en lançant le typecheck container : si c'est vert, retirer cette entrée."
   }
 }

@@ -4,10 +4,6 @@
     {
       "from": "resources/opencode-claude-memory.js",
       "to": "container/opencode-plugins/opencode-claude-memory.js"
-    },
-    {
-      "from": "resources/memory-mcp-server.ts",
-      "to": "container/agent-runner/src/mcp-servers/memory/server.ts"
     }
   ],
   "requiredLines": [
