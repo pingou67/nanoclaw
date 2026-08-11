@@ -870,10 +870,10 @@ MCP_SCENARIOS = [
      "UNIQUEMENT avec leurs entity_id, séparés par des virgules.",
      {None: "liste_dachats"},
      ["famille"]),
-    ("memory",
-     "Utilise le serveur MCP memory pour lister l'index de ta mémoire persistante et "
-     "réponds UNIQUEMENT avec OK-MEMORY si l'appel a réussi.",
-     {None: "OK-MEMORY"}),
+    # Le scénario `memory` a été retiré le 2026-08-11 avec le serveur MCP qu'il
+    # exerçait : la migration vers l'arbre mémoire OKF (2026-07-19) l'avait rendu
+    # inutile, plus aucun groupe ne le déclarait, et il ne produisait plus qu'un
+    # SKIP permanent — du bruit qui ressemble à de la couverture.
 ]
 
 def _group_mcp_servers(label: str) -> set[str]:
