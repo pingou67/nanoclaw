@@ -5,6 +5,19 @@ description: Add a Vikunja (task management) MCP server to agent groups — list
 
 # Add Vikunja MCP server
 
+> **⚠️ La source de vérité est EXTERNE depuis le 2026-08-11.** Le serveur vit
+> dans son propre dépôt : `~/DEV/mcp-vikunja`
+> (`ssh://git@gitea.pegs.fr:2222/pegon/mcp-vikunja.git`). **Toute correction s'y
+> fait d'abord**, avec commit et push ; on reporte ensuite dans
+> `container/agent-runner/src/mcp-servers/vikunja/server.ts` puis
+> `skills-sync sync add-vikunja`. Corriger d'abord ici ferait diverger les deux
+> copies sans que rien ne le signale.
+>
+> Le code est identique **à l'en-tête près** (celui d'ici décrit le montage
+> `/app/src`). Note d'exploitation : `~/DEV` est un montage partagé entre l'hôte
+> nanoclaw et lorien, et **lorien n'a pas de clé gitea** — pousser depuis l'hôte
+> nanoclaw (`git -C /mnt/home/pegon/DEV/mcp-vikunja push`).
+
 An in-repo stdio MCP server for [Vikunja](https://vikunja.io) task management. It runs with `bun` from the bind-mounted agent-runner tree (`/app/src/mcp-servers/vikunja/server.ts`) and resolves the MCP SDK from `/app/node_modules` — no image rebuild, no extra dependency, provider-agnostic.
 
 Features: task list/search/create/update/complete, project resolution by **name or id**, per-group **project scoping** (`VIKUNJA_PROJECT_SCOPE`) so e.g. a family group only sees the `FAMILLE` project, and a `bulk_update_tasks` that goes through the same field allowlist as single updates.
