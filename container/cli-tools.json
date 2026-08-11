@@ -1,7 +1,6 @@
 [
   { "name": "agent-browser", "version": "0.33.2", "onlyBuilt": true },
   { "name": "@anthropic-ai/claude-code", "version": "2.1.221", "onlyBuilt": true },
-  { "name": "opencode-claude-memory", "version": "1.7.3" },
   { "name": "@gongrzhe/server-gmail-autoauth-mcp", "version": "1.1.11" },
   { "name": "@cocal/google-calendar-mcp", "version": "2.6.2" },
   { "name": "imap-mcp-server", "version": "1.5.2" },

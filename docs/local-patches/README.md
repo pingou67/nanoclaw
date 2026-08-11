@@ -65,7 +65,6 @@ miroir généré par `scripts/skills-sync.ts` et gardé en phase par
 | `/add-opencode` | branche `providers` (origin) | provider opencode PATCHÉ (SSE par query, plugins, tool-progress) + `summarize.ts` + `mcp-to-opencode` + tests + dep `@opencode-ai/sdk` + `ARG OPENCODE_VERSION` Dockerfile + guard Dockerfile + lignes barrels ×2 |
 | `/add-agy` | branche `providers` (origin) | provider agy (host + container) + tests + `docs/agy-provider.md` + lignes barrels ×2 |
 | `/add-rtk` | `resources/` | plugin opencode `container/opencode-plugins/rtk.js` (le binaire + hook claude + timer d'update sont hors dépôt, voir le SKILL.md) |
-| `/add-opencode-memory` | `resources/` | shim `container/opencode-plugins/opencode-claude-memory.js` + entrée `cli-tools.json` |
 | `/add-vikunja` | `resources/` | serveur MCP `container/agent-runner/src/mcp-servers/vikunja/` |
 
 Après toute modification d'un fichier skill-owned installé :

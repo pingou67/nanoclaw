@@ -9,7 +9,7 @@ describe('parsePluginEnv', () => {
   });
 
   it('parses a valid JSON array of strings', () => {
-    expect(parsePluginEnv('["opencode-claude-memory"]')).toEqual(['opencode-claude-memory']);
+    expect(parsePluginEnv('["un-plugin"]')).toEqual(['un-plugin']);
     expect(parsePluginEnv('["a", "b", "c"]')).toEqual(['a', 'b', 'c']);
   });
 

@@ -218,7 +218,6 @@ Four types. See [CONTRIBUTING.md](CONTRIBUTING.md).
 | `/add-agy` | Google Antigravity (Gemini) provider |
 | `/add-kimi` | Kimi Code (MoonshotAI) provider — host binary + OAuth mounted |
 | `/add-rtk` | rtk token-compression (claude hook, opencode plugin, agy rules) |
-| `/add-opencode-memory` | `memory_*` tools for opencode groups |
 | `/add-vikunja` | Vikunja task-management MCP server |
 
 ## Contributing
