@@ -27,8 +27,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Verify dispatch source
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+          DISPATCH_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ "$DISPATCH_REPOSITORY" != "nanocoai/nanoclaw" ]; then
+            echo "::error::Release runs only in nanocoai/nanoclaw; got $DISPATCH_REPOSITORY."
+            exit 1
+          fi
+          if [ "$DISPATCH_REF" != "refs/heads/main" ]; then
+            echo "::error::Select the main branch when dispatching Release; got $DISPATCH_REF."
+            exit 1
+          fi
+
   verify:
-    if: github.repository == 'nanocoai/nanoclaw' && github.ref == 'refs/heads/main'
+    needs: dispatch
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -48,7 +67,6 @@ jobs:
           bun-version: 1.3.12
 
       - name: Verify protected release environment
-        if: inputs.mode == 'publish'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -62,15 +80,24 @@ jobs:
             .can_admins_bypass == false and
             .deployment_branch_policy.protected_branches == false and
             .deployment_branch_policy.custom_branch_policies == true and
-            any(.protection_rules[];
-              .type == "required_reviewers" and
-              .prevent_self_review == true and
-              (.reviewers | length) == 2 and
-              all(.reviewers[]; .type == "User") and
-              ([.reviewers[].reviewer.login] | sort) == ["gavrielc", "omri-maya"]
+            ([.protection_rules[] | select(.type == "required_reviewers")] | length) == 1 and
+            ([.protection_rules[] | select(.type == "required_reviewers")][0].prevent_self_review == true) and
+            all(
+              [.protection_rules[] | select(.type == "required_reviewers")][0].reviewers[];
+              .type == "User"
             )
           ' "$RUNNER_TEMP/release-environment.json" >/dev/null; then
-            echo "::error::The release environment must require only gavrielc and omri-maya, prevent self-review and admin bypass, and use custom branch policies."
+            echo "::error::The release environment must have one user-reviewer rule, prevent self-review and admin bypass, and use custom branch policies."
+            exit 1
+          fi
+
+          ACTUAL_REVIEWERS=$(jq -c '
+            [.protection_rules[] | select(.type == "required_reviewers") | .reviewers[].reviewer.login]
+            | sort
+          ' "$RUNNER_TEMP/release-environment.json")
+          EXPECTED_REVIEWERS='["gavrielc","omri-maya"]'
+          if [ "$ACTUAL_REVIEWERS" != "$EXPECTED_REVIEWERS" ]; then
+            echo "::error::Release reviewer roster drift: expected $EXPECTED_REVIEWERS, got $ACTUAL_REVIEWERS. Update the workflow and RELEASING.md together in a reviewed pull request."
             exit 1
           fi
 
@@ -264,13 +291,33 @@ jobs:
             echo "::notice::GitHub Release $TAG already matches the requested publication; nothing to change."
           fi
 
-          git fetch --force origin --tags
-          write_tag_state
-          write_release_state
-          FINAL_STATE=$(node scripts/release.mjs plan "$RELEASE_VERSION" "$TARGET_SHA" \
-            "$RUNNER_TEMP/tag-state.json" "$RUNNER_TEMP/release-state.json" \
-            "$RUNNER_TEMP/release-notes.md")
-          test "$FINAL_STATE" = "already-published"
+          READBACK_ATTEMPTS=6
+          READBACK_DELAY_SECONDS=2
+          FINAL_STATE="pending"
+
+          for ((attempt = 1; attempt <= READBACK_ATTEMPTS; attempt++)); do
+            git fetch --force origin --tags
+            write_tag_state
+            write_release_state
+            FINAL_STATE=$(node scripts/release.mjs readback "$RELEASE_VERSION" "$TARGET_SHA" \
+              "$RUNNER_TEMP/tag-state.json" "$RUNNER_TEMP/release-state.json" \
+              "$RUNNER_TEMP/release-notes.md")
+
+            if [ "$FINAL_STATE" = "already-published" ]; then
+              break
+            fi
+            if [ "$attempt" -eq "$READBACK_ATTEMPTS" ]; then
+              echo "::error::Timed out waiting for GitHub to return the exact immutable release after $READBACK_ATTEMPTS attempts."
+              node scripts/release.mjs plan "$RELEASE_VERSION" "$TARGET_SHA" \
+                "$RUNNER_TEMP/tag-state.json" "$RUNNER_TEMP/release-state.json" \
+                "$RUNNER_TEMP/release-notes.md"
+              exit 1
+            fi
+
+            echo "::notice::Release read-back is still propagating (attempt $attempt/$READBACK_ATTEMPTS); retrying in ${READBACK_DELAY_SECONDS}s."
+            sleep "$READBACK_DELAY_SECONDS"
+            READBACK_DELAY_SECONDS=$((READBACK_DELAY_SECONDS * 2))
+          done
 
           RELEASE_URL=$(jq -r .html_url "$RUNNER_TEMP/release-state.json")
           {

@@ -373,14 +373,24 @@ function formatTaskMessage(msg: MessageInRow): string {
   const now = new Date();
   const content = parseContent(msg.content);
   const from = originAttr(msg);
-  const time = formatLocalTime(msg.timestamp, TIMEZONE);
-  const runAt = formatLocalTime(now.toISOString(), TIMEZONE);
-  const scheduledMs = Date.parse(msg.timestamp);
+  // Fusion 2026-08-11 : upstream a corrigé la SOURCE de l'heure prévue
+  // (`process_after` plutôt que `timestamp` — c'est l'échéance réelle de
+  // l'occurrence) et rendu `current_time` explicite. On garde leur source et
+  // leur attribut, et on conserve notre avertissement de retard, qu'ils n'ont
+  // pas : sans lui, un backlog rejoué produit un digest daté de la veille.
+  const scheduledIso = msg.process_after ?? msg.timestamp;
+  const time = formatLocalTime(scheduledIso, TIMEZONE);
+  const currentTime = new Date().toLocaleString('en-US', {
+    timeZone: TIMEZONE,
+    dateStyle: 'full',
+    timeStyle: 'short',
+  });
+  const scheduledMs = Date.parse(scheduledIso);
   const lateMs = Number.isFinite(scheduledMs) ? now.getTime() - scheduledMs : 0;
   const parts: string[] = [];
   if (lateMs > LATE_TASK_RUN_MS) {
     parts.push(
-      `[Late run: this occurrence was scheduled for ${time} but is executing NOW (${runAt}). ` +
+      `[Late run: this occurrence was scheduled for ${time} but is executing NOW (${currentTime}). ` +
         `Produce the deliverable for the present moment — do not date or scope it to the original slot.]`,
       '',
     );
@@ -389,7 +399,7 @@ function formatTaskMessage(msg: MessageInRow): string {
     parts.push('Script output:', JSON.stringify(content.scriptOutput, null, 2), '');
   }
   parts.push('Instructions:', stripLegacyTaskContract(content.prompt || ''));
-  return `<task${from} time="${escapeXml(time)}" run_at="${escapeXml(runAt)}">${parts.join('\n')}</task>`;
+  return `<task${from} time="${escapeXml(time)}" current_time="${escapeXml(currentTime)}">${parts.join('\n')}</task>`;
 }
 
 const LEGACY_TASK_CONTRACT_MARKERS = [

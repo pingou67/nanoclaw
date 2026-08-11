@@ -121,16 +121,13 @@ export interface QueryInput {
   };
 }
 
-export interface McpServerConfig {
-  /** stdio server (default when `command` is set). */
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
-  /** Remote server — passed through to the provider SDK verbatim. */
-  type?: 'http' | 'sse';
-  url?: string;
-  headers?: Record<string, string>;
-}
+// Union upstream adoptée le 2026-08-11 en remplacement de notre patch e8808f2
+// (voir src/container-config.ts pour le raisonnement). Elle est plus stricte :
+// un serveur porte SOIT `command`, SOIT `url`, et le typage l'impose — fini les
+// gardes `if (cfg.command)` sur un objet où tout était optionnel.
+export type McpServerConfig =
+  | { type?: 'stdio'; command: string; args?: string[]; env?: Record<string, string> }
+  | { type: 'http'; url: string };
 
 export interface AgentQuery {
   /** Push a follow-up message into the active query. */

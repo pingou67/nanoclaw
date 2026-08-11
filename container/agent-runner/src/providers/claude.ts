@@ -75,18 +75,25 @@ export function classifyRateLimitEvent(
 // - AskUserQuestion: SDK returns a placeholder instead of blocking on a
 //   real answer — we have mcp__nanoclaw__ask_user_question that persists
 //   the question and blocks on the real reply.
+// - SendMessage: addresses Claude Code's own in-session subagents, which are
+//   unrelated to NanoClaw agent groups — but the name reads as the obvious
+//   way to message another agent, so an agent that just called
+//   mcp__nanoclaw__create_agent reaches for it and gets "No agent named 'x'
+//   is currently addressable". mcp__nanoclaw__send_message is the real
+//   agent-to-agent path (it resolves the destination map in inbound.db).
 // - EnterPlanMode / ExitPlanMode / EnterWorktree / ExitWorktree: Claude
 //   Code UI affordances; in a headless container they'd appear stuck.
 // - DesignSync: desktop design-tool integration — nothing to sync with in a
 //   headless container (~9.3KB/turn schema).
 // - ReportFindings: code-review-reporting UI affordance with no headless
 //   host surface to receive it (~1.9KB/turn schema).
-const SDK_DISALLOWED_TOOLS = [
+export const SDK_DISALLOWED_TOOLS = [
   'CronCreate',
   'CronDelete',
   'CronList',
   'ScheduleWakeup',
   'AskUserQuestion',
+  'SendMessage',
   'EnterPlanMode',
   'ExitPlanMode',
   'EnterWorktree',
@@ -113,7 +120,7 @@ const DISALLOWED_TOOL_PATTERNS = [`${CLAUDE_AI_CONNECTOR_PREFIX}*`];
 // added via `add_mcp_server` (or wired in container.json directly) is
 // reachable to the agent — without this, the SDK's allowedTools filter
 // silently drops every MCP namespace not listed here.
-const TOOL_ALLOWLIST = [
+export const TOOL_ALLOWLIST = [
   'Bash',
   'Read',
   'Write',
@@ -127,7 +134,6 @@ const TOOL_ALLOWLIST = [
   'TaskStop',
   'TeamCreate',
   'TeamDelete',
-  'SendMessage',
   'TodoWrite',
   'ToolSearch',
   'Skill',
@@ -151,14 +157,14 @@ function toSdkMcpServers(
   servers: Record<string, McpServerConfig>,
 ): Record<string, SdkMcpServerConfig> {
   const out: Record<string, SdkMcpServerConfig> = {};
+  // Discrimination sur `type` depuis l'adoption de l'union upstream
+  // (2026-08-11) : `command` et `url` ne coexistent plus sur un même objet, le
+  // typage l'interdit. `sse` et `headers` ont disparu du modèle — nous n'en
+  // avions aucun usage (seul `ha` est distant, en 'http' et sans en-tête).
   for (const [name, cfg] of Object.entries(servers)) {
-    if (cfg.url) {
-      out[name] = {
-        type: cfg.type === 'sse' ? 'sse' : 'http',
-        url: cfg.url,
-        ...(cfg.headers ? { headers: cfg.headers } : {}),
-      };
-    } else if (cfg.command) {
+    if (cfg.type === 'http') {
+      out[name] = { type: 'http', url: cfg.url };
+    } else {
       out[name] = { command: cfg.command, args: cfg.args ?? [], env: cfg.env ?? {} };
     }
   }

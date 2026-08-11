@@ -137,40 +137,29 @@ export function summarizeCodexItem(item: unknown): string | null {
 }
 
 /**
- * Narrow our loose McpServerConfig into the two shapes codex's config.toml can
- * express (mirrors `toSdkMcpServers` in claude.ts): a REMOTE server carries a
- * `url`, a stdio one a `command`.
+ * Traduit `McpServerConfig` vers les deux formes du config.toml de codex
+ * (pendant de `toSdkMcpServers` dans claude.ts) : `url` pour un serveur
+ * distant, `command`/`args`/`env` pour un stdio.
  *
- * Fork-local context: this install supports remote MCP servers (`type:
- * 'http' | 'sse'` with a `url`, e.g. ha-mcp), which is why `command` is
- * optional on our side while upstream's core requires it — upstream's codex
- * payload therefore only ever modelled stdio.
- *
- * The one shape codex genuinely cannot express is a remote server needing
- * ARBITRARY headers: it offers `bearer_token_env_var` and nothing else. Such a
- * server is dropped — but NEVER silently. A dropped MCP server shows up only as
- * tools that mysteriously don't exist; that exact failure mode cost a long
- * diagnosis under the kimi provider (2026-07-28). Naming the server and the
- * reason turns a ghost into a one-line answer.
+ * Depuis l'adoption de l'union upstream (2026-08-11), plus AUCUN serveur ne peut
+ * être écarté, et les deux gardes que portait cette fonction ont disparu avec
+ * leur cause :
+ *  - « ni command ni url » n'est plus représentable — le typage l'interdit ;
+ *  - « en-têtes personnalisés » non plus : le modèle upstream n'a pas de champ
+ *    `headers`. La limite de codex (uniquement `bearer_token_env_var`, jamais
+ *    d'en-tête arbitraire) reste vraie, elle n'est simplement plus atteignable
+ *    par la configuration. Si `headers` revenait un jour côté cœur, il faudrait
+ *    RÉTABLIR le rejet nommé sur stderr : un MCP droppé en silence ne se voit
+ *    que par des outils absents, mode de panne qui a coûté un long diagnostic
+ *    sous kimi le 2026-07-28.
  */
 export function toCodexMcpServers(servers: Record<string, McpServerConfig>): Record<string, CodexMcpServer> {
   const out: Record<string, CodexMcpServer> = {};
   for (const [name, cfg] of Object.entries(servers)) {
-    if (cfg.url) {
-      if (cfg.headers && Object.keys(cfg.headers).length > 0) {
-        console.error(
-          `[codex] MCP server "${name}" skipped: it needs custom headers ` +
-            `(${Object.keys(cfg.headers).join(', ')}), and codex only supports a bearer token read from an ` +
-            `env var. Its tools will NOT be available to this group.`,
-        );
-        continue;
-      }
-      out[name] = { url: cfg.url };
-    } else if (cfg.command) {
-      out[name] = { command: cfg.command, ...(cfg.args ? { args: cfg.args } : {}), ...(cfg.env ? { env: cfg.env } : {}) };
-    } else {
-      console.error(`[codex] MCP server "${name}" skipped: neither a command nor a url. Check its container config.`);
-    }
+    out[name] =
+      cfg.type === 'http'
+        ? { url: cfg.url }
+        : { command: cfg.command, ...(cfg.args ? { args: cfg.args } : {}), ...(cfg.env ? { env: cfg.env } : {}) };
   }
   return out;
 }

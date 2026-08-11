@@ -5,10 +5,10 @@
  *
  * Ce qui est réellement en jeu : un serveur MCP écarté ne se manifeste que par
  * des outils qui n'existent pas. Sous kimi, ce mode de panne nous a coûté un
- * long diagnostic (2026-07-28). D'où deux exigences testées ici — la bonne
- * forme est émise, et tout écart est NOMMÉ sur stderr.
+ * long diagnostic (2026-07-28). Exigence testée ici : la bonne
+ * forme est émise pour chaque cas représentable.
  */
-import { describe, expect, it, spyOn } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 
 import { toCodexMcpServers } from './codex.js';
 
@@ -32,28 +32,19 @@ describe('toCodexMcpServers', () => {
     expect(out.local).not.toHaveProperty('url');
   });
 
-  it('écarte un distant à en-têtes personnalisés — et le NOMME', () => {
-    const err = spyOn(console, 'error').mockImplementation(() => {});
+  // Les deux tests de rejet (en-têtes personnalisés, « ni command ni url »)
+  // ont été retirés le 2026-08-11 avec leur cause : l'union upstream rend ces
+  // deux formes INEXPRIMABLES, le typage les interdit avant l'exécution. Si
+  // `headers` revenait un jour côté cœur, rétablir le rejet NOMMÉ sur stderr
+  // en même temps que le champ — un MCP droppé en silence ne se manifeste que
+  // par des outils absents (diagnostic coûteux sous kimi, 2026-07-28).
+
+  it('ne perd aucun serveur : tout ce qui est représentable est traduit', () => {
     const out = toCodexMcpServers({
-      avecEntetes: { type: 'http', url: 'https://x.test/mcp', headers: { Authorization: 'Bearer z' } },
+      distant: { type: 'http', url: 'https://x.test/mcp' },
+      local: { command: 'bun', args: ['run', 'x.ts'] },
+      minimal: { command: 'node' },
     });
-    expect(out).toEqual({});
-    const msg = err.mock.calls.flat().join(' ');
-    expect(msg).toContain('avecEntetes'); // le nom du serveur, pas un message générique
-    expect(msg).toContain('Authorization');
-    err.mockRestore();
-  });
-
-  it('écarte — en le nommant — un serveur qui n’a ni command ni url', () => {
-    const err = spyOn(console, 'error').mockImplementation(() => {});
-    expect(toCodexMcpServers({ vide: {} })).toEqual({});
-    expect(err.mock.calls.flat().join(' ')).toContain('vide');
-    err.mockRestore();
-  });
-
-  it('un en-têtes vide n’est pas un en-têtes — le serveur passe', () => {
-    expect(toCodexMcpServers({ ok: { type: 'http', url: 'https://x.test/mcp', headers: {} } })).toEqual({
-      ok: { url: 'https://x.test/mcp' },
-    });
+    expect(Object.keys(out).sort()).toEqual(['distant', 'local', 'minimal']);
   });
 });

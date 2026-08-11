@@ -411,6 +411,8 @@ const ERR_ROUTING = {
   inReplyTo: 'm1',
 };
 
+// Fusion 2026-08-11 : le helper (nous) et le test du garde
+// « accumulated-only » (upstream) sont indépendants — on garde les deux.
 function makeActiveQuery(q: AgentQuery, routing: RoutingContext = ERR_ROUTING, ids: string[] = ['m1']): ActiveQuery {
   return {
     jobId: 'fg',
@@ -426,6 +428,32 @@ function makeActiveQuery(q: AgentQuery, routing: RoutingContext = ERR_ROUTING, i
     live: { outboundId: null, platformMsgId: null, lastUpdateAt: 0, latestText: '', eventCount: 0 },
   };
 }
+
+it('does not push accumulated-only follow-ups into an active query', async () => {
+  const pushes: string[] = [];
+
+  async function* events(): AsyncGenerator<ProviderEvent> {
+    yield { type: 'init', continuation: 'sess-1' };
+    insertMessage('m1', 'chat', { sender: 'A', text: 'context only' }, { trigger: 0 });
+    await new Promise((resolve) => setTimeout(resolve, 750));
+  }
+
+  // Test d'upstream, réécrit sur NOTRE signature : `processQuery` prend un
+  // objet ActiveQuery depuis l'ajout du système d'arrière-plan, là où upstream
+  // passe encore sept arguments positionnels. Le helper existe pour ça.
+  await processQuery(
+    makeActiveQuery(
+      { push: (message: string) => pushes.push(message), end: () => {}, events: events(), abort: () => {} },
+      ERR_ROUTING,
+      [],
+    ),
+    'claude',
+    undefined,
+  );
+
+  expect(pushes).toHaveLength(0);
+  expect(getPendingMessages().map((m) => m.id)).toEqual(['m1']);
+});
 
 describe('error result with no <message> envelope', () => {
   it('delivers a budget/billing error to the triggering channel and does not nudge', async () => {

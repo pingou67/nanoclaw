@@ -29,11 +29,12 @@ export function mcpServersToOpenCodeConfig(
   const out: Record<string, OpenCodeMcpEntry> = {};
   if (!servers) return out;
   for (const [name, cfg] of Object.entries(servers)) {
-    if (cfg.url) {
+    // Discrimination sur `type` depuis l'union upstream (2026-08-11) ;
+    // `headers` a disparu du modèle, aucun de nos serveurs n'en portait.
+    if (cfg.type === 'http') {
       out[name] = {
         type: 'remote',
         url: cfg.url,
-        ...(cfg.headers && Object.keys(cfg.headers).length > 0 ? { headers: cfg.headers } : {}),
         enabled: true,
       };
     } else if (cfg.command) {

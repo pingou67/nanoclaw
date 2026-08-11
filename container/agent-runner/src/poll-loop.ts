@@ -1390,6 +1390,15 @@ export async function processQuery(
         const newMessages = pending.filter((m) => m.kind !== 'system' && !inlineIds.has(m.id));
         if (newMessages.length === 0) return;
 
+        // Garde upstream (2026-08-11), placé AVANT notre logique d'auto-bg et
+        // non après : un contexte simplement accumulé (trigger=0) ne doit
+        // engager la requête tiède d'aucune façon — ni la réveiller, ni la
+        // basculer en arrière-plan. Sans cet ordre, une accumulation suffirait
+        // à déclencher l'auto-bg, exactement ce que le garde veut éviter.
+        // Sûr ici : `markProcessing` n'intervient que plus bas, donc ce retour
+        // anticipé ne laisse aucun message réclamé derrière lui.
+        if (!newMessages.some((m) => m.trigger === 1)) return;
+
         // Smart auto-bg: only fires when ALL of these hold:
         //   - threshold > 0 (env override `NANOCLAW_AUTO_BG_THRESHOLD_MS=0` disables)
         //   - still a foreground query

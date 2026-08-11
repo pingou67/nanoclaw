@@ -88,8 +88,11 @@ async function main(): Promise<void> {
     // L'URL d'un serveur distant peut PORTER le secret dans son chemin
     // (ha-mcp : `http://hôte:port/private_<token>`). Ce log part sur stderr,
     // que le host recopie dans `stderrTail` de logs/nanoclaw.error.log — un
-    // fichier durable et lisible. On ne journalise donc que l'origine.
-    const origin = serverConfig.command ?? (serverConfig.url ? new URL(serverConfig.url).origin : '?');
+    // fichier durable et lisible. On ne journalise donc que l'ORIGINE, qui
+    // exclut le chemin. On garde notre variante plutôt que le `(HTTP)` nu
+    // d'upstream : même garantie, mais elle nomme l'hôte, ce qui fait la
+    // différence quand un serveur distant ne répond pas.
+    const origin = serverConfig.type === 'http' ? new URL(serverConfig.url).origin : serverConfig.command;
     log(`Additional MCP server: ${name} (${origin})`);
   }
 

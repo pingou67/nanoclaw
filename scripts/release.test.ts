@@ -1,6 +1,17 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
-import { assembleReleaseBody, changelogSection, publicationPlan, verifyRelease } from './release.mjs';
+import {
+  assembleReleaseBody,
+  changelogSection,
+  publicationPlan,
+  publicationReadbackStatus,
+  verifyRelease,
+} from './release.mjs';
+
+const releaseWorkflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+const repositoryChangelog = readFileSync(new URL('../CHANGELOG.md', import.meta.url), 'utf8');
 
 const changelog = `# Changelog
 
@@ -29,6 +40,15 @@ describe('release metadata', () => {
     expect(() => verifyRelease({ changelog, packageVersion: '2.1.53', version: '2.1.54' })).toThrow('does not match');
   });
 
+  it('keeps recovered operator-facing configuration and Photon migration in the v2.1.54 record', () => {
+    const notes = changelogSection(repositoryChangelog, '2.1.54');
+
+    expect(notes).toContain('DEFAULT_AGENT_PROVIDER');
+    expect(notes).toContain('CONTAINER_CPU_LIMIT');
+    expect(notes).toContain('CONTAINER_MEMORY_LIMIT');
+    expect(notes).toContain('IMESSAGE_BACKEND=local|hosted');
+  });
+
   it('rejects missing, duplicate, empty, and prefixed versions', () => {
     expect(() => changelogSection(changelog, 'v2.1.54')).toThrow('without a v prefix');
     expect(() => changelogSection(changelog, '2.1.55')).toThrow('found 0');
@@ -38,6 +58,36 @@ describe('release metadata', () => {
     expect(() =>
       changelogSection(changelog.replace('- First curated change.\n- Second curated change.', 'No bullets.'), '2.1.54'),
     ).toThrow('at least one release-note bullet');
+  });
+});
+
+describe('release workflow safeguards', () => {
+  it('fails wrong-repository and wrong-ref dispatches instead of skipping verification', () => {
+    expect(releaseWorkflow).toContain('name: Verify dispatch source');
+    expect(releaseWorkflow).toContain('if [ "$DISPATCH_REPOSITORY" != "nanocoai/nanoclaw" ]');
+    expect(releaseWorkflow).toContain('if [ "$DISPATCH_REF" != "refs/heads/main" ]');
+    expect(releaseWorkflow).toContain('verify:\n    needs: dispatch');
+    expect(releaseWorkflow).not.toContain(
+      "if: github.repository == 'nanocoai/nanoclaw' && github.ref == 'refs/heads/main'",
+    );
+  });
+
+  it('checks the environment in both modes and keeps the exact reviewer authorization boundary', () => {
+    expect(releaseWorkflow).toContain('- name: Verify protected release environment\n        env:');
+    expect(releaseWorkflow).not.toContain(
+      "- name: Verify protected release environment\n        if: inputs.mode == 'publish'",
+    );
+    expect(releaseWorkflow).toContain('EXPECTED_REVIEWERS=\'["gavrielc","omri-maya"]\'');
+    expect(releaseWorkflow).toContain('Release reviewer roster drift');
+  });
+
+  it('bounds post-publication API propagation retries and fails closed after the deadline', () => {
+    expect(releaseWorkflow).toContain('READBACK_ATTEMPTS=6');
+    expect(releaseWorkflow).toContain('READBACK_DELAY_SECONDS=2');
+    expect(releaseWorkflow).toContain('node scripts/release.mjs readback');
+    expect(releaseWorkflow).toContain('sleep "$READBACK_DELAY_SECONDS"');
+    expect(releaseWorkflow).toContain('Timed out waiting for GitHub to return the exact immutable release');
+    expect(releaseWorkflow).not.toContain('test "$FINAL_STATE" = "already-published"');
   });
 });
 
@@ -101,6 +151,17 @@ describe('publication recovery', () => {
     });
   }
 
+  function readback(overrides: Record<string, unknown> = {}) {
+    return publicationReadbackStatus({
+      expectedBody,
+      release: matchingRelease,
+      tagState: annotatedTag,
+      targetSha,
+      version: '2.1.54',
+      ...overrides,
+    });
+  }
+
   it('creates both objects when neither exists', () => {
     expect(plan()).toBe('create-tag-and-release');
   });
@@ -111,6 +172,22 @@ describe('publication recovery', () => {
 
   it('treats an exact published release as an idempotent success', () => {
     expect(plan({ release: matchingRelease, tagState: annotatedTag })).toBe('already-published');
+  });
+
+  it('retries only exact release states that are still propagating', () => {
+    expect(readback()).toBe('already-published');
+    expect(readback({ release: null })).toBe('pending');
+    expect(readback({ release: { ...matchingRelease, immutable: false } })).toBe('pending');
+    expect(readback({ release: { ...matchingRelease, immutable: undefined } })).toBe('pending');
+  });
+
+  it.each([
+    ['missing tag and release', { release: null, tagState: { exists: false } }, 'unsafe plan'],
+    ['wrong title', { release: { ...matchingRelease, name: 'Wrong' } }, 'title'],
+    ['changed body', { release: { ...matchingRelease, body: 'Different' } }, 'body'],
+    ['wrong tag target', { tagState: { ...annotatedTag, sha: 'b'.repeat(40) } }, 'not workflow target'],
+  ])('fails post-publication read-back immediately for %s', (_name, overrides, message) => {
+    expect(() => readback(overrides)).toThrow(message);
   });
 
   it.each([
