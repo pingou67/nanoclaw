@@ -13,6 +13,17 @@ description: Add a Vikunja (task management) MCP server to agent groups — list
 > `skills-sync sync add-vikunja`. Corriger d'abord ici ferait diverger les deux
 > copies sans que rien ne le signale.
 >
+> **🚫 NE PAS supprimer la copie de cet arbre au motif qu'elle ferait doublon.**
+> Ce n'est pas une copie de confort : `/app/src` est le montage en lecture seule
+> de `container/agent-runner/src` (`container-runner.ts`, ~l.414), et **sept
+> groupes** exécutent littéralement
+> `bun run /app/src/mcp-servers/vikunja/server.ts` — dm, famille, work, agc,
+> testor, testor-claude, testor-codex. La supprimer ferait échouer le démarrage
+> du serveur MCP au prochain spawn de chacun : aucune erreur au build, aucun
+> test rouge, juste des outils `vikunja` qui n'apparaissent plus. Choix confirmé
+> par Pegs le 2026-08-11 : le code exécuté reste ici, les modifications viennent
+> du dépôt.
+>
 > Le code est identique **à l'en-tête près** (celui d'ici décrit le montage
 > `/app/src`). Note d'exploitation : `~/DEV` est un montage partagé entre l'hôte
 > nanoclaw et lorien, et **lorien n'a pas de clé gitea** — pousser depuis l'hôte
