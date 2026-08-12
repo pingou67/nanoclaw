@@ -95,10 +95,12 @@ registerProviderContainerConfig('opencode', (ctx) => {
   const plugins = ctx.groupEnv.NANOCLAW_OPENCODE_PLUGINS ?? ctx.hostEnv.NANOCLAW_OPENCODE_PLUGINS;
   if (plugins) env.NANOCLAW_OPENCODE_PLUGINS = plugins;
 
-  // Shared opencode plugins (e.g. the rtk token-compression rewrite) — mounted
-  // RO at opencode's GLOBAL plugin dir (~/.config/opencode/plugin with the
-  // container HOME=/home/node and XDG_CONFIG_HOME unset), so they load for
-  // every session regardless of the server cwd.
+  // Shared opencode plugins — mounted RO at opencode's GLOBAL plugin dir
+  // (~/.config/opencode/plugin with the container HOME=/home/node and
+  // XDG_CONFIG_HOME unset), so they load for every session regardless of the
+  // server cwd. The directory is absent today (its last occupant, the rtk
+  // rewrite, was removed on 2026-08-12); the existsSync guard means recreating
+  // `container/opencode-plugins/` is all it takes to use the seam again.
   const mounts = [{ hostPath: opencodeDir, containerPath: '/opencode-xdg', readonly: false }];
   const sharedPluginDir = path.join(process.cwd(), 'container', 'opencode-plugins');
   if (fs.existsSync(sharedPluginDir)) {
