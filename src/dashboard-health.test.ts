@@ -95,7 +95,7 @@ describe('healthLogLines', () => {
     expect(third[0]).toContain('INFO b: repaired');
 
     // info-level checks never log
-    const fourth = healthLogLines([{ name: 'rtk-savings', status: 'info', detail: 'x' }]);
+    const fourth = healthLogLines([{ name: 'some-metric', status: 'info', detail: 'x' }]);
     expect(fourth).toEqual([]);
   });
 });

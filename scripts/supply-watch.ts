@@ -7,14 +7,16 @@
  *   - les ARGs de version du Dockerfile (opencode, bun, pnpm)
  *   - les deps runtime de `container/agent-runner/package.json`
  *   - les deps HÔTE épinglées exactement (`package.json` racine)
- *   - les binaires hôte montés dans les containers (rtk)
+ *   (l'origine `host-binary` — un binaire hôte monté dans les containers — n'a
+ *   plus d'occupant depuis le retrait de rtk le 2026-08-12 ; le type reste, il
+ *   redeviendra utile au prochain binaire monté)
  *   - l'avancée d'`upstream/main` (résumé + analyse d'impact sur nos patchs)
  *
  * LA règle : rien ne s'installe tout seul, et une version n'est proposée que
  * publiée depuis ≥ 3 jours (même délai que `minimumReleaseAge` côté pnpm —
  * la fenêtre où la plupart des compromissions npm sont détectées et retirées).
  * Ce script NOTIFIE (un DM Mattermost groupé) ; l'application reste un acte
- * délibéré : bump + rebuild + E2E, ou `scripts/apply-rtk-update.sh` pour rtk.
+ * délibéré : bump + rebuild + E2E.
  *
  * Exclusions documentées :
  *   - deps HÔTE en RANGE (`^`, `~`) : `minimumReleaseAge` les gouverne
@@ -224,7 +226,7 @@ export function buildDigest(report: Report, opts: { allClear?: boolean } = {}): 
 
   if (parts.length === 0) return null;
   return (
-    `🛰️ **Veille supply-chain nanoclaw**\n_Rien ne s'installe tout seul — application délibérée : bump + rebuild + E2E (rtk : \`scripts/apply-rtk-update.sh\`)._\n\n` +
+    `🛰️ **Veille supply-chain nanoclaw**\n_Rien ne s'installe tout seul — application délibérée : bump + rebuild + E2E._\n\n` +
     parts.join('\n\n')
   );
 }
@@ -362,40 +364,6 @@ async function checkNpm(
   return items;
 }
 
-/** rtk : releases GitHub, même règle des 3 jours sur published_at. */
-async function checkRtk(now: number, errors: string[]): Promise<WatchItem | null> {
-  const current = binaryVersion(path.join(os.homedir(), '.local', 'bin', 'rtk'));
-  if (!current) {
-    errors.push('rtk: binaire absent ou illisible à ~/.local/bin/rtk');
-    return null;
-  }
-  try {
-    const res = await fetch('https://api.github.com/repos/rtk-ai/rtk/releases?per_page=15', {
-      headers: { accept: 'application/vnd.github+json' },
-    });
-    if (!res.ok) throw new Error(`GitHub HTTP ${res.status}`);
-    const releases = (await res.json()) as Array<{ tag_name: string; published_at: string; prerelease: boolean; draft: boolean }>;
-    const eligible = releases
-      .filter((r) => !r.prerelease && !r.draft)
-      .map((r) => ({ version: r.tag_name.replace(/^v/, ''), published: r.published_at }))
-      .filter((r) => (now - Date.parse(r.published)) / 86_400_000 >= COOLDOWN_DAYS)
-      .sort((a, b) => compareVersions(a.version, b.version))
-      .pop();
-    return {
-      name: 'rtk',
-      origin: 'host-binary',
-      current,
-      eligible: eligible?.version ?? null,
-      published: eligible?.published?.slice(0, 10) ?? null,
-      behind: eligible ? compareVersions(current, eligible.version) < 0 : false,
-      applyHint: '`scripts/apply-rtk-update.sh` (checksum vérifié, install atomique)',
-    };
-  } catch (e) {
-    errors.push(`rtk: ${e instanceof Error ? e.message : e}`);
-    return null;
-  }
-}
-
 /** Upstream : fetch + résumé lisible + impact sur nos fichiers patchés. */
 function checkUpstream(lastSeen: string | null, errors: string[]): { news: UpstreamNews | null; head: string | null } {
   try {
@@ -495,8 +463,6 @@ async function main(): Promise<void> {
     /* pas de holds — comportement par défaut */
   }
   const items: WatchItem[] = await checkNpm(collectNpmTargets(errors), now, errors, holds);
-  const rtk = await checkRtk(now, errors);
-  if (rtk) items.push(rtk);
   const { news: upstream, head: upstreamHead } = checkUpstream(state.upstreamLastSeen ?? null, errors);
 
   const report: Report = { checkedAt: new Date(now).toISOString(), items, upstream, errors };

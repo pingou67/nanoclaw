@@ -64,14 +64,13 @@ miroir généré par `scripts/skills-sync.ts` et gardé en phase par
 | `/add-mattermost` | branche `channels` (origin) | `src/channels/mattermost.ts` + guard de registration + harness E2E `tests/integration/mattermost/` + dep `ws` + ligne barrel |
 | `/add-opencode` | branche `providers` (origin) | provider opencode PATCHÉ (SSE par query, plugins, tool-progress) + `summarize.ts` + `mcp-to-opencode` + tests + dep `@opencode-ai/sdk` + `ARG OPENCODE_VERSION` Dockerfile + guard Dockerfile + lignes barrels ×2 |
 | `/add-agy` | branche `providers` (origin) | provider agy (host + container) + tests + `docs/agy-provider.md` + lignes barrels ×2 |
-| `/add-rtk` | `resources/` | plugin opencode `container/opencode-plugins/rtk.js` (le binaire + hook claude + timer d'update sont hors dépôt, voir le SKILL.md) |
 | `/add-vikunja` | `resources/` | serveur MCP `container/agent-runner/src/mcp-servers/vikunja/` |
 
 Après toute modification d'un fichier skill-owned installé :
 `pnpm exec tsx scripts/skills-sync.ts sync <skill>` (recommit la branche de
 modules et/ou recopie les resources).
 
-Après chaque `/update-nanoclaw` : `pnpm test` suffit à prouver que les six
+Après chaque `/update-nanoclaw` : `pnpm test` suffit à prouver que les quatre
 skills restent fonctionnels/installables — y compris ceux qui ne seraient pas
 installés (le test vérifie alors que leurs cibles d'édition existent encore).
 La suite E2E (`tests/integration/mattermost/run_suite.py`) **skippe**
@@ -143,10 +142,9 @@ famille GPT-5.6 et donc incapable de sélectionner Terra. Justifié dans le
 SKILL.md lui-même. La veille `scripts/supply-watch.ts` suit l'entrée
 automatiquement (elle est dans `cli-tools.json`).
 
-rtk : pas de hook natif possible (`rtk hook` parle claude/cursor/gemini/copilot/
-droid, **pas codex**) — la consigne vit dans
-`groups/mattermost_testor-codex/instructions.prepend.md`, que
-`readGroupPersona` injecte en section *Persona* de l'`AGENTS.md` composé.
+rtk a été RETIRÉ de toute l'installation le 2026-08-12 (voir la section
+suivante) : c'est précisément l'absence de `rtk hook codex` qui a rendu la
+compression incohérente à travers la flotte.
 
 ### Bascule de 6 groupes claude → codex (2026-08-12) — deux pannes muettes
 
@@ -185,11 +183,20 @@ depuis claude. Les deux échouent en silence — c'est ce qui les rend coûteux.
    coffre (imap) fonctionnaient — d'où une panne isolée, facile à prendre pour
    une lubie du modèle plutôt que pour un défaut de configuration.
 
-**rtk est perdu sur ces 6 groupes.** La compression passe par le hook
-`PreToolUse` de Claude Code ; `rtk hook` ne parle pas codex (cf. section
-précédente). Le binaire reste monté mais rien ne l'appelle. Le seul recours est
-la consigne en clair dans `instructions.prepend.md`, comme pour
-`testor-codex` — non appliquée aux 6 à ce jour.
+**rtk a été retiré de toute l'installation dans la foulée (2026-08-12).** La
+compression passait par le hook `PreToolUse` de Claude Code, et `rtk hook` ne
+parle pas codex : après la bascule elle n'aurait plus couvert qu'une minorité
+de groupes, les autres devant porter une consigne en clair coûteuse en
+contexte. Plutôt qu'un demi-dispositif, suppression complète — montage
+`container-runner`, hook des 11 `settings.json`, plugin opencode, règles agy,
+consigne codex, skill `/add-rtk`, `scripts/apply-rtk-update.sh`, origine
+`host-binary` de la veille et mesure `rtk-savings` du tableau de bord.
+
+⚠️ Le binaire `~/.local/bin/rtk` **reste sur l'hôte** — il sert les sessions
+Claude Code de l'opérateur (`RTK.md` global), sans rapport avec nanoclaw. Sa
+version n'est donc plus surveillée par `supply-watch`. Le seam de plugins
+opencode est conservé : recréer `container/opencode-plugins/` suffit à le
+réactiver.
 
 Le périmètre OneCLI a suivi la bascule : le secret `Codex` a été accordé aux 6
 agents (`agents set-secrets`, mode `selective` conservé), en union avec
@@ -268,7 +275,7 @@ Les patchs **in-place** de fichiers upstream restent gérés par merge — les
 convertir exigerait des points d'extension côté upstream (hooks) :
 
 - `src/container-runner.ts` — mount OAuth Claude Pro (CLAUDE_PRO_AUTH.md),
-  mount global rtk, injection env par groupe, durcissements build/kill
+  injection env par groupe, durcissements build/kill
 - `container/agent-runner/src/providers/claude.ts` — contexte 1M,
   live-status/progress (importe `summarize.ts` fourni par /add-opencode),
   abort dur, thinking
@@ -303,8 +310,8 @@ PR upstream :
   expiry OAuth Claude + état des timers systemd (claude-token-refresh,
   nanoclaw-supply-watch — la veille unifiée qui a remplacé rtk-update /
   upstream-watch / cli-tools-watch le 2026-07-29), fichiers credentials MCP
-  présents par groupe, token agy, OneCLI UI joignable, économies rtk
-  (host + sessions), marqueur E2E, drift skills-sync (1×/h). Sorties :
+  présents par groupe, token agy, OneCLI UI joignable, marqueur E2E,
+  drift skills-sync (1×/h). Sorties :
   clé `health` du snapshot, lignes `[health]` dans la page Logs (sur
   changement d'état uniquement), et `data/health.json` en local.
   `collectSessionRuntime()` remonte aussi bg_jobs/live_enabled/continuations

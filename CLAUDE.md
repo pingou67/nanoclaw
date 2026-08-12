@@ -217,7 +217,6 @@ Four types. See [CONTRIBUTING.md](CONTRIBUTING.md).
 | `/add-opencode` | OpenCode provider (fork-patched: per-query SSE, plugins, tool-progress) |
 | `/add-agy` | Google Antigravity (Gemini) provider |
 | `/add-kimi` | Kimi Code (MoonshotAI) provider — host binary + OAuth mounted |
-| `/add-rtk` | rtk token-compression (claude hook, opencode plugin, agy rules) |
 | `/add-vikunja` | Vikunja task-management MCP server |
 
 ## Contributing
@@ -280,11 +279,10 @@ An agent group can override the install timezone (`ncl groups config update --ti
 
 `pnpm-workspace.yaml` sets `minimumReleaseAge: 4320` (3 days). New package versions must exist on the npm registry for 3 days before pnpm resolves them.
 
-**Everything outside that policy is covered by `scripts/supply-watch.ts`** — the unified supply-chain watch. One rule everywhere: **nothing installs itself, and a version is only proposed once it has been public for ≥ 3 days** (same window as `minimumReleaseAge`). One daily user timer (`nanoclaw-supply-watch`, 09:00) checks every version pin that ends up in the agent image or on the agent PATH — `container/cli-tools.json`, the Dockerfile `*_VERSION` ARGs (opencode, bun, pnpm), the agent-runner runtime deps (resolved from `bun.lock`), the host-mounted binaries (rtk via GitHub releases) — plus upstream/main drift (commit summary + overlap with our local patches), and sends ONE Mattermost DM digest only when something changed.
+**Everything outside that policy is covered by `scripts/supply-watch.ts`** — the unified supply-chain watch. One rule everywhere: **nothing installs itself, and a version is only proposed once it has been public for ≥ 3 days** (same window as `minimumReleaseAge`). One daily user timer (`nanoclaw-supply-watch`, 09:00) checks every version pin that ends up in the agent image or on the agent PATH — `container/cli-tools.json`, the Dockerfile `*_VERSION` ARGs (opencode, bun, pnpm), the agent-runner runtime deps (resolved from `bun.lock`) — plus upstream/main drift (commit summary + overlap with our local patches), and sends ONE Mattermost DM digest only when something changed.
 
 ```bash
 pnpm exec tsx scripts/supply-watch.ts --dry-run   # print the digest without posting
-scripts/apply-rtk-update.sh [version] [--force]   # the ONLY sanctioned rtk update path (checksum-verified, refuses <3-day releases)
 ```
 
 Applying stays deliberate: bump the pin, rebuild the image, run the E2E suite. Exclusions (documented in the script header): host pnpm deps (already governed by `minimumReleaseAge` at install) and the `agy` binary (no public version feed — update via `agy update` during maintenance).

@@ -51,7 +51,7 @@ export PATH="/usr/bin:$PNPM_HOME:$PATH"    # node 20 = celui du service
 illisible par le node 20 du service (`115`), et l'hôte crash-loop. Vécu le
 2026-08-01 : seize crashes d'affilée. Voir `CLAUDE.local.md`.
 
-Ne pas remplacer le PATH complet non plus — `rtk` et `onecli` doivent y rester,
+Ne pas remplacer le PATH complet non plus — `onecli` doit y rester,
 sinon les commandes de cette checklist échouent avec un `command not found`
 trompeur.
 
@@ -99,7 +99,7 @@ taire.
 
 ## §0. Skills du fork — vérification automatique (2026-07-02)
 
-Les modules mattermost/opencode/agy + rtk/opencode-memory/vikunja sont
+Les modules mattermost/opencode/agy + vikunja sont
 **skill-owned** (voir README.md, carte skills vs reliquat) — leurs sections
 historiques ci-dessous (§3, §4, §5 pour Mattermost) sont couvertes
 automatiquement :

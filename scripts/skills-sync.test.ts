@@ -24,7 +24,7 @@ describe('skill payload sync', () => {
 
   it('has at least the converted fork skills', () => {
     const names = skills.map((s) => s.name);
-    for (const expected of ['add-mattermost', 'add-opencode', 'add-agy', 'add-rtk', 'add-vikunja']) {
+    for (const expected of ['add-mattermost', 'add-opencode', 'add-agy', 'add-vikunja']) {
       expect(names).toContain(expected);
     }
   });

@@ -194,11 +194,16 @@ describe('buildDigest', () => {
   });
 
   it('groupe les retards par origine avec la consigne d’application', () => {
-    const digest = buildDigest(report([item({ name: 'mcp-searxng' }), item({ name: 'rtk', origin: 'host-binary', applyHint: 'apply-rtk' })]));
+    // `host-binary` n'a plus d'occupant depuis le retrait de rtk (2026-08-12),
+    // mais le groupement par origine reste la règle : un nom fictif suffit à
+    // le prouver, et le jour où un binaire monté revient, rien à réécrire.
+    const digest = buildDigest(
+      report([item({ name: 'mcp-searxng' }), item({ name: 'un-binaire', origin: 'host-binary', applyHint: 'apply-x' })]),
+    );
     expect(digest).toContain('**cli-tools.json**');
     expect(digest).toContain('**host-binary**');
     expect(digest).toContain('`mcp-searxng` 1.0.0 → **1.1.0**');
-    expect(digest).toContain('apply-rtk');
+    expect(digest).toContain('apply-x');
   });
 
   it('retourne null quand il n’y a ni retard ni upstream', () => {

@@ -10,7 +10,6 @@
  *  - agy (Antigravity) host OAuth token presence
  *  - OneCLI web UI reachability
  *  - systemd maintenance timers (supply-watch unifiée, token refresh)
- *  - rtk token savings (host + per-session containers)
  *  - per-session runtime: persisted bg jobs, live_enabled, continuation keys
  *  - last E2E run marker (written by tests/integration/mattermost/run_suite.py)
  *  - skills-sync drift (throttled — one check per hour)
@@ -250,63 +249,11 @@ function checkMcpCredentialFiles(): HealthCheck[] {
   return checks;
 }
 
-/* ------------------------------------------------------------------ */
-/* rtk savings                                                         */
-/* ------------------------------------------------------------------ */
-
-function sumRtkDb(dbPath: string): { commands: number; saved: number } | null {
-  try {
-    const db = new Database(dbPath, { readonly: true, fileMustExist: true });
-    try {
-      const row = db.prepare('SELECT count(*) AS n, coalesce(sum(saved_tokens),0) AS saved FROM commands').get() as {
-        n: number;
-        saved: number;
-      };
-      return { commands: row.n, saved: row.saved };
-    } finally {
-      db.close();
-    }
-  } catch {
-    return null;
-  }
-}
-
-function collectRtkSavings(): HealthCheck {
-  let commands = 0;
-  let saved = 0;
-  let sources = 0;
-  const hostDb = path.join(os.homedir(), '.local', 'share', 'rtk', 'history.db');
-  const hostSum = sumRtkDb(hostDb);
-  if (hostSum) {
-    commands += hostSum.commands;
-    saved += hostSum.saved;
-    sources += 1;
-  }
-  // Per-session opencode plugin stats: data/v2-sessions/<gid>/<sid>/opencode-xdg/rtk/history.db
-  const sessionsRoot = path.join(DATA_DIR, 'v2-sessions');
-  try {
-    for (const gid of fs.readdirSync(sessionsRoot)) {
-      const groupDir = path.join(sessionsRoot, gid);
-      if (!fs.statSync(groupDir).isDirectory()) continue;
-      for (const sid of fs.readdirSync(groupDir)) {
-        const rtkDb = path.join(groupDir, sid, 'opencode-xdg', 'rtk', 'history.db');
-        const sum = fs.existsSync(rtkDb) ? sumRtkDb(rtkDb) : null;
-        if (sum) {
-          commands += sum.commands;
-          saved += sum.saved;
-          sources += 1;
-        }
-      }
-    }
-  } catch {
-    /* sessions dir may not exist yet */
-  }
-  return {
-    name: 'rtk-savings',
-    status: 'info',
-    detail: `${saved.toLocaleString('fr-FR')} tokens économisés sur ${commands} commandes (${sources} source(s))`,
-  };
-}
+// La mesure `rtk-savings` a été retirée le 2026-08-12 avec rtk lui-même : plus
+// aucun container ne monte le binaire, donc la moitié « par session » de
+// l'agrégat ne pouvait plus rien trouver, et la moitié « hôte » mesurait les
+// sessions Claude Code de l'opérateur — hors périmètre de la santé de nanoclaw.
+// `rtk gain` la donne toujours pour l'hôte.
 
 /* ------------------------------------------------------------------ */
 /* Per-session runtime (bg jobs, live_enabled, continuations)          */
@@ -451,7 +398,6 @@ export async function collectHealth(): Promise<HealthCheck[]> {
     ...timers,
     onecli,
     ...checkMcpCredentialFiles(),
-    collectRtkSavings(),
     checkE2eMarker(),
     skillsSyncCache,
     ...checkContinuationMismatches(collectSessionRuntime()),
