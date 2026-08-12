@@ -148,6 +148,53 @@ droid, **pas codex**) — la consigne vit dans
 `groups/mattermost_testor-codex/instructions.prepend.md`, que
 `readGroupPersona` injecte en section *Persona* de l'`AGENTS.md` composé.
 
+### Bascule de 6 groupes claude → codex (2026-08-12) — deux pannes muettes
+
+`adminsys`, `coding`, `famille`, `work`, `work-ei` et `dm` sont passés en
+`codex` / `gpt-5.6-terra` / effort `medium`. La bascule a révélé deux défauts
+que `testor-codex` ne pouvait pas exposer, parce qu'un groupe **créé
+directement** sur codex ne suit pas le même chemin qu'un groupe **migré**
+depuis claude. Les deux échouent en silence — c'est ce qui les rend coûteux.
+
+1. **`materializeTemplateSkills` plantait tout spawn d'un groupe migré**
+   (`src/group-skills.ts`). Le `.claude-shared/skills/` d'un groupe claude ne
+   contient que des liens symboliques vers `/app/skills/<nom>` — des chemins
+   *container*, qui pendent côté hôte. Le `statSync` suivait le lien → ENOENT
+   → l'exception remontait jusqu'à `spawnContainer`. Résultat :
+   `wakeContainer failed`, host-sweep relance le même spawn toutes les 60 s
+   **indéfiniment**, et le groupe reste muet sans rien afficher à l'utilisateur.
+   Corrigé en `readdirSync(..., {withFileTypes:true})` (sémantique lstat, un
+   lien n'est jamais un répertoire). Un groupe né sur codex n'a pas ce dossier,
+   d'où l'angle mort. Test : `src/group-skills.test.ts`.
+
+2. **Les serveurs MCP lancés par codex perdaient le proxy OneCLI**
+   (`container/agent-runner/src/providers/codex.ts`). Le bloc `env` d'un
+   serveur stdio **remplace** l'environnement au lieu de l'étendre : sans
+   `HTTP(S)_PROXY` ni `NODE_EXTRA_CA_CERTS`, le serveur sort du périmètre de la
+   passerelle. Celui dont le secret est injecté dans un **en-tête** prend alors
+   un 401, plante au démarrage, et codex l'écarte — la panne ne se voit que par
+   des outils absents. `vikunja` était donc muet sur `dm`/`famille`/`work`, et
+   **sur `testor-codex` depuis son installation le 2026-08-03** sans que rien ne
+   le signale. `toCodexMcpServers` réinjecte désormais les variables réseau
+   (l'`env` déclaré du groupe garde le dernier mot) ; les serveurs distants ne
+   sont pas concernés, codex ouvre lui-même la connexion. Tests :
+   `codex-mcp-shapes.test.ts`.
+
+   ⚠️ Ce défaut ne touche QUE les secrets livrés par injection d'en-tête. Les
+   serveurs à OAuth sur fichier (gmail, google-calendar) ou à référence de
+   coffre (imap) fonctionnaient — d'où une panne isolée, facile à prendre pour
+   une lubie du modèle plutôt que pour un défaut de configuration.
+
+**rtk est perdu sur ces 6 groupes.** La compression passe par le hook
+`PreToolUse` de Claude Code ; `rtk hook` ne parle pas codex (cf. section
+précédente). Le binaire reste monté mais rien ne l'appelle. Le seul recours est
+la consigne en clair dans `instructions.prepend.md`, comme pour
+`testor-codex` — non appliquée aux 6 à ce jour.
+
+Le périmètre OneCLI a suivi la bascule : le secret `Codex` a été accordé aux 6
+agents (`agents set-secrets`, mode `selective` conservé), en union avec
+`Vikunja` là où le serveur MCP le justifie — jamais par symétrie.
+
 ### OneCLI — ce que `docs/onecli-upgrades.md` ne dit pas de CETTE installation (2026-08-03)
 
 Trois écarts constatés en appliquant le doc upstream. Les connaître évite de

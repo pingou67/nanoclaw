@@ -60,6 +60,24 @@ describe('materializeTemplateSkills', () => {
     expect(fs.lstatSync(path.join(dest, 'shared')).isSymbolicLink()).toBe(true);
   });
 
+  // A group migrated from Claude to a surfaces-owning provider carries the
+  // Claude plane's shared-skill symlinks in the SOURCE dir, pointing at
+  // container paths that dangle on the host. A following stat throws ENOENT,
+  // and from the spawn path that bricks the group: host-sweep retries the same
+  // failing spawn forever with nothing shown to the user. Reproduced live on
+  // 2026-08-12 (adminsys, dm, … → codex).
+  it('skips dangling shared-skill symlinks in the source instead of throwing', () => {
+    templateSkill('g5', 'widget', 'SKILL.md', 'body');
+    const src = path.join(DATA_DIR, 'v2-sessions', 'g5', '.claude-shared', 'skills');
+    fs.symlinkSync('/app/skills/agent-browser', path.join(src, 'agent-browser'));
+    const dest = path.join(TEST_ROOT, 'grp5', '.agents', 'skills');
+
+    expect(() => materializeTemplateSkills('g5', dest)).not.toThrow();
+
+    expect(fs.readFileSync(path.join(dest, 'widget', 'SKILL.md'), 'utf-8')).toBe('body');
+    expect(fs.existsSync(path.join(dest, 'agent-browser'))).toBe(false);
+  });
+
   it('does not destroy skills when dest equals the source (Claude reads source directly)', () => {
     templateSkill('g4', 'widget', 'SKILL.md', 'body');
     const src = path.join(DATA_DIR, 'v2-sessions', 'g4', '.claude-shared', 'skills');

@@ -39,6 +39,39 @@ describe('toCodexMcpServers', () => {
   // en même temps que le champ — un MCP droppé en silence ne se manifeste que
   // par des outils absents (diagnostic coûteux sous kimi, 2026-07-28).
 
+  // Le bloc env d'un stdio REMPLACE l'environnement côté codex. Sans
+  // réinjection, le serveur sort du périmètre du proxy OneCLI : celui dont le
+  // secret voyage dans un en-tête prend un 401, plante, et codex l'écarte —
+  // panne visible seulement par des outils absents (vécu le 2026-08-12).
+  describe('environnement réseau hérité', () => {
+    const PROXY = { HTTPS_PROXY: 'http://x:tok@gw:10255', NODE_EXTRA_CA_CERTS: '/tmp/ca.pem' };
+
+    it('réinjecte proxy et CA dans un serveur stdio qui n’a pas d’env', () => {
+      const out = toCodexMcpServers({ vikunja: { command: 'bun' } }, PROXY);
+      expect(out.vikunja).toEqual({ command: 'bun', env: PROXY });
+    });
+
+    it('fusionne avec l’env du groupe sans l’écraser', () => {
+      const out = toCodexMcpServers({ vikunja: { command: 'bun', env: { VIKUNJA_URL: 'https://v.test' } } }, PROXY);
+      expect(out.vikunja).toEqual({ command: 'bun', env: { ...PROXY, VIKUNJA_URL: 'https://v.test' } });
+    });
+
+    it('laisse le groupe surcharger une variable héritée', () => {
+      const out = toCodexMcpServers({ s: { command: 'bun', env: { HTTPS_PROXY: 'http://direct' } } }, PROXY);
+      expect((out.s as { env: Record<string, string> }).env.HTTPS_PROXY).toBe('http://direct');
+    });
+
+    it('n’ajoute rien à un serveur distant — codex ouvre lui-même la connexion', () => {
+      const out = toCodexMcpServers({ ha: { type: 'http', url: 'https://x.test/mcp' } }, PROXY);
+      expect(out.ha).toEqual({ url: 'https://x.test/mcp' });
+    });
+
+    it('n’invente pas de variable absente du parent', () => {
+      const out = toCodexMcpServers({ s: { command: 'bun' } }, {});
+      expect(out.s).toEqual({ command: 'bun' });
+    });
+  });
+
   it('ne perd aucun serveur : tout ce qui est représentable est traduit', () => {
     const out = toCodexMcpServers({
       distant: { type: 'http', url: 'https://x.test/mcp' },

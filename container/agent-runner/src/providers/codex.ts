@@ -153,15 +153,65 @@ export function summarizeCodexItem(item: unknown): string | null {
  *    que par des outils absents, mode de panne qui a coûté un long diagnostic
  *    sous kimi le 2026-07-28.
  */
-export function toCodexMcpServers(servers: Record<string, McpServerConfig>): Record<string, CodexMcpServer> {
+export function toCodexMcpServers(
+  servers: Record<string, McpServerConfig>,
+  parentEnv: Record<string, string | undefined> = process.env,
+): Record<string, CodexMcpServer> {
   const out: Record<string, CodexMcpServer> = {};
   for (const [name, cfg] of Object.entries(servers)) {
-    out[name] =
-      cfg.type === 'http'
-        ? { url: cfg.url }
-        : { command: cfg.command, ...(cfg.args ? { args: cfg.args } : {}), ...(cfg.env ? { env: cfg.env } : {}) };
+    if (cfg.type === 'http') {
+      out[name] = { url: cfg.url };
+      continue;
+    }
+    // Le bloc `env` d'un serveur stdio REMPLACE l'environnement côté codex : il
+    // n'hérite pas de celui du container. Sans réinjection, un serveur MCP perd
+    // le proxy OneCLI et son CA, sort donc du périmètre de la passerelle — et
+    // celui dont le secret est injecté dans un en-tête prend un 401. Il plante
+    // au démarrage, codex l'écarte, et la panne ne se voit que par des outils
+    // absents. Vécu le 2026-08-12 : vikunja muet sur dm/famille/work après la
+    // bascule, et sur testor-codex depuis son installation le 2026-08-03.
+    // Le `env` déclaré du groupe garde le dernier mot.
+    const env = { ...inheritedNetworkEnv(parentEnv), ...(cfg.env ?? {}) };
+    out[name] = {
+      command: cfg.command,
+      ...(cfg.args ? { args: cfg.args } : {}),
+      ...(Object.keys(env).length > 0 ? { env } : {}),
+    };
   }
   return out;
+}
+
+/**
+ * Variables qui rattachent un processus enfant au proxy OneCLI et à son CA.
+ * Même intention que `CODEX_ENV_ALLOWLIST` (codex-app-server.ts), appliquée
+ * cette fois aux serveurs MCP que codex lance lui-même.
+ */
+const MCP_NETWORK_ENV_KEYS = [
+  'ALL_PROXY',
+  'CURL_CA_BUNDLE',
+  'DENO_CERT',
+  'GIT_SSL_CAINFO',
+  'HTTPS_PROXY',
+  'HTTP_PROXY',
+  'NODE_EXTRA_CA_CERTS',
+  'NODE_USE_ENV_PROXY',
+  'NO_PROXY',
+  'REQUESTS_CA_BUNDLE',
+  'SSL_CERT_DIR',
+  'SSL_CERT_FILE',
+  'all_proxy',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+] as const;
+
+function inheritedNetworkEnv(parentEnv: Record<string, string | undefined>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of MCP_NETWORK_ENV_KEYS) {
+    const value = parentEnv[key];
+    if (value) env[key] = value;
+  }
+  return env;
 }
 
 export class CodexProvider implements AgentProvider {
