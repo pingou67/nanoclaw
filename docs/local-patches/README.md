@@ -202,7 +202,7 @@ Le périmètre OneCLI a suivi la bascule : le secret `Codex` a été accordé au
 agents (`agents set-secrets`, mode `selective` conservé), en union avec
 `Vikunja` là où le serveur MCP le justifie — jamais par symétrie.
 
-### Jeton ChatGPT expiré — le symptôme ment (2026-08-13, OUVERT)
+### Jeton ChatGPT expiré — le symptôme ment (2026-08-13, RÉSOLU)
 
 Découvert par la suite E2E du 13/08 : **16 scénarios rouges sur 28**, tous sur
 des groupes codex, tous avec le même texte de réponse :
@@ -254,12 +254,43 @@ l'adaptateur s'était bien reconnecté — les `Mattermost WS ready` du journal 
 prouvent. Ne pas partir en chasse à la régression d'adaptateur avant d'avoir
 neutralisé la panne d'authentification.
 
-La passerelle tourne ici en `ghcr.io/onecli/onecli:latest`, **en avance sur le
-pin** `versions.json` (`onecli-gateway: 1.36.0`) — cohérent avec l'écart déjà
-constaté le 2026-08-03 (section suivante). Deux voies, non tranchées :
-ré-authentifier le secret `Codex` par l'IHM (`http://127.0.0.1:10254`), ce qui
-repousse l'échéance sans corriger le refresh ; ou traiter le défaut de la
-passerelle elle-même.
+**Résolution — passerelle montée en 1.45.0, épinglée.** Le correctif est nommé
+dans les notes de version amont :
+
+> **v1.43.1 (2026-07-25)** — *gateway: send client_id on OpenAI OAuth token
+> refresh* ([#434](https://github.com/onecli/onecli/issues/434))
+
+Nous tournions en **1.37.0** (image du 16 juin, jamais renouvelée), antérieure
+au correctif. D'où la chronologie, contre-intuitive mais cohérente : tant que le
+jeton d'accès restait valide, aucun refresh n'était tenté et rien ne paraissait
+cassé ; la panne éclate à l'expiration, deux mois après la vraie cause. **Aucune
+ré-authentification n'a été nécessaire** — le refresh token stocké était intact,
+il suffisait que la requête parte correctement formée.
+
+`~/.onecli/docker-compose.yml` épingle désormais explicitement
+`ghcr.io/onecli/onecli:1.45.0`. Il était en `:latest`, ce qui cumulait deux
+défauts : la version réelle restait figée au dernier `pull` (juin) tout en
+promettant l'inverse, et n'importe quelle recréation du conteneur aurait sauté
+de version en silence. Rollback (volumes du coffre préservés dans les deux
+sens) :
+
+```bash
+cd ~/.onecli && cp docker-compose.yml.bak-20260813-pre1450 docker-compose.yml && docker compose up -d app
+# ancre : ghcr.io/onecli/onecli@sha256:277208dd5c1ed8f667c937d54c67bd1e88b8b0dde32d30ebe5363b44498fa2fd
+```
+
+⚠️ **L'écart au pin s'est creusé, assumé** : `versions.json` sanctionne
+`onecli-gateway: 1.36.0`, soit *antérieure* au correctif — le suivre aurait
+reconduit la panne. Nous sommes donc à 1.45.0 contre 1.36.0 sanctionnée
+(l'écart existait déjà en 1.37.0, cf. section suivante). Le coffre a été
+vérifié après migration : 3 secrets, 20 agents, intacts. Suite E2E **28/28**.
+
+⚠️ **Angle mort restant** : rien ne surveille la version de la passerelle.
+`scripts/supply-watch.ts` couvre `cli-tools.json`, les ARG du Dockerfile, les
+deps de l'agent-runner et la dérive upstream — pas ce conteneur. Maintenant
+qu'il est épinglé, il ne bougera plus jamais tout seul : c'est le comportement
+voulu, mais il faut donc l'inscrire quelque part, sous peine de rejouer
+exactement cette panne dans deux mois.
 
 ### OneCLI — ce que `docs/onecli-upgrades.md` ne dit pas de CETTE installation (2026-08-03)
 
