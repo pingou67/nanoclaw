@@ -43,19 +43,14 @@ export function materializeTemplateSkills(agentGroupId: string, destSkillsDir: s
   if (path.resolve(src) === path.resolve(destSkillsDir)) return;
 
   fs.mkdirSync(destSkillsDir, { recursive: true });
-  // Only REAL directories are template skills. The Claude plane keeps its
-  // shared-skill symlinks in this SAME directory, and their targets are
-  // container paths (`/app/skills/<name>`) that dangle on the host — a
-  // following stat on one throws ENOENT. Thrown from here it reaches
-  // spawnContainer, so wakeContainer fails and host-sweep retries the same
-  // spawn every 60s forever: the group goes dark with no user-visible error.
-  // `withFileTypes` uses lstat semantics, so a symlink is never a directory.
-  // Reproduced 2026-08-12 migrating live Claude groups to codex — a group
-  // created directly on codex has no `.claude-shared/skills` and never hits it.
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const dest = path.join(destSkillsDir, entry.name);
+  for (const name of fs.readdirSync(src)) {
+    // lstat: the Claude plane plants shared-skill symlinks in this store whose
+    // targets only resolve inside the container, so following them host-side
+    // throws ENOENT and bricks every spawn after a claude→codex switch.
+    // Template skills are always real directories; links are never ours.
+    if (!fs.lstatSync(path.join(src, name)).isDirectory()) continue;
+    const dest = path.join(destSkillsDir, name);
     fs.rmSync(dest, { recursive: true, force: true });
-    fs.cpSync(path.join(src, entry.name), dest, { recursive: true });
+    fs.cpSync(path.join(src, name), dest, { recursive: true });
   }
 }
