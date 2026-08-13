@@ -202,6 +202,65 @@ Le périmètre OneCLI a suivi la bascule : le secret `Codex` a été accordé au
 agents (`agents set-secrets`, mode `selective` conservé), en union avec
 `Vikunja` là où le serveur MCP le justifie — jamais par symétrie.
 
+### Jeton ChatGPT expiré — le symptôme ment (2026-08-13, OUVERT)
+
+Découvert par la suite E2E du 13/08 : **16 scénarios rouges sur 28**, tous sur
+des groupes codex, tous avec le même texte de réponse :
+
+```
+Error: Reconnecting... 2/5: Read-only file system (os error 30)
+```
+
+**Ce message est un leurre.** Il ne dit rien de la panne : codex reçoit un
+`HTTP 401 token_expired` de `chatgpt.com`, tente d'écrire le jeton rafraîchi
+dans son magasin monté en lecture seule, et c'est *cet* échec secondaire qui
+remonte jusqu'au canal. Chercher un problème de montage fait perdre le vrai
+sujet. La cause ne se lit que côté passerelle :
+
+```bash
+docker logs onecli-app-1 --since 60m 2>&1 | grep -A8 'oauth token refresh failed'
+```
+
+```
+WARN onecli_gateway::secret_inject: openai oauth token refresh failed, using expired token
+error=... (400 Bad Request): {"error":{"message":"Missing 'client_id'",
+                              "code":"missing_required_parameter"}}
+```
+
+Le refresh token n'est donc **pas** révoqué : c'est la requête de
+rafraîchissement émise par la passerelle qui part sans `client_id`. L'injection
+elle-même fonctionne (`injections_applied=2` dans les lignes MITM) — ce qui
+explique qu'aucun contrôle de périmètre ne signale quoi que ce soit :
+`check-secret-scope.ts` sort 0, le secret est bien porté, il est simplement
+périmé et inrafraîchissable.
+
+Trois traces pour dater la panne sans se fier aux journaux nanoclaw (qui
+n'horodatent que l'heure) :
+
+```bash
+# dernière requête chatgpt NON-401 = dernier instant où la flotte codex répondait
+docker logs onecli-app-1 --since 72h 2>&1 | grep 'host=chatgpt.com' | grep -v 'status=401' | tail -3
+```
+
+Le 13/08 elle s'arrête à **05:11 UTC**. Les six groupes de prod (`dm`,
+`famille`, `work`, `work-ei`, `adminsys`, `coding`) sont muets depuis, sans
+qu'aucune alerte ne se déclenche : un agent qui répond « Error: … » a l'air de
+fonctionner.
+
+⚠️ **Angle mort à retenir** : un scénario E2E qui exige une *réponse du bot*
+échoue aussi, même si ce qu'il teste marche. Le keepalive WS (`ch-adminsys`,
+groupe codex) est sorti rouge « no reconnect within 120s » alors que
+l'adaptateur s'était bien reconnecté — les `Mattermost WS ready` du journal le
+prouvent. Ne pas partir en chasse à la régression d'adaptateur avant d'avoir
+neutralisé la panne d'authentification.
+
+La passerelle tourne ici en `ghcr.io/onecli/onecli:latest`, **en avance sur le
+pin** `versions.json` (`onecli-gateway: 1.36.0`) — cohérent avec l'écart déjà
+constaté le 2026-08-03 (section suivante). Deux voies, non tranchées :
+ré-authentifier le secret `Codex` par l'IHM (`http://127.0.0.1:10254`), ce qui
+repousse l'échéance sans corriger le refresh ; ou traiter le défaut de la
+passerelle elle-même.
+
 ### OneCLI — ce que `docs/onecli-upgrades.md` ne dit pas de CETTE installation (2026-08-03)
 
 Trois écarts constatés en appliquant le doc upstream. Les connaître évite de

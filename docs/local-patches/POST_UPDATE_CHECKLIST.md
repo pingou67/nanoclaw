@@ -132,10 +132,13 @@ grep -q "\"ws\":" package.json && echo "✓ 5. ws dependency present" || { echo 
 which libreoffice >/dev/null 2>&1 && echo "✓ 5b. libreoffice installed" || { echo "✗ 5b. libreoffice missing — sudo apt install libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress"; fail=1; }
 [ -f data/mattermost.json ] && echo "✓ 6. data/mattermost.json present" || { echo "✗ 6. data/mattermost.json missing (see §6) — gitignored, restore from backup"; fail=1; }
 # Compte derive du disque, jamais code en dur : un seuil fige finit par crier
-# au loup (7 etait faux, il y a 10 groupes). Pas dapostrophe ici : tout le bloc
-# vit dans un bash -c "..." en quotes simples.
-g=$(ls -d groups/mattermost_*/ 2>/dev/null | wc -l); n=$(ls groups/mattermost_*/CLAUDE.md 2>/dev/null | wc -l)
-[ "$n" = "$g" ] && echo "✓ 7. CLAUDE.md présent dans les $g groupes mattermost_*" || { echo "✗ 7. seulement $n/$g CLAUDE.md (voir §7)"; fail=1; }
+# au loup (7 etait faux, il y a 10 groupes). La consigne permanente sappelle
+# CLAUDE.md sur claude et AGENTS.md sur codex : exiger la premiere partout
+# faisait sortir 9/10 sur testor-codex, ne sur codex (voir §7). Pas
+# dapostrophe ici : tout le bloc vit dans un bash -c "..." en quotes simples.
+g=$(ls -d groups/mattermost_*/ 2>/dev/null | wc -l); n=0
+for d in groups/mattermost_*/; do [ -f "$d/CLAUDE.md" ] || [ -f "$d/AGENTS.md" ] && n=$((n+1)); done
+[ "$n" = "$g" ] && echo "✓ 7. consigne permanente présente dans les $g groupes mattermost_*" || { echo "✗ 7. seulement $n/$g avec CLAUDE.md ou AGENTS.md (voir §7)"; fail=1; }
 [ -f src/secrets/vault.ts ] && grep -q "resolveVaultRefs" src/container-runner.ts && echo "✓ 8. résolution vault câblée au spawn" || { echo "✗ 8. patch coffre MANQUANT (voir §S)"; fail=1; }
 grep -q "redactContainerConfig" src/dashboard-pusher.ts && echo "✓ 9. caviardage dashboard actif" || { echo "✗ 9. caviardage dashboard MANQUANT — secrets publiés sur 0.0.0.0 (voir §S)"; fail=1; }
 [ "$fail" = "0" ] && echo "" && echo "ALL CHECKS PASS — safe to restart" || { echo ""; echo "Reapply missing patches before restart"; exit 1; }
@@ -363,9 +366,25 @@ If no backup, recreate (full template in `project_mattermost_v2_adapter.md`):
 
 ---
 
-## §7. Per-channel `CLAUDE.md` in `groups/mattermost_*/`
+## §7. Consigne permanente par canal dans `groups/mattermost_*/`
 
-**Verify:** `ls groups/mattermost_*/CLAUDE.md | wc -l` should return `7`.
+**Verify:** chaque groupe porte `CLAUDE.md` **ou** `AGENTS.md`.
+
+```bash
+for d in groups/mattermost_*/; do
+  [ -f "$d/CLAUDE.md" ] || [ -f "$d/AGENTS.md" ] || echo "SANS consigne : $d"
+done
+```
+
+> **Le contrôle a été rendu aveugle au provider le 2026-08-13.** Il exigeait
+> `CLAUDE.md` partout et sortait `9/10`. Ce n'était pas une perte de fichier :
+> `testor-codex` est le seul groupe **né** sur codex, et codex lit `AGENTS.md`,
+> pas `CLAUDE.md`. Les six groupes migrés le 12/08 ont gardé leur `CLAUDE.md`
+> d'origine en plus de leur `AGENTS.md`, ce qui masquait l'angle mort : seul un
+> groupe créé directement sur codex l'expose. Vérifié en base
+> (`container_configs.provider`) avant de toucher au contrôle, conformément au
+> §−1.4 — le compteur avait raison de surprendre, c'est sa règle qui était
+> périmée.
 
 These are gitignored in v2 (`groups/*` is excluded). If missing after a fresh checkout or accidental delete:
 ```bash
