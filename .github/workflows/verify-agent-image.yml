@@ -186,6 +186,21 @@ jobs:
           PY
 
       # AUTO-MERGE GATE. Nothing above can switch this on.
+      #
+      # Keyless Sigstore, so what is being trusted is the publisher's build
+      # workflow identity rather than a key anybody could copy. The defaults
+      # below are that identity; the repo variables exist to point at a fork or
+      # a re-signed image without editing this file.
+      #
+      # Signatures and attestations are ordinary artifacts living beside the
+      # image, as `sha256-<digest>.sig` / `.att` tags IN THE SAME REPOSITORY.
+      # A plain `crane copy` moves the index and its children and leaves those
+      # behind, so a mirrored image verifies as unsigned — indistinguishable
+      # here from genuinely unsigned. Sync with `cosign copy` (or
+      # `crane copy --all-tags`), or set AGENT_IMAGE_SIGNATURE_REPO to the
+      # repository that does hold them: the signature covers the digest, so
+      # verifying it wherever it lives still says something true about these
+      # exact bytes.
       - name: Verify publisher signature
         if: steps.pin.outputs.changed == 'true'
         id: sig
@@ -194,17 +209,35 @@ jobs:
           set -euo pipefail
           IDENTITY='${{ vars.AGENT_IMAGE_SIGNER_IDENTITY }}'
           ISSUER='${{ vars.AGENT_IMAGE_SIGNER_ISSUER }}'
-          if [ -z "$IDENTITY" ] || [ -z "$ISSUER" ]; then
-            echo "No signer configured (AGENT_IMAGE_SIGNER_IDENTITY / _ISSUER)."
-            echo "Signature verification skipped, so this PR needs a human."
-            exit 1
-          fi
+          : "${IDENTITY:=https://github.com/buildecho/images/.github/workflows/build-container.yml@refs/heads/main}"
+          : "${ISSUER:=https://token.actions.githubusercontent.com}"
+
+          REF='${{ steps.pin.outputs.new }}'
+          DIGEST="${REF##*@}"
+          SIG_REPO='${{ vars.AGENT_IMAGE_SIGNATURE_REPO }}'
+          : "${SIG_REPO:=${REF%@*}}"
+
           curl -fsSL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o /usr/local/bin/cosign
           chmod +x /usr/local/bin/cosign
+
+          echo "Verifying the index signature at ${SIG_REPO}@${DIGEST}"
           cosign verify \
-            --certificate-identity-regexp "$IDENTITY" \
+            --certificate-identity "$IDENTITY" \
             --certificate-oidc-issuer "$ISSUER" \
-            '${{ steps.pin.outputs.new }}'
+            "${SIG_REPO}@${DIGEST}" > /dev/null
+
+          # Deliberately no attestation check. The publisher does not attach
+          # them: `.att` and `.sbom` are both absent upstream, and that is a
+          # considered choice on their side — BuildKit provenance embeds build
+          # environment detail they do not want redistributed. Verifying an SBOM
+          # that is never published would fail every run and hold this gate
+          # permanently off, which reads as "signature broken" rather than
+          # "attestations not offered".
+          #
+          # If that changes, the check belongs here and must name each CHILD
+          # digest from /tmp/manifest.json rather than the index: attestations
+          # attach per architecture, so verifying the index alone would pass
+          # without ever having looked at an SBOM.
 
       - name: Enable auto-merge
         if: steps.pin.outputs.changed == 'true' && steps.sig.outcome == 'success'
