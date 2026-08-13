@@ -17,12 +17,18 @@
 # OIDC, a missing role: every one of those ends with auto-merge off and the PR
 # waiting for a person. There is no path through this file where uncertainty
 # results in a merge.
+#
+# Runs on every pull request, deliberately, and NOT filtered on the versions.json
+# path. A required status check that is path-filtered never reports on a PR that
+# does not touch the path, and GitHub reads never-reported as forever-pending —
+# so a filtered job here would block every unrelated PR instead of gating this
+# one. Unchanged pin is therefore a fast, green no-op, which is what lets `verify`
+# be a required check at all. It was not one while this was filtered, and a pin
+# bump merged with this job red.
 name: verify-agent-image
 
 on:
   pull_request:
-    paths:
-      - versions.json
 
 permissions:
   contents: read
@@ -60,7 +66,8 @@ jobs:
 
           if [ "$NEW" = "$OLD" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "versions.json changed but the agent-image pin did not — nothing to verify."
+            echo "The agent-image pin is unchanged — nothing to verify."
+            echo "(Most PRs land here: this job runs on all of them so it can be a required check.)"
             exit 0
           fi
           echo "changed=true" >> "$GITHUB_OUTPUT"
