@@ -80,7 +80,9 @@ export function collectOpenCodeTokens(): TokenEntry[] {
     try {
       const db = new Database(dbPath, { readonly: true, fileMustExist: true });
       try {
-        const rows = db.prepare(`SELECT json_extract(data,'$.modelID') AS model,
+        const rows = db
+          .prepare(
+            `SELECT json_extract(data,'$.modelID') AS model,
                     count(*) AS requests,
                     coalesce(sum(json_extract(data,'$.tokens.input')),0) AS input,
                     coalesce(sum(json_extract(data,'$.tokens.output')),0) AS output,
@@ -88,7 +90,9 @@ export function collectOpenCodeTokens(): TokenEntry[] {
                     coalesce(sum(json_extract(data,'$.tokens.cache.write')),0) AS cacheWrite
              FROM message
              WHERE json_extract(data,'$.role') = 'assistant' AND json_extract(data,'$.modelID') IS NOT NULL
-             GROUP BY 1`).all() as Array<{
+             GROUP BY 1`,
+          )
+          .all() as Array<{
           model: string;
           requests: number;
           input: number;
@@ -131,7 +135,9 @@ export async function collectOpenCodeContextWindows(): Promise<unknown[]> {
     try {
       const db = new Database(dbPath, { readonly: true, fileMustExist: true });
       try {
-        const r = db.prepare(`SELECT json_extract(data,'$.modelID') AS model,
+        const r = db
+          .prepare(
+            `SELECT json_extract(data,'$.modelID') AS model,
                     json_extract(data,'$.tokens.input') AS input,
                     json_extract(data,'$.tokens.output') AS output,
                     json_extract(data,'$.tokens.cache.read') AS cacheRead,
@@ -139,7 +145,9 @@ export async function collectOpenCodeContextWindows(): Promise<unknown[]> {
                     time_created AS ts
              FROM message
              WHERE json_extract(data,'$.role') = 'assistant' AND json_extract(data,'$.tokens.input') IS NOT NULL
-             ORDER BY time_created DESC LIMIT 1`).get() as
+             ORDER BY time_created DESC LIMIT 1`,
+          )
+          .get() as
           | { model: string; input: number; output: number; cacheRead: number; cacheWrite: number; ts: number }
           | undefined;
         if (!r || !r.model) return;
@@ -217,9 +225,13 @@ export async function collectScheduledJobs(): Promise<ScheduledJob[]> {
       try {
         const db = new Database(dbPath, { readonly: true, fileMustExist: true });
         try {
-          const rows = db.prepare(`SELECT id, status, process_after, recurrence, content FROM messages_in
+          const rows = db
+            .prepare(
+              `SELECT id, status, process_after, recurrence, content FROM messages_in
                WHERE kind = 'task' AND status IN ('pending', 'paused')
-               ORDER BY process_after`).all() as Array<{
+               ORDER BY process_after`,
+            )
+            .all() as Array<{
             id: string;
             status: string;
             process_after: string | null;
