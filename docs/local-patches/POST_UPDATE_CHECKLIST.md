@@ -55,6 +55,25 @@ Ne pas remplacer le PATH complet non plus — `onecli` doit y rester,
 sinon les commandes de cette checklist échouent avec un `command not found`
 trompeur.
 
+### 2 bis. Poser le marqueur d'upgrade APRÈS le dernier commit (2026-08-19)
+
+Depuis la 2.2.0, `data/upgrade-state.json` n'enregistre plus seulement la
+version : il enregistre le **commit et l'arbre**. Un marqueur posé avant un
+commit supplémentaire (un bump de pin, un reformatage prettier) ne correspond
+donc plus à l'arbre en place, le tripwire refuse le démarrage et le circuit
+breaker repart à 10 s, 30 s, 120 s…
+
+```bash
+git commit …                       # TOUS les commits d'abord
+git status --porcelain             # doit être vide
+pnpm exec tsx scripts/upgrade-state.ts set "" update-nanoclaw
+systemctl --user start nanoclaw
+```
+
+Symptôme si l'ordre est inversé : la suite E2E échoue au **setup** avec
+« WS reported ready but mock has no client connected » — un message qui parle
+du mock et jamais du marqueur.
+
 ### 3. Conserver la sortie de la suite E2E
 
 ```bash
