@@ -77,7 +77,7 @@ function refuse(reason: string, req: DashboardActionRequest): DashboardActionRes
 
 export async function handleDashboardAction(req: DashboardActionRequest): Promise<DashboardActionResult> {
   const gid = req.agentGroupId ?? '';
-  const group = getAgentGroup(gid);
+  const group = await getAgentGroup(gid);
   if (!group) return refuse(`agent group inconnu: ${gid}`, req);
 
   switch (req.action) {
@@ -86,14 +86,14 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
       const value = req.value === '' ? null : (req.value ?? null);
       if (field === 'effort') {
         if (value !== null && !EFFORTS.has(value)) return refuse(`effort invalide: ${value}`, req);
-        updateContainerConfigScalars(gid, { effort: value });
+        await updateContainerConfigScalars(gid, { effort: value });
       } else if (field === 'model') {
         if (value !== null && !MODEL_RE.test(value))
           return refuse('modèle invalide (1-120 chars, [A-Za-z0-9._:/-])', req);
-        updateContainerConfigScalars(gid, { model: value });
+        await updateContainerConfigScalars(gid, { model: value });
       } else if (field === 'thinking') {
         if (value !== null && !THINKING.has(value)) return refuse(`thinking invalide: ${value}`, req);
-        updateContainerConfigJson(gid, 'thinking', value === null || value === 'none' ? null : { type: value });
+        await updateContainerConfigJson(gid, 'thinking', value === null || value === 'none' ? null : { type: value });
       } else {
         // env / mounts / cli_scope / anything else: not on the whitelist.
         return refuse(`champ non modifiable depuis le dashboard: ${field ?? '(absent)'}`, req);
@@ -105,7 +105,7 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
     }
 
     case 'restart-group': {
-      const n = restartAgentGroupContainers(gid, 'dashboard action');
+      const n = await restartAgentGroupContainers(gid, 'dashboard action');
       return done(
         n > 0 ? `${n} container(s) redémarré(s)` : 'aucun container actif — la config sera prise au prochain message',
         `restart-group group=${group.folder} containers=${n} (via dashboard)`,
@@ -117,12 +117,12 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
       // CONTAINER (single-writer rule) — the host must not write it. Instead
       // we inject the runner's own `!live` command as an inbound message; the
       // poll loop toggles the setting and acks in the channel (visible trace).
-      const sessions = getSessionsByAgentGroup(gid)
+      const sessions = (await getSessionsByAgentGroup(gid))
         .filter((s) => s.status === 'active')
         .sort((a, b) => (b.last_active ?? '').localeCompare(a.last_active ?? ''));
       const session = sessions[0];
       if (!session) return refuse('aucune session active pour ce groupe', req);
-      const mg = session.messaging_group_id ? getMessagingGroup(session.messaging_group_id) : undefined;
+      const mg = session.messaging_group_id ? await getMessagingGroup(session.messaging_group_id) : undefined;
       if (!mg) return refuse('session sans messaging group résoluble', req);
       writeSessionMessage(gid, session.id, {
         id: `dash-live-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -153,7 +153,7 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
       // (upstream keeps firing kind='task' rows wherever they are), so the
       // fire keeps the session's destinations — unlike ncl tasks' isolated
       // per-series sessions.
-      insertTaskRow(openInboundDb(gid, session.id), {
+      await insertTaskRow(openInboundDb(gid, (await session).id), {
         id: taskId,
         seriesId: taskId,
         processAfter: new Date(when).toISOString(),
@@ -167,7 +167,7 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
     }
 
     case 'job-update': {
-      const target = requireTask(req);
+      const target = await requireTask(req);
       if ('error' in target) return refuse(target.error, req);
       const update: { prompt?: string; processAfter?: string; recurrence?: string | null } = {};
       if (req.prompt !== undefined) {
@@ -184,7 +184,7 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
         if (recurrence === false) return refuse(`récurrence invalide: ${req.recurrence}`, req);
         update.recurrence = recurrence;
       }
-      const n = updateTask(openInboundDb(gid, target.sessionId), target.taskId, update);
+      const n = await updateTask(openInboundDb(gid, target.sessionId), target.taskId, update);
       if (n === 0) return refuse(`tâche introuvable (ou plus pending/paused): ${target.taskId}`, req);
       audit(
         `job-update ${target.taskId} group=${group.folder} champs=${Object.keys(update).join(',')} (via dashboard)`,
@@ -193,13 +193,13 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
     }
 
     case 'job-cancel': {
-      const target = requireTask(req);
+      const target = await requireTask(req);
       if ('error' in target) return refuse(target.error, req);
       const db = openInboundDb(gid, target.sessionId);
       if (countLiveTaskRows(db, target.taskId) === 0) {
         return refuse(`tâche déjà supprimée/terminée (ou id inconnu): ${target.taskId}`, req);
       }
-      cancelTask(db, target.taskId);
+      await cancelTask(db, target.taskId);
       return done(
         `tâche ${target.taskId} supprimée`,
         `job-cancel ${target.taskId} group=${group.folder} (via dashboard)`,
@@ -208,15 +208,15 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
 
     case 'job-pause':
     case 'job-resume': {
-      const target = requireTask(req);
+      const target = await requireTask(req);
       if ('error' in target) return refuse(target.error, req);
       const db = openInboundDb(gid, target.sessionId);
       const wanted = req.action === 'job-pause' ? 'pending' : 'paused';
       if (countLiveTaskRows(db, target.taskId, wanted) === 0) {
         return refuse(`aucune tâche au statut « ${wanted} » pour ${target.taskId}`, req);
       }
-      if (req.action === 'job-pause') pauseTask(db, target.taskId);
-      else resumeTask(db, target.taskId);
+      if (req.action === 'job-pause') await pauseTask(db, target.taskId);
+      else await resumeTask(db, target.taskId);
       return done(
         `tâche ${req.action === 'job-pause' ? 'mise en pause' : 'reprise'}`,
         `${req.action} ${target.taskId} group=${group.folder} (via dashboard)`,
@@ -235,8 +235,8 @@ function normalizeCron(raw: string | null | undefined): string | null | false {
   return /^\S+\s+\S+\s+\S+\s+\S+\s+\S+$/.test(c) ? c : false;
 }
 
-function latestActiveSession(gid: string) {
-  return getSessionsByAgentGroup(gid)
+async function latestActiveSession(gid: string) {
+  return (await getSessionsByAgentGroup(gid))
     .filter((s) => s.status === 'active')
     .sort((a, b) => (b.last_active ?? '').localeCompare(a.last_active ?? ''))[0];
 }
@@ -254,18 +254,20 @@ function countLiveTaskRows(db: ReturnType<typeof openInboundDb>, taskId: string,
 }
 
 /** Resolve and validate the (sessionDir, taskId) pair of a job action. */
-function requireTask(req: DashboardActionRequest): { sessionId: string; taskId: string } | { error: string } {
+async function requireTask(
+  req: DashboardActionRequest,
+): Promise<{ sessionId: string; taskId: string } | { error: string }> {
   const sid = req.sessionDir ?? '';
   const taskId = req.taskId ?? '';
   if (!/^sess-[\w-]+$/.test(sid)) return { error: `sessionDir invalide: ${sid}` };
   if (!/^[\w-]{1,80}$/.test(taskId)) return { error: `taskId invalide: ${taskId}` };
-  const session = getSessionsByAgentGroup(req.agentGroupId ?? '').find((s) => s.id === sid);
+  const session = (await getSessionsByAgentGroup(req.agentGroupId ?? '')).find((s) => s.id === sid);
   if (!session) return { error: `session ${sid} inconnue pour ce groupe` };
   return { sessionId: sid, taskId };
 }
 
 /** Config summary used by the UI to prefill controls (read via /api/agents-recap). */
-export function currentConfigSummary(gid: string): { effort: string | null; model: string | null } {
-  const c = getContainerConfig(gid);
+export async function currentConfigSummary(gid: string): Promise<{ effort: string | null; model: string | null }> {
+  const c = await getContainerConfig(gid);
   return { effort: c?.effort ?? null, model: c?.model ?? null };
 }

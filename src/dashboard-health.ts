@@ -200,11 +200,11 @@ export function containerPathToHost(
   return path.resolve(best.hostPath, containerPath.slice(best.containerPath.length).replace(/^\//, ''));
 }
 
-function checkMcpCredentialFiles(): HealthCheck[] {
+async function checkMcpCredentialFiles(): Promise<HealthCheck[]> {
   const checks: HealthCheck[] = [];
   let agyUsed = false;
-  for (const group of getAllAgentGroups()) {
-    const config = getContainerConfig(group.id);
+  for (const group of await getAllAgentGroups()) {
+    const config = await getContainerConfig(group.id);
     if (!config) continue;
     if (config.provider === 'agy') agyUsed = true;
     let servers: Record<string, { env?: Record<string, string> }> = {};
@@ -372,11 +372,11 @@ function refreshSkillsSync(): void {
  * when a switched group answers "Model not found" — the documented fix is
  * purging the stale `continuation:<provider>` row.
  */
-export function checkContinuationMismatches(runtimes: SessionRuntime[]): HealthCheck[] {
+export async function checkContinuationMismatches(runtimes: SessionRuntime[]): Promise<HealthCheck[]> {
   const checks: HealthCheck[] = [];
   for (const rt of runtimes) {
     if (rt.continuations.length === 0) continue;
-    const config = getContainerConfig(rt.agent_group_id);
+    const config = await getContainerConfig(rt.agent_group_id);
     const provider = (config?.provider ?? 'claude').toLowerCase();
     const current = `continuation:${provider}`;
     if (!rt.continuations.includes(current)) {
@@ -397,10 +397,10 @@ export async function collectHealth(): Promise<HealthCheck[]> {
     checkClaudeOauth(),
     ...timers,
     onecli,
-    ...checkMcpCredentialFiles(),
+    ...(await checkMcpCredentialFiles()),
     checkE2eMarker(),
     skillsSyncCache,
-    ...checkContinuationMismatches(collectSessionRuntime()),
+    ...(await checkContinuationMismatches(await collectSessionRuntime())),
   ];
   // The dashboard package has no API route for custom snapshot keys (and no
   // upstream PR by design), so also persist the latest result locally —

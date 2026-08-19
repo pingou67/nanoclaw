@@ -109,6 +109,13 @@ ENV COREPACK_HOME=/opt/corepack \
 RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate && \
     chmod -R a+rX /opt/corepack
 
+# The npm bundled with node:22-slim (10.9.8) vendors tar <7.5.19, which
+# carries a fixable critical (GHSA-23hp-3jrh-7fpw) that the publish gate
+# refuses to ship. Patch-level bump only. Drop this once the base image
+# ships npm >= 10.9.9.
+ARG NPM_VERSION=10.9.9
+RUN npm install -g npm@${NPM_VERSION}
+
 # Global Node CLIs the agent invokes at runtime live in cli-tools.json so a
 # skill can add one with a json-merge instead of editing this Dockerfile.
 # install-cli-tools.sh installs each via pnpm (pinned), writing the per-tool

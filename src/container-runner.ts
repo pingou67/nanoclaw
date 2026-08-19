@@ -1,50 +1,49 @@
 /**
  * Container Runner v2
- * Spawns agent containers with session folder + agent group folder mounts.
- * The container runs the v2 agent-runner which polls the session DB.
+ *
+ * Composes a fully-resolved `SessionSpec` for each session and hands it to the
+ * selected `SessionDriver`. Everything runtime-specific — argv, kill/stop,
+ * orphan listing — lives behind the driver seam in `src/drivers/`. What stays
+ * here is composition and lifecycle policy: which mounts, which env, restart
+ * ordering, exit bookkeeping.
  */
-import { ChildProcess, execFile, spawn } from 'child_process';
+import { exec, execFile } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
 
-import { OneCLI } from '@onecli-sh/sdk';
-
 import {
   CONTAINER_CPU_LIMIT,
   CONTAINER_IMAGE,
   CONTAINER_IMAGE_BASE,
-  CONTAINER_INSTALL_LABEL,
   CONTAINER_MEMORY_LIMIT,
   CONTAINER_PIDS_LIMIT,
   DATA_DIR,
   GROUPS_DIR,
-  ONECLI_API_KEY,
-  ONECLI_URL,
+  INSTALL_SLUG,
   TIMEZONE,
 } from './config.js';
 import { CONTAINER_PLUGINS_DIR, materializeContainerJson } from './container-config.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { updateContainerConfigScalars } from './db/container-configs.js';
-import {
-  CONTAINER_RUNTIME_BIN,
-  forceKillContainer,
-  hostGatewayArgs,
-  readonlyMountArgs,
-  stopContainer,
-} from './container-runtime.js';
-import { EGRESS_NETWORK, egressNetworkArgs, ensureEgressNetwork } from './egress-lockdown.js';
+import { CONTAINER_RUNTIME_BIN } from './container-runtime.js';
 import { composeGroupClaudeMd } from './claude-md-compose.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { getDb, hasTable } from './db/connection.js';
+import { getSession } from './db/sessions.js';
+import { getSessionDriver, isSessionEventsDriver } from './drivers/index.js';
+import type { SupervisedHandle, SupervisedSnapshot } from './drivers/session-events.js';
+import { GROUP_FOLDER_LABEL, isSecretShaped, labelValueLegal, specInvalid } from './drivers/types.js';
+import type { ContainerSpec, MountSpec, SessionFailure, SessionSpec } from './drivers/types.js';
+import { getGatewayProvider, type GatewayContribution } from './gateway-providers/index.js';
 import { initGroupFilesystem } from './group-init.js';
-import { stopTypingRefresh } from './modules/typing/index.js';
-import { log } from './log.js';
-import { validateAdditionalMounts } from './modules/mount-security/index.js';
 // Doctrine secrets (CLAUDE.md) : branche non-HTTP — résolution au spawn.
 import { imapAccountSpecs, materializeImapCreds } from './secrets/imap-creds.js';
 import { hasVaultRefs, resolveVaultRefs } from './secrets/vault.js';
+import { stopTypingRefresh } from './modules/typing/index.js';
+import { log } from './log.js';
+import { validateAdditionalMounts } from './modules/mount-security/index.js';
 // Provider host-side config barrel — each provider that needs host-side
 // container setup self-registers on import.
 import './providers/index.js';
@@ -63,18 +62,52 @@ import {
 } from './session-manager.js';
 import type { AgentGroup, Session } from './types.js';
 
-const onecli = new OneCLI({ url: ONECLI_URL, apiKey: ONECLI_API_KEY });
+/**
+ * Docker defaults /dev/shm to 64m, which silently short-writes past that size.
+ * agent-browser passes --disable-dev-shm-usage, but a third-party puppeteer or
+ * Playwright launcher may not.
+ */
+const SHM_SIZE_MB = 1024;
+/** Grace before SIGKILL. One second, as `docker stop -t 1` has always been. */
+const STOP_GRACE_SECONDS = 1;
 
-/** Active containers tracked by session ID. */
-const activeContainers = new Map<string, { process: ChildProcess; containerName: string }>();
+/** Active sessions tracked by session ID. */
+interface ActiveSessionRuntime {
+  /**
+   * The realized session. Was `process: ChildProcess` — a session that is not
+   * a child process of the host could not be represented at all, and that
+   * single field was what made every runtime other than a locally-spawned
+   * docker CLI inexpressible.
+   */
+  handle: SupervisedHandle;
+  containerName: string;
+  /**
+   * When this host started tracking the runtime. Backs the sweep's ceiling
+   * check when no heartbeat file exists yet (see `host-sweep.ts`): a container
+   * that finishes its turn without ever reaching an SDK event never writes one,
+   * and without this it would sit alive-but-idle forever, immune to the check.
+   * An adopted runtime records the adoption, which is the honest answer — this
+   * host has no spawn time for a container a previous host started, and leaving
+   * it unset would exempt every adopted session from the ceiling.
+   */
+  startedAtMs: number;
+  /** True when this runtime was adopted at startup rather than spawned here. */
+  adopted: boolean;
+  exitCallbacks: Array<() => void>;
+  finished: boolean;
+  finishedPromise: Promise<void>;
+  resolveFinished: () => void;
+  stopReason?: string;
+}
+
+const activeContainers = new Map<string, ActiveSessionRuntime>();
 
 /**
  * In-flight wake promises, keyed by session id. Deduplicates concurrent
- * `wakeContainer` calls while the first spawn is still mid-setup (async
- * buildContainerArgs, OneCLI gateway apply, etc.) — otherwise a second
- * wake in that window passes the `activeContainers.has` check and spawns
- * a duplicate container against the same session directory, producing
- * racy double-replies.
+ * `wakeContainer` calls while the first spawn is still mid-setup — otherwise a
+ * second wake in that window passes the `activeContainers.has` check and spawns
+ * a duplicate container against the same session directory, producing racy
+ * double-replies.
  */
 const wakePromises = new Map<string, Promise<boolean>>();
 
@@ -86,17 +119,18 @@ export function isContainerRunning(sessionId: string): boolean {
   return activeContainers.has(sessionId);
 }
 
+export function getContainerStartedAtMs(sessionId: string): number | undefined {
+  return activeContainers.get(sessionId)?.startedAtMs;
+}
+
 /**
  * Wake up a container for a session. If already running or mid-spawn, no-op
  * (the in-flight wake promise is reused).
  *
- * The container runs the v2 agent-runner which polls the session DB.
- *
  * Contract: never throws. Returns `true` on successful spawn, `false` on
  * transient spawn failure (e.g. OneCLI gateway unreachable). Callers don't
- * need to wrap — the inbound row stays pending and host-sweep retries on
- * its next tick. Callers that care (e.g. the router's typing indicator)
- * can branch on the boolean.
+ * need to wrap — the inbound row stays pending and host-sweep retries on its
+ * next tick.
  */
 export function wakeContainer(session: Session): Promise<boolean> {
   if (activeContainers.has(session.id)) {
@@ -122,7 +156,7 @@ export function wakeContainer(session: Session): Promise<boolean> {
 }
 
 async function spawnContainer(session: Session): Promise<void> {
-  const agentGroup = getAgentGroup(session.agent_group_id);
+  const agentGroup = await getAgentGroup(session.agent_group_id);
   if (!agentGroup) {
     log.error('Agent group not found', { agentGroupId: session.agent_group_id });
     return;
@@ -131,162 +165,284 @@ async function spawnContainer(session: Session): Promise<void> {
   // Refresh the destination map and current-thread routing so any admin
   // changes take effect on wake. Destinations come from the agent-to-agent
   // module — skip when the module isn't installed (table absent).
-  if (hasTable(getDb(), 'agent_destinations')) {
+  if (await hasTable(getDb(), 'agent_destinations')) {
     const { writeDestinations } = await import('./modules/agent-to-agent/write-destinations.js');
-    writeDestinations(agentGroup.id, session.id);
+    await writeDestinations(agentGroup.id, session.id);
   }
-  writeSessionRouting(agentGroup.id, session.id);
+  await writeSessionRouting(agentGroup.id, session.id);
 
   // Materialize container.json from DB — writes fresh file and returns
   // the config object, threaded through provider resolution, buildMounts,
   // and buildContainerArgs so we don't re-read.
-  const containerConfig = materializeContainerJson(agentGroup.id);
+  const containerConfig = await materializeContainerJson(agentGroup.id);
 
   // Doctrine secrets, branche non-HTTP : les `vault:élément/champ` de l'env du
   // groupe sont résolus ICI, et une seule fois — APRÈS l'écriture de
   // container.json (qui ne doit contenir que des références, jamais des
-  // valeurs) et AVANT la contribution du provider, qui recopie `groupEnv`
-  // dans son propre bloc d'env et écraserait sinon la valeur résolue par la
+  // valeurs) et AVANT la contribution du provider, qui recopie `groupEnv` dans
+  // son propre bloc d'env et écraserait sinon la valeur résolue par la
   // référence brute (vécu : opencode réémettait OPENCODE_API_KEY tel quel).
   // Une référence illisible lève et le spawn est refusé.
   if (hasVaultRefs(containerConfig.env)) {
     containerConfig.env = resolveVaultRefs(containerConfig.env!);
   }
 
-  // Per-group filesystem state lives forever after first creation. Init is
-  // idempotent: it only writes paths that don't already exist, so this call
-  // is a no-op for groups that have spawned before. Runs before the provider
-  // contribution so a surfaces-providing provider finds the group dir ready.
   const providerName = resolveProviderName(session.agent_provider, containerConfig.provider);
-  initGroupFilesystem(agentGroup, { provider: providerName });
+  await initGroupFilesystem(agentGroup, { provider: providerName });
 
   // Resolve the effective provider + any host-side contribution it declares
   // (extra mounts, env passthrough). Computed once and threaded through both
   // buildMounts and buildContainerArgs so side effects (mkdir, etc.) fire once.
-  const { provider, contribution } = resolveProviderContribution(session, agentGroup, containerConfig);
+  const { provider, contribution } = await resolveProviderContribution(session, agentGroup, containerConfig);
 
-  const mounts = buildMounts(agentGroup, session, containerConfig, provider, contribution);
+  const mounts = await buildMounts(agentGroup, session, containerConfig, provider, contribution);
   const containerName = `nanoclaw-v2-${agentGroup.folder}-${Date.now()}`;
-  // OneCLI agent identifier is the agent group id — stable across sessions
-  // and reversible via getAgentGroup() for approval routing.
-  //
-  // OneCLI v1 server (gateway ≥ some recent build) validates identifiers
-  // strictly: lowercase letters, numbers, and hyphens only — no underscores.
-  // Our internal agent_group.id uses underscores (e.g. `ag-mattermost_main`).
-  // To match the existing OneCLI records (created under the old API and
-  // already stored with hyphens, e.g. `ag-mattermost-main`), translate the
-  // id to hyphens at the call site. nanoclaw's internal id is unchanged,
-  // so all DB FKs and filesystem paths keep working.
-  const agentIdentifier = agentGroup.id.replace(/_/g, '-');
-  const args = await buildContainerArgs(
-    mounts,
-    containerName,
+  const driver = getSessionDriver();
+  // The gateway's per-session contribution — typed env and mounts (and, on a
+  // driver that manages them, auxiliary containers), merged into the spec
+  // BEFORE validation so admission sees the whole session. Fail-closed exactly
+  // as the old wiring was: contribute() throwing aborts the spawn, the inbound
+  // row stays pending, and the sweep retries. Network selection is NOT here —
+  // topology is driver-private (see `drivers/index.ts`).
+  const gateway = await getGatewayProvider().contribute({
+    key: { installSlug: INSTALL_SLUG, agentGroupId: agentGroup.id, sessionId: session.id },
+    groupName: agentGroup.name,
+    capabilities: driver.capabilities(),
+  });
+  if (gateway.containers?.length && !driver.capabilities().auxiliaryContainers) {
+    // Named at composition, where the error can say which side to change —
+    // not left for the driver's refusal backstop to discover.
+    throw specInvalid(
+      `gateway provider composed auxiliary containers, but driver '${driver.kind}' does not manage them ` +
+        `(capabilities().auxiliaryContainers is false)`,
+    );
+  }
+
+  const spec = composeSessionSpec({
     agentGroup,
+    session,
+    containerName,
+    mounts,
     containerConfig,
-    provider,
     contribution,
-    agentIdentifier,
-  );
+    gateway,
+    // Même condition que le mount OAuth dans buildMounts : les deux vont
+    // ensemble (le fichier monté ET la neutralisation du proxy/clé bouchon).
+    claudeOAuthMounted: provider === 'claude' && resolveClaudeCredentialsPath() !== undefined,
+  });
 
-  log.info('Spawning container', { sessionId: session.id, agentGroup: agentGroup.name, containerName });
+  log.info('Spawning session', { sessionId: session.id, agentGroup: agentGroup.name, containerName });
 
-  // Clear any orphan heartbeat from a previous container instance — the
-  // sweep's ceiling check treats a missing file as "fresh spawn, give grace"
-  // (host-sweep.ts line 87). Without this, the stale mtime can trigger an
-  // immediate kill before the new container touches the file itself.
+  // Clear any orphan heartbeat from a previous container instance — the sweep's
+  // ceiling check treats a missing file as "fresh spawn, give grace". Without
+  // this, the stale mtime can trigger an immediate kill before the new container
+  // touches the file itself.
   fs.rmSync(heartbeatPath(agentGroup.id, session.id), { force: true });
 
-  const container = spawn(CONTAINER_RUNTIME_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  const handle = await driver.prepare(spec);
 
-  activeContainers.set(session.id, { process: container, containerName });
-  markContainerRunning(session.id);
+  const runtime = registerRuntime(session.id, handle, containerName, false);
 
-  // Log stderr. A container that dies at boot (unknown provider, missing
-  // binary, bad config) explains itself only here — and debug is below the
-  // default log level — so keep a tail to surface on a non-zero exit.
-  const stderrTail: string[] = [];
-  container.stderr?.on('data', (data) => {
-    for (const line of data.toString().trim().split('\n')) {
-      if (!line) continue;
-      log.debug(line, { container: agentGroup.folder });
-      stderrTail.push(line);
-      if (stderrTail.length > 10) stderrTail.shift();
-    }
-  });
-
-  // stdout is unused in v2 (all IO is via session DB)
-  container.stdout?.on('data', () => {});
-
-  // No host-side idle timeout. Stale/stuck detection is driven by the host
-  // sweep reading heartbeat mtime + processing_ack claim age + container_state
-  // (see src/host-sweep.ts). This avoids killing long-running legitimate work
-  // on a wall-clock timer.
-
-  container.on('close', (code) => {
-    activeContainers.delete(session.id);
-    markContainerStopped(session.id);
-    stopTypingRefresh(session.id);
-    // code null = killed by signal (normal shutdown path), not a boot failure.
-    if (code !== 0 && code !== null && stderrTail.length > 0) {
-      log.warn('Container exited non-zero', { sessionId: session.id, code, containerName, stderrTail });
+  try {
+    await armSessionLifecycle({
+      handle,
+      onTerminal: (failure) => {
+        void finishAndResolve(session.id, failure);
+      },
+      afterStart: () => {
+        return markContainerRunning(session.id);
+      },
+    });
+  } catch (err) {
+    if (activeContainers.get(session.id) === runtime && !runtime.finished) {
+      activeContainers.delete(session.id);
+      runtime.resolveFinished();
     } else {
-      log.info('Container exited', { sessionId: session.id, code, containerName });
+      await runtime.finishedPromise;
     }
-  });
+    throw err;
+  }
+}
 
-  container.on('error', (err) => {
-    activeContainers.delete(session.id);
-    markContainerStopped(session.id);
-    stopTypingRefresh(session.id);
-    log.error('Container spawn error', { sessionId: session.id, err });
+/**
+ * Wire a session's lifecycle in the one order that is safe, as executable code
+ * rather than as a comment a refactor can silently invert.
+ *
+ * Terminal handling is armed before the session starts, so a failure that lands
+ * during startup finds a runtime that already knows how to finalize. If
+ * `start()` throws, the post-start bookkeeping never runs — there is nothing
+ * running for it to record.
+ */
+export async function armSessionLifecycle(deps: {
+  handle: Pick<SupervisedHandle, 'onTerminal' | 'start'>;
+  onTerminal: (failure?: SessionFailure) => void;
+  afterStart?: () => void | Promise<void>;
+}): Promise<void> {
+  deps.handle.onTerminal(deps.onTerminal);
+  await deps.handle.start();
+  await deps.afterStart?.();
+}
+
+function registerRuntime(
+  sessionId: string,
+  handle: SupervisedHandle,
+  containerName: string,
+  adopted: boolean,
+): ActiveSessionRuntime {
+  let resolveFinished!: () => void;
+  const finishedPromise = new Promise<void>((resolve) => {
+    resolveFinished = resolve;
   });
+  const runtime: ActiveSessionRuntime = {
+    handle,
+    containerName,
+    startedAtMs: Date.now(),
+    adopted,
+    exitCallbacks: [],
+    finished: false,
+    finishedPromise,
+    resolveFinished,
+  };
+  activeContainers.set(sessionId, runtime);
+  return runtime;
+}
+
+/** Single-shot finalization: only the first terminal event resolves shutdown. */
+async function finishAndResolve(sessionId: string, failure?: SessionFailure): Promise<void> {
+  const runtime = activeContainers.get(sessionId);
+  if (!runtime || runtime.finished) return;
+  runtime.finished = true;
+  try {
+    await finish(sessionId, runtime, failure);
+  } finally {
+    runtime.resolveFinished();
+  }
+}
+
+async function finish(sessionId: string, runtime: ActiveSessionRuntime, failure?: SessionFailure): Promise<void> {
+  const { containerName } = runtime;
+  try {
+    await markContainerStopped(sessionId);
+  } catch (err) {
+    log.error('Failed to record stopped container', { sessionId, containerName, err });
+  }
+  try {
+    stopTypingRefresh(sessionId);
+  } catch (err) {
+    log.error('Failed to stop typing refresh', { sessionId, containerName, err });
+  }
+
+  if (failure && failure.kind !== 'started-then-died') {
+    log.error('Session failed', { sessionId, containerName, kind: failure.kind, retryable: failure.retryable });
+  } else {
+    log.info('Session ended', {
+      sessionId,
+      containerName,
+      exitCode: failure && failure.kind === 'started-then-died' ? failure.exitCode : undefined,
+    });
+  }
+
+  if (activeContainers.get(sessionId) === runtime) {
+    activeContainers.delete(sessionId);
+  }
+  for (const callback of runtime.exitCallbacks) {
+    try {
+      callback();
+    } catch (err) {
+      log.error('Container exit callback failed', { sessionId, containerName, err });
+    }
+  }
 }
 
 /** Kill a container for a session. */
 export function killContainer(sessionId: string, reason: string, onExit?: () => void): void {
   const entry = activeContainers.get(sessionId);
   if (!entry) {
-    // Container already gone (idle-exited between request and apply) — the
-    // "after exit" condition already holds, so fire the callback now instead
-    // of silently dropping it (self-mod respawn/on_wake depends on it).
+    // Container déjà parti (sortie sur inactivité entre la demande et son
+    // application) : la condition « après la sortie » est DÉJÀ vraie, donc on
+    // déclenche le callback au lieu de le perdre en silence — le respawn
+    // self-mod et les messages on_wake en dépendent.
     onExit?.();
     return;
   }
 
   if (onExit) {
-    entry.process.once('close', onExit);
+    entry.exitCallbacks.push(onExit);
   }
 
+  entry.stopReason = reason;
   log.info('Killing container', { sessionId, reason, containerName: entry.containerName });
+  void entry.handle.stop(reason).then(
+    () => {
+      // A handle whose supervision channel is gone (an adopted handle whose
+      // attach process belonged to the previous host) would otherwise never
+      // finalize, and the session would stay in the registry forever.
+      if (!entry.finished) void finishAndResolve(sessionId, undefined);
+    },
+    (err: unknown) => {
+      log.error('Failed to stop session', { sessionId, reason, err });
+      if (!entry.finished) void finishAndResolve(sessionId, undefined);
+    },
+  );
+}
+
+/**
+ * Startup reconciliation: adopt what is still alive, stop what is not ours.
+ *
+ * This replaces the old reap-everything `cleanupOrphans()`. A surviving session
+ * used to be destroyed on every host restart and its work recovered only
+ * through the DB; now the host re-registers it and delivery resumes. The OneCLI
+ * gateway resolves credentials per request on the host side, so an adopted
+ * session's egress keeps working without any per-process state to rebuild.
+ */
+export async function adoptRunningSessions(): Promise<{ adopted: number; stopped: number }> {
+  const driver = getSessionDriver();
+  let snapshots: SupervisedSnapshot[];
   try {
-    stopContainer(entry.containerName);
-  } catch {
-    // Do NOT SIGKILL entry.process here: that kills the local `docker run`
-    // client, not the container — 'close' would fire, the host would mark
-    // the session stopped, and a respawn would double-write the session DBs
-    // while the real container keeps running. `docker kill` targets the
-    // actual container; if even that fails (daemon unresponsive) keep the
-    // entry so a later sweep retries instead of desyncing state.
-    try {
-      forceKillContainer(entry.containerName);
-    } catch (err) {
-      log.error('Container kill failed — keeping entry for retry', {
-        sessionId,
-        containerName: entry.containerName,
-        err: (err as Error).message,
-      });
-    }
+    snapshots = await driver.listSessions(INSTALL_SLUG);
+  } catch (err) {
+    log.warn('Failed to list existing sessions for adoption', { err });
+    return { adopted: 0, stopped: 0 };
   }
+
+  let adopted = 0;
+  let stopped = 0;
+  for (const { handle, phase } of snapshots) {
+    const session = handle.key.sessionId ? await getSession(handle.key.sessionId) : undefined;
+    // The snapshot's phase is the listing's own truth: a corpse arrives as
+    // 'terminal' (or not at all), so telling adoptable sessions apart needs
+    // no per-handle status() round trip. `stop()` on a corpse is still full
+    // teardown — a self-exited runtime needs its residue cleaned up.
+    if (!session || session.status !== 'active' || phase !== 'running') {
+      await handle.stop('orphan-at-startup').catch(() => {});
+      stopped += 1;
+      continue;
+    }
+    const runtime = registerRuntime(session.id, handle, handle.name, true);
+    runtime.stopReason = undefined;
+    handle.onTerminal((failure) => {
+      void finishAndResolve(session.id, failure);
+    });
+    await markContainerRunning(session.id);
+    adopted += 1;
+  }
+
+  await driver.reapResidue?.(INSTALL_SLUG).catch?.(() => {});
+  // Reconcile terminals the watch stream missed while no host was listening —
+  // adoption is the one place a full re-list is already cheap, so the hub's
+  // resync wires here rather than into new periodic machinery.
+  if (isSessionEventsDriver(driver)) await driver.resync(INSTALL_SLUG).catch(() => {});
+
+  if (adopted > 0 || stopped > 0) {
+    log.info('Reconciled sessions at startup', { adopted, stopped });
+  }
+  return { adopted, stopped };
 }
 
 /**
  * Resolve the provider name for a session:
  *
- *   sessions.agent_provider
- *     → container_configs.provider
- *     → 'claude'
- *
- * Pure so the precedence can be unit-tested without a DB or filesystem.
+ *   sessions.agent_provider → container_configs.provider → 'claude'
  */
 export function resolveProviderName(
   sessionProvider: string | null | undefined,
@@ -295,38 +451,15 @@ export function resolveProviderName(
   return (sessionProvider || containerConfigProvider || 'claude').toLowerCase();
 }
 
-/**
- * Container hardening flags. Applied to every agent container; no per-group or
- * per-install override.
- *
- * cap-drop and no-new-privileges are inert while containers run under the
- * `--user` mapping below (the capability sets are already empty and the image
- * carries no file capabilities) — they are depth against a root-in-container
- * path. `--init` is not optional: the `--entrypoint bash` override further down
- * defeats the image's tini, leaving bun as PID 1 with no signal handler, and
- * Linux discards default-action signals to PID 1. Without docker-init, SIGTERM
- * is ignored and every stop ends in SIGKILL after the full grace period.
- */
-export function hardeningArgs(pidsLimit: string): string[] {
-  const args = ['--cap-drop=ALL', '--security-opt', 'no-new-privileges', '--init'];
-
-  // Test >0, not truthiness: cgroups v2 rejects `--pids-limit 0` with EINVAL and
-  // fails the spawn, and '0' is a truthy string. Blank/unparseable means no cap.
-  const pids = Number(pidsLimit);
-  if (Number.isFinite(pids) && pids > 0) args.push('--pids-limit', String(Math.floor(pids)));
-
-  return args;
-}
-
-function resolveProviderContribution(
+async function resolveProviderContribution(
   session: Session,
   agentGroup: AgentGroup,
   containerConfig: import('./container-config.js').ContainerConfig,
-): { provider: string; contribution: ProviderContainerContribution } {
+): Promise<{ provider: string; contribution: ProviderContainerContribution }> {
   const provider = resolveProviderName(session.agent_provider, containerConfig.provider);
   const fn = getProviderContainerConfig(provider);
   const contribution = fn
-    ? fn({
+    ? await fn({
         sessionDir: sessionDir(agentGroup.id, session.id),
         agentGroupId: agentGroup.id,
         groupDir: path.resolve(GROUPS_DIR, agentGroup.folder),
@@ -339,96 +472,169 @@ function resolveProviderContribution(
   return { provider, contribution };
 }
 
-export function buildMounts(
+/**
+ * Chemin du fichier de credentials OAuth Claude sur l'hôte, ou undefined.
+ *
+ * Claude Code accepte plusieurs répertoires de config via CLAUDE_CONFIG_DIR. Sur
+ * cet hôte la config authentifiée claude.ai est passée de ~/.claude à
+ * ~/.claude-anthropic, et le service systemd n'hérite PAS de l'alias du shell.
+ * On sonde donc les emplacements connus (surcharge explicite d'abord) pour que
+ * le mount survive au déplacement du répertoire.
+ */
+export function resolveClaudeCredentialsPath(): string | undefined {
+  const homeDir = process.env.HOME || `/home/${process.env.USER || 'node'}`;
+  return [
+    process.env.CLAUDE_CONFIG_DIR ? path.join(process.env.CLAUDE_CONFIG_DIR, '.credentials.json') : null,
+    path.join(homeDir, '.claude-anthropic', '.credentials.json'),
+    path.join(homeDir, '.claude', '.credentials.json'),
+  ].find((c): c is string => c !== null && fs.existsSync(c));
+}
+
+export async function buildMounts(
   agentGroup: AgentGroup,
   session: Session,
   containerConfig: import('./container-config.js').ContainerConfig,
   provider: string,
   providerContribution: ProviderContainerContribution,
-): VolumeMount[] {
+): Promise<VolumeMount[]> {
   const projectRoot = process.cwd();
 
   // Default agent surfaces (composed project doc, skill links, provider state
-  // dir) apply unless the provider's registration declares it provides its
-  // own — a capability, never a provider name. See provider-container-registry.
+  // dir) apply unless the provider's registration declares it provides its own.
   const defaultSurfaces = !providerProvidesAgentSurfaces(provider);
 
   const claudeDir = path.join(DATA_DIR, 'v2-sessions', agentGroup.id, '.claude-shared');
   if (defaultSurfaces) {
-    // Sync skill symlinks based on container.json selection before mounting.
     syncSkillSymlinks(claudeDir, containerConfig);
 
     // Compose CLAUDE.md fresh every spawn from the shared base, enabled skill
     // fragments, and MCP server instructions. See `claude-md-compose.ts`.
-    composeGroupClaudeMd(agentGroup);
+    await composeGroupClaudeMd(agentGroup);
   }
 
   const mounts: VolumeMount[] = [];
   const sessDir = sessionDir(agentGroup.id, session.id);
   const groupDir = path.resolve(GROUPS_DIR, agentGroup.folder);
+  const scope = agentGroup.id;
 
-  // Session folder at /workspace (contains inbound.db, outbound.db, outbox/, .claude/)
-  mounts.push({ hostPath: sessDir, containerPath: '/workspace', readonly: false });
+  // Session folder at /workspace (contains inbound.db, outbound.db, outbox/, .heartbeat)
+  mounts.push({ hostPath: sessDir, containerPath: '/workspace', readonly: false, mountClass: 'group-state', scope });
 
   // Agent group folder at /workspace/agent (RW for working files + shared memory)
-  mounts.push({ hostPath: groupDir, containerPath: '/workspace/agent', readonly: false });
+  mounts.push({
+    hostPath: groupDir,
+    containerPath: '/workspace/agent',
+    readonly: false,
+    mountClass: 'group-state',
+    scope,
+  });
 
-  // container.json — nested RO mount on top of RW group dir so the agent
-  // can read its config but cannot modify it.
+  // container.json — nested RO mount on top of RW group dir so the agent can
+  // read its config but cannot modify it. Composed per group, so 'group-state'
+  // read-only rather than 'install-surface': the install-surface rule is an
+  // enumerated release-surface allowlist, and this path is under the group.
   const containerJsonPath = path.join(groupDir, 'container.json');
   if (fs.existsSync(containerJsonPath)) {
-    mounts.push({ hostPath: containerJsonPath, containerPath: '/workspace/agent/container.json', readonly: true });
+    mounts.push({
+      hostPath: containerJsonPath,
+      containerPath: '/workspace/agent/container.json',
+      readonly: true,
+      mountClass: 'group-state',
+      scope,
+    });
   }
 
   // Stamped plugin content is immutable at runtime (the Agent Plugins
   // contract: writes go to plugin-data/, which stays RW via the group mount).
   // Same nested-RO pattern as container.json; initGroupFilesystem creates the
   // dir before mounts are built, so the mount is unconditional.
-  mounts.push({ hostPath: path.join(groupDir, 'plugins'), containerPath: CONTAINER_PLUGINS_DIR, readonly: true });
+  //
+  // Classed 'install-surface' rather than 'group-state' because what is stamped
+  // here is code the agent EXECUTES, and install-surface is the only class
+  // whose read-only rule is enforced instead of chosen. It lives under the
+  // group folder rather than an install root, so the mount policy pins it
+  // through the group-folder label — see `stampedPluginsRoot`.
+  mounts.push({
+    hostPath: path.join(groupDir, 'plugins'),
+    containerPath: CONTAINER_PLUGINS_DIR,
+    readonly: true,
+    mountClass: 'install-surface',
+    scope,
+  });
 
-  // Composer-managed CLAUDE.md artifacts — nested RO mounts. These are
-  // regenerated from the shared base + fragments on every spawn; any
-  // agent-side writes would be clobbered, so enforce read-only. The shared
-  // memory tree and standing-instructions source remain RW via the group mount.
-  // `.claude-shared.md` is a symlink whose target (`/app/CLAUDE.md`) is
-  // already RO-mounted, so writes through it fail regardless — no need for
-  // a nested mount there.
+  // Composer-managed CLAUDE.md artifacts — nested RO mounts, regenerated from
+  // the shared base + fragments on every spawn.
   const composedClaudeMd = path.join(groupDir, 'CLAUDE.md');
   if (defaultSurfaces && fs.existsSync(composedClaudeMd)) {
-    mounts.push({ hostPath: composedClaudeMd, containerPath: '/workspace/agent/CLAUDE.md', readonly: true });
+    mounts.push({
+      hostPath: composedClaudeMd,
+      containerPath: '/workspace/agent/CLAUDE.md',
+      readonly: true,
+      mountClass: 'group-state',
+      scope,
+    });
   }
   const fragmentsDir = path.join(groupDir, '.claude-fragments');
   if (defaultSurfaces && fs.existsSync(fragmentsDir)) {
-    mounts.push({ hostPath: fragmentsDir, containerPath: '/workspace/agent/.claude-fragments', readonly: true });
+    mounts.push({
+      hostPath: fragmentsDir,
+      containerPath: '/workspace/agent/.claude-fragments',
+      readonly: true,
+      mountClass: 'group-state',
+      scope,
+    });
   }
 
-  // Shared CLAUDE.md — read-only, imported by the composed entry point via
-  // the `.claude-shared.md` symlink inside the group dir.
-  const sharedClaudeMd = path.join(process.cwd(), 'container', 'CLAUDE.md');
+  // Shared CLAUDE.md — a release surface, read-only.
+  const sharedClaudeMd = path.join(projectRoot, 'container', 'CLAUDE.md');
   if (defaultSurfaces && fs.existsSync(sharedClaudeMd)) {
-    mounts.push({ hostPath: sharedClaudeMd, containerPath: '/app/CLAUDE.md', readonly: true });
+    mounts.push({
+      hostPath: sharedClaudeMd,
+      containerPath: '/app/CLAUDE.md',
+      readonly: true,
+      mountClass: 'install-surface',
+      scope,
+    });
   }
 
-  // Per-group .claude-shared at /home/node/.claude (Claude state, settings,
-  // skill symlinks)
+  // Per-group .claude-shared at /home/node/.claude (provider state, settings,
+  // skill symlinks). Per agent group, not per session.
   if (defaultSurfaces) {
-    mounts.push({ hostPath: claudeDir, containerPath: '/home/node/.claude', readonly: false });
+    mounts.push({
+      hostPath: claudeDir,
+      containerPath: '/home/node/.claude',
+      readonly: false,
+      mountClass: 'group-state',
+      scope,
+    });
   }
 
   // Shared agent-runner source — read-only, same code for all groups.
   const agentRunnerSrc = path.join(projectRoot, 'container', 'agent-runner', 'src');
-  mounts.push({ hostPath: agentRunnerSrc, containerPath: '/app/src', readonly: true });
+  mounts.push({
+    hostPath: agentRunnerSrc,
+    containerPath: '/app/src',
+    readonly: true,
+    mountClass: 'install-surface',
+    scope,
+  });
 
   // Shared skills — read-only, symlinks in .claude-shared/skills/ point here.
   const skillsSrc = path.join(projectRoot, 'container', 'skills');
   if (fs.existsSync(skillsSrc)) {
-    mounts.push({ hostPath: skillsSrc, containerPath: '/app/skills', readonly: true });
+    mounts.push({
+      hostPath: skillsSrc,
+      containerPath: '/app/skills',
+      readonly: true,
+      mountClass: 'install-surface',
+      scope,
+    });
   }
 
-  // Additional mounts from container config
+  // Additional mounts from container config — already vetted by the allowlist.
   if (containerConfig.additionalMounts && containerConfig.additionalMounts.length > 0) {
     const validated = validateAdditionalMounts(containerConfig.additionalMounts, agentGroup.name);
-    mounts.push(...validated);
+    mounts.push(...validated.map((m) => ({ ...m, mountClass: 'allowlisted-extra' as const, scope })));
   }
 
   // Credentials imap générés au spawn depuis le coffre (doctrine secrets,
@@ -440,23 +646,290 @@ export function buildMounts(
   if (imapAccounts.length > 0) {
     const credsDir = path.join(sessionDir(agentGroup.id, session.id), 'imap-creds');
     materializeImapCreds(credsDir, imapAccounts);
-    mounts.push({ hostPath: credsDir, containerPath: '/workspace/extra/.imap-mcp', readonly: true });
+    mounts.push({
+      hostPath: credsDir,
+      containerPath: '/workspace/extra/.imap-mcp',
+      readonly: true,
+      mountClass: 'allowlisted-extra',
+      scope,
+    });
   }
 
-  // Provider-contributed mounts (e.g. opencode-xdg)
+  // Abonnement Claude Pro/Max de l'hôte : on monte le fichier de credentials
+  // OAuth plutôt que d'exposer un jeton en variable d'environnement. Classé
+  // `allowlisted-extra` et non `identity-material` : cette dernière classe vise
+  // les certs ÉMIS PAR LE PROVISIONNEUR (sous materialsRoot) et interdit par
+  // construction le rôle `agent` — voir classRequiredByPath. Réservé à claude :
+  // les autres providers ont besoin du proxy OneCLI actif pour recevoir leur
+  // clé amont, et le neutraliser leur vaudrait un 401.
+  if (provider === 'claude') {
+    const claudeCredentials = resolveClaudeCredentialsPath();
+    if (claudeCredentials) {
+      mounts.push({
+        hostPath: claudeCredentials,
+        containerPath: '/home/node/.claude/.credentials.json',
+        readonly: true,
+        mountClass: 'allowlisted-extra',
+        scope,
+      });
+    }
+  }
+
+  // Provider-contributed mounts (e.g. opencode-xdg). Vetted upstream by the
+  // in-tree provider registration, which is exactly the 'allowlisted-extra'
+  // contract — classing them group-state would deny any provider whose state
+  // root sits outside the group subtree.
   if (providerContribution.mounts) {
-    mounts.push(...providerContribution.mounts);
+    mounts.push(...providerContribution.mounts.map((m) => ({ ...m, mountClass: 'allowlisted-extra' as const, scope })));
   }
 
   return mounts;
 }
 
+/** VolumeMount (host vocabulary) → MountSpec (seam vocabulary). */
+export function toMountSpecs(mounts: readonly VolumeMount[], defaultScope: string): MountSpec[] {
+  return mounts.map((mount) => ({
+    class: mount.mountClass ?? 'allowlisted-extra',
+    hostPath: mount.hostPath,
+    containerPath: mount.containerPath,
+    mode: mount.readonly ? ('ro' as const) : ('rw' as const),
+    groupScope: mount.scope ?? defaultScope,
+  }));
+}
+
+export interface ComposeSessionSpecInput {
+  agentGroup: AgentGroup;
+  session: Session;
+  containerName: string;
+  mounts: VolumeMount[];
+  containerConfig: import('./container-config.js').ContainerConfig;
+  contribution: ProviderContainerContribution;
+  /**
+   * The gateway provider's typed per-session contribution. No argv-shaped
+   * input reaches composition anymore: network selection is driver-private,
+   * and everything the gateway used to append as raw flags arrives here as
+   * env, mounts, and (capability-gated) auxiliary containers.
+   */
+  gateway: GatewayContribution;
+  /**
+   * L'hôte a monté le fichier de credentials OAuth claude pour cette session
+   * (abonnement Pro/Max). Décidé dans spawnContainer, à côté du mount, plutôt
+   * que redécouvert ici : composeSessionSpec reste pur — sans quoi son
+   * comportement dépendrait du disque de la machine qui exécute les tests.
+   */
+  claudeOAuthMounted?: boolean;
+}
+
+/**
+ * One source per target: contributed mounts shadow composed mounts on a
+ * containerPath collision (a gateway-served stub landing inside a composed
+ * tree replaces that path's source — the effect Docker's last-wins `-v` rule
+ * used to produce, resolved here so the spec a driver sees is collision-free
+ * and `validateSpec` can refuse ambiguity outright).
+ */
+export function mergeMounts(composed: MountSpec[], contributed: MountSpec[]): MountSpec[] {
+  const contributedTargets = new Set(contributed.map((m) => m.containerPath));
+  return [...composed.filter((m) => !contributedTargets.has(m.containerPath)), ...contributed];
+}
+
+/**
+ * Compose the session spec. This is the tail of the old `buildContainerArgs`,
+ * with argv assembly removed: the host says what a session *is*, the driver
+ * says how it is realized.
+ */
+export function composeSessionSpec(input: ComposeSessionSpecInput): SessionSpec {
+  const { agentGroup, session, containerName, mounts, containerConfig, contribution, gateway } = input;
+  const claudeOAuthMounted = input.claudeOAuthMounted ?? false;
+
+  const env: Record<string, string> = {
+    TZ: containerConfig.timezone ?? TIMEZONE,
+  };
+  // The contributed lane (ContainerSpec.contributedEnv): registry-sourced env,
+  // exempt from the credential-NAME check and still refused credential VALUES.
+  // The model provider's contribution fills first, the gateway's second — a
+  // gateway wins a key collision, the override the old raw-argv append got
+  // from Docker's last-wins rule.
+  const contributedEnv: Record<string, string> = {
+    ...(contribution.env ?? {}),
+    ...(gateway.env ?? {}),
+  };
+
+  // Abonnement Claude Pro/Max : le SDK doit lire les jetons OAuth dans le
+  // fichier monté, donc on neutralise la clé d'API bouchon et le proxy OneCLI.
+  // Ces trois-là voyagent par la voie CONTRIBUÉE et non par `env` : la voie
+  // composée refuse toute clé nommée *_KEY, valeur vide comprise, tandis que la
+  // voie contribuée n'interdit que les VALEURS de credential — une chaîne vide
+  // n'en est pas une. Poussé APRÈS gateway.env pour gagner la collision : c'est
+  // exactement ce que produisait l'ancien dernier `-e` de docker.
+  if (claudeOAuthMounted) {
+    contributedEnv.ANTHROPIC_API_KEY = '';
+    contributedEnv.HTTPS_PROXY = '';
+    contributedEnv.HTTP_PROXY = '';
+  }
+
+  // Réglages runner que l'opérateur peut poser sur l'hôte (désactiver l'auto-
+  // background ou le live-status pendant l'E2E). Le poll-loop les lit dans
+  // process.env côté container : sans passthrough explicite, la valeur de
+  // l'hôte n'arrive jamais.
+  for (const key of ['NANOCLAW_AUTO_BG_THRESHOLD_MS', 'NANOCLAW_LIVE_STATUS_DISABLED'] as const) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+
+  // Env par groupe (container_configs.env) — l'endroit canonique de la config
+  // provider par groupe (cf. CLAUDE.md). Injecté génériquement pour que
+  // `ncl groups config env-set` vaille pour TOUS les providers, pas seulement
+  // ceux dont la contribution hôte relaie une liste blanche. Les `vault:` ont
+  // déjà été résolus dans spawnContainer.
+  if (containerConfig.env) {
+    const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+    for (const [key, value] of Object.entries(containerConfig.env)) {
+      if (!ENV_KEY_RE.test(key)) {
+        log.warn('Skipping per-group env var with invalid key', { key });
+        continue;
+      }
+      // La voie COMPOSÉE refuse tout nom en *_KEY/_TOKEN/_SECRET/PASSWORD,
+      // valeur bouchon comprise (isSecretShaped, drivers/types.ts) : seule la
+      // voie contribuée est exemptée du contrôle de nom. Une telle clé doit
+      // donc être relayée par la contribution du provider — c'est le cas
+      // d'OPENCODE_API_KEY. On l'écarte ici, mais on le DIT : sinon un groupe
+      // dont le provider ne relaie pas la clé la perdrait en silence, et le
+      // symptôme (401 lointain) ne désignerait jamais cette ligne.
+      if (isSecretShaped(key, value)) {
+        if (contribution.env?.[key] === undefined) {
+          log.warn('Per-group env var dropped: secret-shaped name with no provider lane', {
+            key,
+            hint: "the provider's host-side contribution must forward it, or move the credential to the gateway",
+          });
+        }
+        continue;
+      }
+      env[key] = value;
+    }
+  }
+
+  const hostUid = process.getuid?.();
+  const hostGid = process.getgid?.();
+  // The spec contract (drivers/types.ts, `runAs`): the identity that must read
+  // 0600 host-owned material is explicit in the spec for every non-root host,
+  // never inherited from an image USER. uid 1000 matches the agent image's
+  // node user, so the Docker realization is a no-op there — but a driver whose
+  // auxiliary image runs as 65532 needs it said, or that container cannot open
+  // its own 0600 session material. uid 0 stays excluded: the hardened posture pins
+  // non-root, and Docker's root behavior is unchanged trunk behavior.
+  // HOME travels with the mapping, exactly as it did in the old argv: a uid
+  // the image has no passwd entry for resolves HOME to '/', and the provider
+  // SDK's `mkdir ~/.claude` dies EACCES; /home/node is chmod 777 in the agent
+  // image, so it is writable by any uid under both drivers.
+  const runAs = hostUid != null && hostUid !== 0 ? { uid: hostUid, gid: hostGid ?? hostUid } : undefined;
+  if (runAs) env.HOME = '/home/node';
+
+  const agent: ContainerSpec = {
+    role: 'agent',
+    // Composition resolves the image; drivers never build and never resolve.
+    image: containerConfig.imageTag || CONTAINER_IMAGE,
+    env,
+    // Run the v2 entry point directly (no tsc, no stdin). The driver maps the
+    // 'standard' posture's PID-1 requirement onto this: Docker adds `--init`.
+    command: ['bash', '-c'],
+    args: ['exec bun run /app/src/index.ts'],
+    mounts: mergeMounts(toMountSpecs(mounts, agentGroup.id), gateway.mounts ?? []),
+    contributedEnv,
+  };
+
+  // The folder label (D9) rides the spec so an admission-side check can pin
+  // the `groups/<folder>` mount subtree to the session that carries it — the
+  // id→folder mapping lives only in the central DB, which no admission-side
+  // check can read. It is VERBATIM by contract, deliberately the opposite of
+  // the projection lineage labels get: the policy pins hostPaths by
+  // concatenating this label into the required prefix
+  // (`path.startsWith(GROUPS + '/' + label + '/')` shape), and no
+  // admission-side check can invert a hash-suffix projection — a projected
+  // value would have the policy compare the real folder against a truncated
+  // stand-in and deny every session of the group while naming the wrong
+  // culprit. So a folder no driver can carry verbatim refuses HERE, loudly
+  // and non-retryably, where the error can say what is actually wrong.
+  if (!labelValueLegal(agentGroup.folder)) {
+    throw specInvalid(
+      `group folder '${agentGroup.folder}' cannot be carried verbatim as the ${GROUP_FOLDER_LABEL} label ` +
+        `(label values: <=63 bytes of [A-Za-z0-9._-], alphanumeric at both ends); admission joins ` +
+        `on this label verbatim so it is never projected — rename the group folder ` +
+        `(\`bun scripts/detect-driver-migration.ts\` enumerates affected groups and the fix)`,
+    );
+  }
+
+  return {
+    key: { installSlug: INSTALL_SLUG, agentGroupId: agentGroup.id, sessionId: session.id },
+    labels: { 'nanoclaw-container-name': containerName, [GROUP_FOLDER_LABEL]: agentGroup.folder },
+    // The gateway's auxiliary containers ride beside the agent; capability-
+    // gated in the spawn path before composition ever runs.
+    containers: [agent, ...(gateway.containers ?? [])],
+    network: 'shared-private',
+    hardening: 'standard',
+    resources: {
+      cpus: CONTAINER_CPU_LIMIT || undefined,
+      memoryMb: parseMemoryMb(CONTAINER_MEMORY_LIMIT),
+      pidsLimit: parsePidsLimit(CONTAINER_PIDS_LIMIT),
+      shmSizeMb: SHM_SIZE_MB,
+    },
+    runtimeTier: 'container',
+    runAs,
+    stopGraceSeconds: STOP_GRACE_SECONDS,
+  };
+}
+
+/**
+ * `CONTAINER_MEMORY_LIMIT` is an operator-facing docker size string ("8g",
+ * "512m"). Empty stays undefined — no cap, today's behavior.
+ *
+ * A bare number is bytes, which is Docker's own rule and therefore what an
+ * operator's existing value already means. It is preserved rather than
+ * reinterpreted as megabytes: guessing the friendlier meaning would quietly
+ * multiply a limit by a million.
+ */
+export function parseMemoryMb(value: string): number | undefined {
+  if (!value.trim()) return undefined;
+  const match = /^(\d+(?:\.\d+)?)\s*([bkmg]?)b?$/i.exec(value.trim());
+  if (!match) {
+    // Fail-closed, like the raw pass-through this replaced: an invalid value
+    // used to make Docker reject the spawn, and returning undefined here would
+    // silently REMOVE the operator's cap instead — the one wrong direction for
+    // a resource limit to fail in.
+    throw specInvalid(`CONTAINER_MEMORY_LIMIT '${value}' is not a docker size string ("8g", "512m", "1073741824")`);
+  }
+  const size = Number(match[1]);
+  if (!Number.isFinite(size)) {
+    throw specInvalid(`CONTAINER_MEMORY_LIMIT '${value}' is not a docker size string ("8g", "512m", "1073741824")`);
+  }
+  if (size === 0) return undefined; // Docker's own meaning for 0: no cap.
+  switch (match[2].toLowerCase()) {
+    case 'g':
+      return Math.floor(size * 1024);
+    case 'k':
+      return Math.max(1, Math.floor(size / 1024));
+    case 'b':
+    case '':
+      return Math.max(1, Math.floor(size / (1024 * 1024)));
+    default:
+      return Math.floor(size);
+  }
+}
+
+/** cgroups v2 rejects a pids limit of 0 with EINVAL, so blank/0/garbage means no cap. */
+export function parsePidsLimit(value: string): number | undefined {
+  const pids = Number(value);
+  return Number.isFinite(pids) && pids > 0 ? Math.floor(pids) : undefined;
+}
+
 /**
  * Sync skill symlinks in .claude-shared/skills/ to match the container.json
- * selection. Each symlink points to a container path (/app/skills/<name>)
- * so it's dangling on the host but valid inside the container.
+ * selection. Each symlink points to a container path (/app/skills/<name>) so
+ * it's dangling on the host but valid inside the container.
  */
-function syncSkillSymlinks(claudeDir: string, containerConfig: import('./container-config.js').ContainerConfig): void {
+export function syncSkillSymlinks(
+  claudeDir: string,
+  containerConfig: import('./container-config.js').ContainerConfig,
+): void {
   const skillsDir = path.join(claudeDir, 'skills');
   if (!fs.existsSync(skillsDir)) {
     fs.mkdirSync(skillsDir, { recursive: true });
@@ -524,163 +997,15 @@ function selectedSkillNames(containerConfig: import('./container-config.js').Con
     : [];
 }
 
-async function buildContainerArgs(
-  mounts: VolumeMount[],
-  containerName: string,
-  agentGroup: AgentGroup,
-  containerConfig: import('./container-config.js').ContainerConfig,
-  _provider: string,
-  providerContribution: ProviderContainerContribution,
-  agentIdentifier?: string,
-): Promise<string[]> {
-  const args: string[] = ['run', '--rm', '--name', containerName, '--label', CONTAINER_INSTALL_LABEL];
-
-  // Per-container resource caps (opt-in; empty = unbounded, today's behavior).
-  // Only --memory is set. Whether that's a hard cap depends on the host having no
-  // swap (a deployment concern) — on a swapless host --memory is hard and a runaway
-  // is OOM-killed; we don't manage swap from here.
-  if (CONTAINER_CPU_LIMIT) args.push('--cpus', CONTAINER_CPU_LIMIT);
-  if (CONTAINER_MEMORY_LIMIT) args.push('--memory', CONTAINER_MEMORY_LIMIT);
-
-  // Docker defaults /dev/shm to 64m, which silently short-writes past that size.
-  // agent-browser passes --disable-dev-shm-usage, but a third-party puppeteer or
-  // Playwright launcher may not.
-  args.push('--shm-size=1g');
-
-  args.push(...hardeningArgs(CONTAINER_PIDS_LIMIT));
-
-  // Environment — only vars read by code we don't own.
-  // Everything NanoClaw-specific is in container.json (read by runner at startup).
-  args.push('-e', `TZ=${containerConfig.timezone ?? TIMEZONE}`);
-
-  // Passthrough for runner-level tunables that the user might set on the host
-  // (e.g. to disable auto-background or live-status during E2E tests). The
-  // container poll-loop reads these from process.env; without the explicit
-  // passthrough the host-side value never reaches the container.
-  if (process.env.NANOCLAW_AUTO_BG_THRESHOLD_MS !== undefined) {
-    args.push('-e', `NANOCLAW_AUTO_BG_THRESHOLD_MS=${process.env.NANOCLAW_AUTO_BG_THRESHOLD_MS}`);
-  }
-  if (process.env.NANOCLAW_LIVE_STATUS_DISABLED !== undefined) {
-    args.push('-e', `NANOCLAW_LIVE_STATUS_DISABLED=${process.env.NANOCLAW_LIVE_STATUS_DISABLED}`);
-  }
-
-  // Per-group env from container_configs.env — the canonical place for
-  // per-group provider config (see CLAUDE.md). Injected generically so
-  // `ncl groups config env-set` works for EVERY provider (claude included),
-  // not only those whose host-side contribution forwards a whitelist.
-  if (containerConfig.env) {
-    // Les `vault:` ont déjà été résolus en amont (spawnContainer), avant la
-    // contribution du provider — voir le commentaire là-bas.
-    const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-    for (const [key, value] of Object.entries(containerConfig.env)) {
-      if (!ENV_KEY_RE.test(key)) {
-        log.warn('Skipping per-group env var with invalid key', { key });
-        continue;
-      }
-      args.push('-e', `${key}=${value}`);
-    }
-  }
-
-  // Provider-contributed env vars (e.g. XDG_DATA_HOME, OPENCODE_*, NO_PROXY).
-  // Pushed after the per-group map — docker uses the last -e occurrence, so
-  // the provider's computed merge wins on duplicated keys.
-  if (providerContribution.env) {
-    for (const [key, value] of Object.entries(providerContribution.env)) {
-      args.push('-e', `${key}=${value}`);
-    }
-  }
-
-  // Egress lockdown when enabled — throws if it can't be established, aborting
-  // the spawn rather than running with open egress. Otherwise the host gateway.
-  if (ensureEgressNetwork()) {
-    args.push(...egressNetworkArgs());
-    log.info('Egress lockdown active', { containerName, network: EGRESS_NETWORK });
-  } else {
-    args.push(...hostGatewayArgs());
-  }
-
-  // User mapping
-  const hostUid = process.getuid?.();
-  const hostGid = process.getgid?.();
-  if (hostUid != null && hostUid !== 0 && hostUid !== 1000) {
-    args.push('--user', `${hostUid}:${hostGid}`);
-    args.push('-e', 'HOME=/home/node');
-  }
-
-  // Volume mounts
-  for (const mount of mounts) {
-    if (mount.readonly) {
-      args.push(...readonlyMountArgs(mount.hostPath, mount.containerPath));
-    } else {
-      args.push('-v', `${mount.hostPath}:${mount.containerPath}`);
-    }
-  }
-
-  // OneCLI gateway — injects HTTPS_PROXY + certs so container API calls
-  // are routed through the agent vault for credential injection, and mounts
-  // any credential stubs the gateway serves (e.g. a sentinel auth file).
-  // Runs AFTER the volume mounts so a stub nested inside one of our mounts
-  // (a parent dir mounted RW above it) lands later in the args and isn't
-  // shadowed by it. Treated as a transient hard failure: if we can't wire
-  // the gateway, we don't spawn. The caller (router or host-sweep) catches
-  // the throw, leaves the inbound message pending, and the next sweep tick
-  // retries.
-  if (agentIdentifier) {
-    await onecli.ensureAgent({ name: agentGroup.name, identifier: agentIdentifier });
-  }
-  const onecliApplied = await onecli.applyContainerConfig(args, { addHostMapping: false, agent: agentIdentifier });
-  if (!onecliApplied) {
-    throw new Error('OneCLI gateway not applied — refusing to spawn container without credentials');
-  }
-  log.info('OneCLI gateway applied', { containerName });
-
-  // Override entrypoint: run v2 entry point directly via Bun (no tsc, no stdin).
-  args.push('--entrypoint', 'bash');
-
-  // Mount Claude OAuth credentials (Pro/Max subscription) if present.
-  // Allows the agent to authenticate using the host's subscription without
-  // exposing tokens as environment variables.
-  // When credentials.json is available, override OneCLI's placeholder API key
-  // and proxy so the Claude SDK reads OAuth tokens directly from the file.
-  // Skipped for non-claude providers (e.g. opencode): they need OneCLI's
-  // HTTPS_PROXY active so the gateway injects the upstream provider key
-  // (OpenRouter, DeepSeek, etc.) — clearing it would strip the auth header
-  // and the upstream returns 401 / "Missing Authentication header".
-  const homeDir = process.env.HOME || `/home/${process.env.USER || 'node'}`;
-  // Claude Code supports multiple config dirs via CLAUDE_CONFIG_DIR. On this host
-  // the claude.ai-authenticated config moved from ~/.claude to ~/.claude-anthropic,
-  // and the systemd service does NOT inherit the shell's CLAUDE_CONFIG_DIR alias.
-  // Probe known locations (explicit env override first) and use the first that
-  // exists, so the OAuth mount survives the config-dir move.
-  const claudeCredentials = [
-    process.env.CLAUDE_CONFIG_DIR ? path.join(process.env.CLAUDE_CONFIG_DIR, '.credentials.json') : null,
-    path.join(homeDir, '.claude-anthropic', '.credentials.json'),
-    path.join(homeDir, '.claude', '.credentials.json'),
-  ].find((p): p is string => p !== null && fs.existsSync(p));
-  if (claudeCredentials && _provider === 'claude') {
-    args.push(...readonlyMountArgs(claudeCredentials, '/home/node/.claude/.credentials.json'));
-    args.push('-e', 'ANTHROPIC_API_KEY=');
-    args.push('-e', 'HTTPS_PROXY=');
-    args.push('-e', 'HTTP_PROXY=');
-  }
-
-  // Use per-agent-group image if one has been built, otherwise base image
-  const imageTag = containerConfig.imageTag || CONTAINER_IMAGE;
-  args.push(imageTag);
-
-  args.push('-c', 'exec bun run /app/src/index.ts');
-
-  return args;
-}
-
+const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
 /** Build a per-agent-group Docker image with custom packages. */
 export async function buildAgentGroupImage(agentGroupId: string): Promise<void> {
-  const agentGroup = getAgentGroup(agentGroupId);
+  const agentGroup = await getAgentGroup(agentGroupId);
   if (!agentGroup) throw new Error('Agent group not found');
 
-  const configRow = getContainerConfig(agentGroup.id);
+  const configRow = await getContainerConfig(agentGroup.id);
   if (!configRow) throw new Error('Container config not found');
   const aptPackages = JSON.parse(configRow.packages_apt) as string[];
   const npmPackages = JSON.parse(configRow.packages_npm) as string[];
@@ -688,15 +1013,23 @@ export async function buildAgentGroupImage(agentGroupId: string): Promise<void> 
     throw new Error('No packages to install. Use install_packages first.');
   }
 
-  // Defense in depth: the request paths (self-mod request.ts, ncl
-  // config add-package) validate too, but these names get interpolated
-  // into Dockerfile RUN lines executed as root — never trust the DB row.
+  // Défense en profondeur : les chemins de demande (self-mod request.ts, ncl
+  // config add-package) valident déjà, mais ces noms finissent interpolés dans
+  // des lignes RUN de Dockerfile exécutées en root — ne jamais faire confiance
+  // à la ligne de base.
   const APT_RE = /^[a-z0-9][a-z0-9._+-]*$/;
   const NPM_RE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
-  const badApt = aptPackages.find((p) => !APT_RE.test(p));
+  const badApt = aptPackages.find((pkg) => !APT_RE.test(pkg));
   if (badApt) throw new Error(`Invalid apt package name in container config: ${badApt}`);
-  const badNpm = npmPackages.find((p) => !NPM_RE.test(p));
+  const badNpm = npmPackages.find((pkg) => !NPM_RE.test(pkg));
   if (badNpm) throw new Error(`Invalid npm package name in container config: ${badNpm}`);
+
+  // Image building is not on the runtime path (drivers never build) and shells
+  // the local Docker daemon. Both call sites gate on the `imageBuild`
+  // capability; this is the backstop for any future caller that forgets.
+  if (!getSessionDriver().capabilities().imageBuild) {
+    throw new Error('Per-agent-group image builds are unavailable on this runtime driver');
+  }
 
   // Which bytes this is built on. Recorded on the derived image so an operator
   // can tell which base a group's packages were layered onto — the image id
@@ -745,18 +1078,14 @@ export async function buildAgentGroupImage(agentGroupId: string): Promise<void> 
 
   log.info('Building per-agent-group image', { agentGroupId, imageTag, apt: aptPackages, npm: npmPackages });
 
-  // Build from an EMPTY temp context: the Dockerfile has no COPY/ADD, and
-  // using DATA_DIR as context would ship the central DB and every session DB
-  // to the docker daemon on each build. execFileSync (argv, no shell) so the
-  // tag/path are never shell-interpreted.
+  // Construction depuis un contexte temporaire VIDE : le Dockerfile n'a ni COPY
+  // ni ADD, et prendre DATA_DIR comme contexte enverrait la base centrale et
+  // TOUTES les bases de session au démon docker à chaque build. execFile (argv,
+  // sans shell) pour que le tag et le chemin ne soient jamais interprétés.
   const buildDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nc-build-'));
   const tmpDockerfile = path.join(buildDir, 'Dockerfile');
   fs.writeFileSync(tmpDockerfile, dockerfile);
   try {
-    // Awaited async execFile so the single-threaded host stays responsive
-    // during the build (can take minutes) instead of blocking. argv form (no
-    // shell) keeps the tag/path uninterpreted; buffers stdout/stderr and
-    // rejects on a non-zero exit.
     await execFileAsync(CONTAINER_RUNTIME_BIN, ['build', '-t', imageTag, '-f', tmpDockerfile, '.'], {
       cwd: buildDir,
       timeout: 900_000,
@@ -766,7 +1095,7 @@ export async function buildAgentGroupImage(agentGroupId: string): Promise<void> 
   }
 
   // Store the image tag in the DB
-  updateContainerConfigScalars(agentGroup.id, { image_tag: imageTag });
+  await updateContainerConfigScalars(agentGroup.id, { image_tag: imageTag });
 
   log.info('Per-agent-group image built', { agentGroupId, imageTag });
 }

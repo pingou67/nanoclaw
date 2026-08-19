@@ -16,7 +16,12 @@
  * core iterates handlers and the first one to return `true` claims the response.
  */
 import { wakeContainer } from '../../container-runner.js';
-import { claimPendingApproval, deletePendingApproval, getPendingApproval, getSession } from '../../db/sessions.js';
+import {
+  deletePendingApproval,
+  getPendingApproval,
+  getSession,
+  transitionPendingApprovalStatus,
+} from '../../db/sessions.js';
 import type { ResponsePayload } from '../../response-registry.js';
 import { log } from '../../log.js';
 import { writeSessionMessage } from '../../session-manager.js';
@@ -28,10 +33,10 @@ import { getApprovalHandler, notifyApprovalResolved, REJECT_WITH_REASON_VALUE } 
 import { armReasonCapture } from './reason-capture.js';
 
 export async function handleApprovalsResponse(payload: ResponsePayload): Promise<boolean> {
-  const approval = getPendingApproval(payload.questionId);
+  const approval = await getPendingApproval(payload.questionId);
   if (!approval) return false;
 
-  if (!isAuthorizedApprovalClick(approval, payload)) {
+  if (!(await isAuthorizedApprovalClick(approval, payload))) {
     log.warn('Ignoring unauthorized approval response', {
       approvalId: approval.approval_id,
       action: approval.action,
@@ -42,12 +47,12 @@ export async function handleApprovalsResponse(payload: ResponsePayload): Promise
   }
 
   if (approval.action === ONECLI_ACTION) {
-    if (resolveOneCLIApproval(payload.questionId, payload.value)) {
+    if (await resolveOneCLIApproval(payload.questionId, payload.value)) {
       return true;
     }
     // Row exists but the in-memory resolver is gone (timer fired or the process
     // was in a weird state). Nothing to do — just drop the row.
-    deletePendingApproval(payload.questionId);
+    await deletePendingApproval(payload.questionId);
     return true;
   }
 
@@ -60,24 +65,13 @@ async function handleRegisteredApproval(
   selectedOption: string,
   userId: string,
 ): Promise<void> {
-  // Atomic claim — a double click (or platform retry) dispatches two
-  // concurrent chains; without this the handler side effects (image builds,
-  // approved ncl commands, message replays) run twice.
-  if (!claimPendingApproval(approval.approval_id)) {
-    log.info('Approval already being resolved — ignoring duplicate click', {
-      approvalId: approval.approval_id,
-      action: approval.action,
-    });
-    return;
-  }
-
   if (!approval.session_id) {
-    deletePendingApproval(approval.approval_id);
+    await deletePendingApproval(approval.approval_id);
     return;
   }
-  const session = getSession(approval.session_id);
+  const session = await getSession(approval.session_id);
   if (!session) {
-    deletePendingApproval(approval.approval_id);
+    await deletePendingApproval(approval.approval_id);
     return;
   }
 
@@ -95,9 +89,17 @@ async function handleRegisteredApproval(
     return;
   }
 
+  // Comme le chemin reject d'upstream (`finalizeReject` calcule le même
+  // statut attendu), on accepte aussi une ligne déjà armée en
+  // « rejeter avec motif » : l'admin garde le droit de cliquer Approuver sur
+  // le carton après l'avoir armé. Restreindre à 'pending' rendrait ce clic
+  // silencieusement inopérant.
+  const expectedForApprove = approval.status === 'awaiting_reason' ? 'awaiting_reason' : 'pending';
+  if (!(await transitionPendingApprovalStatus(approval.approval_id, expectedForApprove, 'approved'))) return;
+
   // Approved — dispatch to the module that registered for this action.
-  const notify = (text: string): void => {
-    writeSessionMessage(session.agent_group_id, session.id, {
+  const notify = async (text: string): Promise<void> => {
+    await writeSessionMessage(session.agent_group_id, session.id, {
       id: `appr-note-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       kind: 'chat',
       timestamp: new Date().toISOString(),
@@ -114,8 +116,8 @@ async function handleRegisteredApproval(
       approvalId: approval.approval_id,
       action: approval.action,
     });
-    notify(`Your ${approval.action} was approved, but no handler is installed to apply it.`);
-    deletePendingApproval(approval.approval_id);
+    await notify(`Your ${approval.action} was approved, but no handler is installed to apply it.`);
+    await deletePendingApproval(approval.approval_id);
     await notifyApprovalResolved({ approval, session, outcome: 'approve', userId });
     await wakeContainer(session);
     return;
@@ -127,12 +129,12 @@ async function handleRegisteredApproval(
     log.info('Approval handled', { approvalId: approval.approval_id, action: approval.action, userId });
   } catch (err) {
     log.error('Approval handler threw', { approvalId: approval.approval_id, action: approval.action, err });
-    notify(
+    await notify(
       `Your ${approval.action} was approved, but applying it failed: ${err instanceof Error ? err.message : String(err)}.`,
     );
   }
 
-  deletePendingApproval(approval.approval_id);
+  await deletePendingApproval(approval.approval_id);
   await notifyApprovalResolved({ approval, session, outcome: 'approve', userId });
   await wakeContainer(session);
 }
@@ -142,7 +144,7 @@ function namespacedUserId(payload: ResponsePayload): string | null {
   return payload.userId.includes(':') ? payload.userId : `${payload.channelType}:${payload.userId}`;
 }
 
-function isAuthorizedApprovalClick(approval: PendingApproval, payload: ResponsePayload): boolean {
+async function isAuthorizedApprovalClick(approval: PendingApproval, payload: ResponsePayload): Promise<boolean> {
   const userId = namespacedUserId(payload);
   if (!userId) return false;
 
@@ -152,10 +154,10 @@ function isAuthorizedApprovalClick(approval: PendingApproval, payload: ResponseP
   }
 
   const agentGroupId =
-    approval.agent_group_id ?? (approval.session_id ? getSession(approval.session_id)?.agent_group_id : null);
+    approval.agent_group_id ?? (approval.session_id ? (await getSession(approval.session_id))?.agent_group_id : null);
 
   if (!agentGroupId) {
-    return isOwner(userId) || isGlobalAdmin(userId);
+    return (await isOwner(userId)) || (await isGlobalAdmin(userId));
   }
 
   return hasAdminPrivilege(userId, agentGroupId);

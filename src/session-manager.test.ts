@@ -47,18 +47,18 @@ function readMessagesOut(): Array<{ id: string; seq: number; kind: string; conte
   }
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
   fs.mkdirSync(TEST_DIR, { recursive: true });
   initSessionFolder(AG, SESS);
 });
 
-afterEach(() => {
+afterEach(async () => {
   if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
 });
 
 describe('writeOutboundDirect', () => {
-  it('inserts into messages_out with an even host-side seq (requires a writable outbound.db)', () => {
+  it('inserts into messages_out with an even host-side seq (requires a writable outbound.db)', async () => {
     // With a readonly open this very call throws SQLITE_READONLY.
     writeOutboundDirect(AG, SESS, {
       id: 'denial-1',
@@ -77,7 +77,7 @@ describe('writeOutboundDirect', () => {
     expect(JSON.parse(rows[0].content).text).toBe('Admin commands are restricted.');
   });
 
-  it('keeps host seq numbers even across multiple writes and ignores duplicate ids', () => {
+  it('keeps host seq numbers even across multiple writes and ignores duplicate ids', async () => {
     writeOutboundDirect(AG, SESS, {
       id: 'denial-1',
       kind: 'chat',
@@ -118,10 +118,10 @@ describe('writeOutboundDirect', () => {
  * message is logged-and-dropped forever — the reset silently kills the chat.
  */
 describe('writeSessionMessage re-provisions a deleted session folder', () => {
-  beforeEach(() => {
-    const db = initTestDb();
-    runMigrations(db);
-    createAgentGroup({
+  beforeEach(async () => {
+    const db = await initTestDb();
+    await runMigrations(db);
+    await createAgentGroup({
       id: AG,
       name: 'Reset',
       folder: 'reset',
@@ -139,14 +139,14 @@ describe('writeSessionMessage re-provisions a deleted session folder', () => {
       last_active: null,
       created_at: new Date().toISOString(),
     };
-    createSession(sess);
+    await createSession(sess);
   });
 
-  afterEach(() => {
-    closeDb();
+  afterEach(async () => {
+    await closeDb();
   });
 
-  it('re-creates the folder + inbound.db and does not throw when the row still exists', () => {
+  it('re-creates the folder + inbound.db and does not throw when the row still exists', async () => {
     // Operator resets a stuck session by deleting its folder; the row survives.
     fs.rmSync(sessionDir(AG, SESS), { recursive: true, force: true });
     expect(fs.existsSync(inboundDbPath(AG, SESS))).toBe(false);
@@ -185,9 +185,9 @@ describe('writeSessionMessage re-provisions a deleted session folder', () => {
  * pour toujours, et le balayage continue d'interroger une session fantôme.
  */
 describe('reconcileContainerStatusOnBoot', () => {
-  beforeEach(() => {
-    const db = initTestDb();
-    runMigrations(db);
+  beforeEach(async () => {
+    const db = await initTestDb();
+    await runMigrations(db);
     createAgentGroup({
       id: 'ag-reconcile',
       name: 'Reconcile',
@@ -214,18 +214,18 @@ describe('reconcileContainerStatusOnBoot', () => {
     mk('sess-rec-stop', 'stopped');
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     closeDb();
   });
 
-  it('remet à stopped tout ce qui se disait running ou idle', () => {
-    expect(reconcileContainerStatusOnBoot()).toBe(2);
-    expect(getSession('sess-rec-run')?.container_status).toBe('stopped');
-    expect(getSession('sess-rec-idle')?.container_status).toBe('stopped');
+  it('remet à stopped tout ce qui se disait running ou idle', async () => {
+    expect(await reconcileContainerStatusOnBoot()).toBe(2);
+    expect((await getSession('sess-rec-run'))?.container_status).toBe('stopped');
+    expect((await getSession('sess-rec-idle'))?.container_status).toBe('stopped');
   });
 
-  it('est idempotent — un second démarrage n’a plus rien à réconcilier', () => {
-    reconcileContainerStatusOnBoot();
-    expect(reconcileContainerStatusOnBoot()).toBe(0);
+  it('est idempotent — un second démarrage n’a plus rien à réconcilier', async () => {
+    await reconcileContainerStatusOnBoot();
+    expect(await reconcileContainerStatusOnBoot()).toBe(0);
   });
 });

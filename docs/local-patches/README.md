@@ -202,6 +202,94 @@ Le périmètre OneCLI a suivi la bascule : le secret `Codex` a été accordé au
 agents (`agents set-secrets`, mode `selective` conservé), en union avec
 `Vikunja` là où le serveur MCP le justifie — jamais par symétrie.
 
+### Migration driver seam + base centrale asynchrone (2026-08-19)
+
+Merge de 112 commits upstream. Deux ruptures structurelles, et la carte de ce
+qu'il a fallu re-porter — c'est le merge le plus lourd depuis la v2.
+
+**1. Le runtime container passe derrière `src/drivers/`.** `container-runner.ts`
+ne compose plus d'argv : il produit un `SessionSpec` validé qu'un driver
+réalise. Nos patchs ont été re-posés sur la nouvelle structure plutôt que
+recollés bloc à bloc (le fichier changeait de 825 lignes) :
+
+| Patch | Où il vit désormais |
+|---|---|
+| Résolution `vault:` au spawn | `spawnContainer`, entre `materializeContainerJson` et la contribution du provider — l'ordre reste porteur |
+| Credentials imap éphémères | `buildMounts`, classe `allowlisted-extra` |
+| Mount OAuth claude (Pro/Max) | `buildMounts`, classe `allowlisted-extra` — **pas** `identity-material`, qui vise les certs sous `materialsRoot` et interdit par construction le rôle `agent` |
+| Neutralisation proxy/clé bouchon | voie **contribuée** du spec : la voie composée refuse tout nom en `_KEY`, valeur vide comprise |
+| `onExit` quand le container est déjà parti | `killContainer` |
+| Validation des noms de paquets + contexte de build VIDE | `buildAgentGroupImage` |
+| Traduction d'identifiant OneCLI (underscores → tirets) | **`src/gateway-providers/onecli.ts`** — nouveau fichier upstream, nouveau reach-in fork |
+
+⚠️ Ce dernier est le plus dangereux à perdre : sans lui `ensureAgent` viserait
+un identifiant inconnu, la passerelle recréerait des agents neufs **en mode
+`all`**, et tout le périmètre de secrets serait perdu sans un message.
+
+⚠️ **`reconcileContainerStatusOnBoot` survit à l'adoption, et son ORDRE compte.**
+`adoptRunningSessions` ne parcourt que les containers que le driver LISTE : une
+session laissée « running » par un reboot n'y figure pas et resterait running à
+vie. On réconcilie donc à « stopped » d'abord, l'adoption re-marque running
+ensuite. L'inverse effacerait l'adoption.
+
+**2. Base centrale asynchrone (`DbDriver`).** ~120 sites d'appel dans notre code
+propre (dashboard ×4, adaptateur Mattermost, providers codex, approbations,
+session-manager, `ncl groups`). Deux pièges vécus :
+- `await f(x)!` porte le `!` sur la PROMESSE : écrire `(await f(x))!`.
+- Les bases de **session** restent en `better-sqlite3` synchrone. Une passe
+  automatique les convertit à tort — quatre appels rétablis à la main.
+
+Nos deux migrations locales (019/020) sont devenues portables : la politique
+`portability.test.ts` interdit l'introspection SQLite **et scanne le source de
+la fonction, commentaires compris** — citer le mot interdit dans une
+justification suffit à faire rougir le test. L'idempotence passe désormais par
+un `try`/`catch` sur « duplicate column ». Les ancres d'import d'upstream
+reprennent le nom canonique `migration019`/`migration020` (test byte-for-byte) ;
+ce sont NOS migrations qui portent l'alias.
+
+**Livraison mi-tour vs routage structuré.** Le provider claude déclare
+désormais les DEUX capacités : notre `structuredDelivery` (§31, routage par
+l'outil `send_message`) et leur `emitsMidTurnText` (blocs `<message>` streamés).
+Un test upstream exige la seconde sur le vrai provider, donc on garde les deux —
+mais la porte mi-tour est **fermée quand le routage est structuré**, sinon un
+bloc émis par habitude serait livré deux fois (une fois mi-tour, une fois par le
+texte final que notre branche délivre après avoir retiré les balises).
+
+**Tests d'upstream réécrits, pas désactivés.** Leur `processQuery` prend sept
+arguments positionnels, le nôtre un descripteur `ActiveQuery` (système
+d'arrière-plan) : le helper `makeActiveQuery` est promu en module partagé
+(`poll-loop.test-support.ts`) au lieu d'être recopié par fichier. Deux
+attentes d'upstream ont été adaptées à une réalité du fork, en le disant :
+`isClearCommand` n'accepte que `!clear` (Mattermost intercepte les `/`), et les
+scénarios enregistrés neutralisent le live-status, qui ajoute une ligne de chat
+qu'upstream ne compte pas. Le drapeau `NANOCLAW_LIVE_STATUS_DISABLED` est
+devenu **tardif** : évalué à l'import, aucun test ne pouvait le poser (les
+imports ESM sont hissés au-dessus du corps de module).
+
+**`OPENCODE_API_KEY` ne peut plus voyager en clair.** La règle d'admission
+refuse toute valeur de credential sur toute voie, et la clé opencode commence
+par `sk-` — donc reconnue. Elle est passée à l'injection d'en-tête OneCLI
+(secret `OpenCodeGo`, `x-api-key` sur `opencode.ai`), la base ne portant plus
+qu'un marqueur `onecli-injected`. ⚠️ Le motif d'hôte doit être **`opencode.ai`**
+et non `models.opencode.ai` : c'est l'hôte de `ANTHROPIC_BASE_URL` qui compte,
+et se tromper donne un « No credentials configured » très clair mais tardif.
+Notre injection générique d'env écarte désormais les noms secrets de la voie
+composée **en le journalisant** — un groupe dont le provider ne relaie pas la
+clé la perdrait sinon en silence.
+
+⚠️ **La passerelle 1.45 a retiré `agents secrets` / `set-secrets`** (HTTP 410) :
+le CLI épinglé 2.2.5 ne sait plus lire ni écrire le périmètre, et
+`scripts/check-secret-scope.ts` **ne fonctionne plus**. Le modèle est passé aux
+*grants* — la 410 le dit elle-même :
+`PUT /v1/agents/:agentId/grants/secrets/:secretId`, lisible par
+`GET /api/agents/:id/grants`. Le script d'audit est à réécrire sur ce modèle ;
+en attendant, l'audit de périmètre est aveugle.
+
+**Angle mort du détecteur d'upstream.** `bun scripts/detect-driver-migration.ts`
+ne scanne que les `.ts` : il a manqué les deux filtres `docker ps --filter
+name=nanoclaw-v2-…` de **notre harnais E2E en Python**, que le passage aux noms
+dérivés `ncl-…` aurait cassés. « Nothing detected » ne vaut que pour TypeScript.
+
 ### Jeton ChatGPT expiré — le symptôme ment (2026-08-13, RÉSOLU)
 
 Découvert par la suite E2E du 13/08 : **16 scénarios rouges sur 28**, tous sur

@@ -8,7 +8,7 @@ import {
   type MessageInRow,
 } from './db/messages-in.js';
 import { getDeliveredPlatformId, hasIdenticalSend, writeMessageOut } from './db/messages-out.js';
-import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
+import { getInboundDb, getOutboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
 import {
   addLiveStatusPost,
   clearContinuation,
@@ -38,11 +38,13 @@ import {
   isHelpCommand,
   buildHelpText,
   isRunnerCommand,
+  isSessionEcho,
   stripInternalTags,
   stripToolMarkup,
   stripEnvelopeTags,
   type RoutingContext,
 } from './formatter.js';
+import { stripHarnessTagArtifacts } from './harness-tag-strip.js';
 import { isUploadTraceCommand, uploadTrace } from './upload-trace.js';
 import { enqueueFileOut } from './outbox.js';
 import type { AgentProvider, AgentQuery, ProviderEvent, ProviderExchange } from './providers/types.js';
@@ -85,10 +87,15 @@ const LIVE_STATUS_THROTTLE_MS = 2_500;
  * test waits on the first reply matching a specific string, and live-status
  * intermediate posts would race with the actual answer.
  */
-const LIVE_STATUS_DISABLED = (() => {
+function liveStatusDisabled(): boolean {
+  // Lu à CHAQUE appel, pas une fois à l'import : les imports ESM sont hissés,
+  // donc un test qui pose la variable dans son corps de module le ferait après
+  // l'évaluation d'une constante — le drapeau resterait faux et la suite
+  // compterait nos posts de statut parmi les messages livrés. Le coût est deux
+  // lectures de process.env par tour.
   const v = (process.env.NANOCLAW_LIVE_STATUS_DISABLED || '').toLowerCase();
   return v === '1' || v === 'true';
-})();
+}
 
 /**
  * Maximum time the active query is allowed to go without producing any
@@ -328,7 +335,7 @@ function escapeXml(s: string): string {
 function updateLiveStatus(active: ActiveQuery, text: string, opts: { countAction?: boolean } = {}): void {
   // Channels that don't carry an addressable platform id (e.g. agent-to-agent
   // routing) have no concept of a status post. Skip entirely.
-  if (LIVE_STATUS_DISABLED) return;
+  if (liveStatusDisabled()) return;
   // Scheduled-task turns run silently — no "🔧 …" activity chatter for cron
   // work (weekly summary, daily reminder, news digest…).
   if (!active.interactive) return;
@@ -419,7 +426,7 @@ async function finalizeLiveStatus(
   active: ActiveQuery,
   opts: { marker?: 'done' | 'stopped' | 'cancelled' | 'max_duration' } = {},
 ): Promise<void> {
-  if (LIVE_STATUS_DISABLED) return;
+  if (liveStatusDisabled()) return;
   if (!active.routing.platformId || !active.routing.channelType) return;
   const live = active.live;
   if (!live.outboundId) return; // no status post was ever created this turn.
@@ -958,7 +965,9 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         commandIds.push(msg.id);
         continue;
       }
-      if ((msg.kind === 'chat' || msg.kind === 'chat-sdk') && isUploadTraceCommand(msg)) {
+      // isSessionEcho guard: a copied "/upload-trace" from another session is
+      // ambient context, never a runner command (isClearCommand self-guards).
+      if ((msg.kind === 'chat' || msg.kind === 'chat-sdk') && !isSessionEcho(msg) && isUploadTraceCommand(msg)) {
         log('Uploading session trace to Hugging Face');
         writeMessageOut({
           id: generateId(),
@@ -1122,6 +1131,14 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     // top guards on activeForegroundQuery !== null. If processQuery transitions
     // this query to bg mid-flight, it sets activeForegroundQuery = null
     // (freeing the slot) and moves the descriptor to activeBackgroundQueries.
+    // Forward a loop stop to this query. The stream deliberately stays open
+    // between turns, so the loop can be parked inside processQuery when
+    // config.signal fires; without this the "stopped" loop's query — and its
+    // follow-up poller — outlives the stop and keeps claiming messages.
+    const abortActiveQuery = (): void => query.abort();
+    if (config.signal?.aborted) abortActiveQuery();
+    else config.signal?.addEventListener('abort', abortActiveQuery, { once: true });
+
     void (async () => {
       // Publish the batch's in_reply_to so MCP tools (send_message, send_file)
       // can stamp it on outbound rows — needed for a2a return-path routing.
@@ -1135,6 +1152,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
           activeQuery,
           config.providerName,
           config.provider.onExchangeComplete?.bind(config.provider),
+          config.provider.emitsMidTurnText === true,
         );
         // Only persist continuation when the query completed as foreground.
         // Backgrounded queries deliberately leak their continuation so the
@@ -1184,6 +1202,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         if (getCurrentInReplyTo() === routing.inReplyTo) {
           clearCurrentInReplyTo();
         }
+        config.signal?.removeEventListener('abort', abortActiveQuery);
         markCompleted(processingIds);
         // Slot bookkeeping: free fg slot or remove from bg map.
         if (activeForegroundQuery === activeQuery) activeForegroundQuery = null;
@@ -1236,6 +1255,16 @@ export async function processQuery(
   active: ActiveQuery,
   providerName: string,
   onExchangeComplete: ((exchange: ProviderExchange) => void) | undefined,
+  /**
+   * The provider's declared `emitsMidTurnText` capability (see
+   * providers/types.ts). True → mid-turn streaming is the single content
+   * door: complete <message> blocks deliver exactly once, at parse time from
+   * streamed 'text' events (with cross-segment assembly of split blocks),
+   * and the final result never delivers content — it only surfaces error
+   * results and decides the wrap-nudge. False → text events are
+   * delivery-inert and the final result stays the single delivery door.
+   */
+  emitsMidTurnText = false,
 ): Promise<QueryResult> {
   const { query, routing, initialBatchIds, originalPrompt } = active;
   let queryContinuation: string | undefined;
@@ -1244,6 +1273,36 @@ export async function processQuery(
   // Once-per-turn guard for the task-run "<message> block was not delivered"
   // nudge — mirrors unwrappedNudged for chat turns.
   let taskBlockNudged = false;
+  // How many <message> blocks were delivered from 'text' events this turn
+  // (chat runs, emitsMidTurnText providers only). A frame-local count, never
+  // keyed by content: it feeds the result door's nudge decision ("did this
+  // turn deliver anything?"). Reset at the turn boundary (the 'result'
+  // event) — NOT at the follow-up push seam: query.push() does not end the
+  // in-flight turn, and its result's nudge decision still describes the
+  // turn that is streaming.
+  let midTurnSent = 0;
+  // Outbound seq high-water mark at the turn boundary — a frame-local NUMBER,
+  // not a content record. Two uses: (1) the mid-turn door recognizes a block
+  // that is a verbatim repeat of a message already written to outbound.db
+  // EARLIER THIS TURN by a previous streamed segment (live-observed: the
+  // model re-emits the identical block as its final text after a trailing
+  // tool call; delivering both copies is the double-send this design must
+  // not reintroduce); (2) the result-door nudge decision asks "did ANYTHING
+  // user-visible go out this turn?" — which must also see MCP send_message
+  // rows the frame-local midTurnSent count never observes. The "have we sent
+  // this?" truth lives in the outbound DB the door already writes to — no
+  // in-process delivery ledger. Reset alongside midTurnSent at each result.
+  let turnStartSeq = maxOutboundSeq();
+  // Cross-segment assembly buffer: the unresolved TAIL of the previous text
+  // event — an unclosed <message …> block (or a bare open-tag prefix like
+  // "<mess" literally split mid-token), or an unclosed <internal span. Frame-
+  // local and turn-local: it carries a fragment forward so a block opened in
+  // one assistant message and closed in a later one delivers ONCE, mid-turn,
+  // when its close arrives. Only the unresolved tail is ever carried —
+  // settled text is consumed exactly once, so already-delivered blocks are
+  // never re-matched. Dropped at the turn boundary: a block that never
+  // closes anywhere is the wrap-nudge's job, not the buffer's.
+  let midTurnTail = '';
   // Prompt queue for the exchange hook — each result event consumes the
   // oldest unanswered prompt, except a wrapping-retry result, which answers
   // the same prompt again. Unused (and unmaintained) when the provider
@@ -1387,17 +1446,26 @@ export async function processQuery(
         // initial batch and follow-ups had mismatched thread_ids (e.g. a
         // host-generated welcome trigger with null thread vs a Discord DM reply).
         const inlineIds = new Set(inlineMsgs.map((m) => m.id));
-        const newMessages = pending.filter((m) => m.kind !== 'system' && !inlineIds.has(m.id));
-        if (newMessages.length === 0) return;
-
-        // Garde upstream (2026-08-11), placé AVANT notre logique d'auto-bg et
-        // non après : un contexte simplement accumulé (trigger=0) ne doit
-        // engager la requête tiède d'aucune façon — ni la réveiller, ni la
-        // basculer en arrière-plan. Sans cet ordre, une accumulation suffirait
-        // à déclencher l'auto-bg, exactement ce que le garde veut éviter.
+        // Accumulated trigger=0 context rows must never be pushed into a live
+        // turn on their own — the agent would answer ambient context that was
+        // not addressed to it. They ride along only when a real trigger=1
+        // follow-up is also pending; otherwise they stay pending for a future
+        // batch (mirrors the two-phase initial-batch selection in
+        // db/messages-in.ts).
+        const candidates = pending.filter((m) => m.kind !== 'system' && !inlineIds.has(m.id));
+        const hasFollowUpTrigger = candidates.some((m) => m.trigger === 1);
+        const newMessages = candidates.filter((m) => m.trigger === 1 || hasFollowUpTrigger);
+        // Ce retour anticipé est placé AVANT notre logique d'auto-bg, et non
+        // après : un contexte simplement accumulé (trigger=0) ne doit engager
+        // la requête tiède d'aucune façon — ni la réveiller, ni la basculer en
+        // arrière-plan. Sans cet ordre, une accumulation suffirait à déclencher
+        // l'auto-bg, exactement ce que le filtre ci-dessus veut éviter. Depuis
+        // que ce filtre écarte lui-même les lignes trigger=0 solitaires, la
+        // liste est vide dans ce cas — le garde explicite d'avant est devenu
+        // inatteignable et a été retiré, l'ORDRE reste la seule chose à tenir.
         // Sûr ici : `markProcessing` n'intervient que plus bas, donc ce retour
-        // anticipé ne laisse aucun message réclamé derrière lui.
-        if (!newMessages.some((m) => m.trigger === 1)) return;
+        // ne laisse aucun message réclamé derrière lui.
+        if (newMessages.length === 0) return;
 
         // Smart auto-bg: only fires when ALL of these hold:
         //   - threshold > 0 (env override `NANOCLAW_AUTO_BG_THRESHOLD_MS=0` disables)
@@ -1574,13 +1642,40 @@ export async function processQuery(
 
       if (event.type === 'init') {
         queryContinuation = event.continuation;
-        // Persist immediately ONLY when the query is foreground — bg queries
-        // deliberately don't write the continuation so they don't pollute the
-        // foreground's resume point. The bg's continuation is dropped when
-        // its consumer finishes; its result is preserved via the injection
-        // mechanism (pendingBgResults).
+        // Persist immediately so a mid-turn container crash still lets the
+        // next wake resume the conversation. Without this, the session id
+        // was only written after the full stream completed — if the
+        // container died between `init` and `result`, the SDK session was
+        // effectively orphaned and the next message started a blank
+        // Claude session with no prior context.
+        //
+        // Fork : uniquement en FOREGROUND. Une requête background ne doit pas
+        // écrire la continuation, sous peine de déplacer le point de reprise du
+        // foreground ; la sienne est abandonnée à la fin de son consommateur et
+        // son résultat est préservé par pendingBgResults.
         if (active.kind === 'foreground') {
           setContinuation(providerName, event.continuation);
+        }
+      } else if (event.type === 'text') {
+        // Assistant text emitted mid-turn (e.g. between tool calls). The
+        // final result only carries the LAST assistant text, so complete
+        // <message> blocks composed here would otherwise be lost — deliver
+        // them now (chat runs only; task runs stay one-door). Gated on the
+        // provider's static capability: for a provider that does not declare
+        // emitsMidTurnText the result stays the only delivery door, so a
+        // stray text event must not open a second one.
+        // Fork §31 : en routage structuré (claude), le modèle n'émet PAS
+        // d'enveloppes <message> — le routage vient de l'outil send_message.
+        // Ouvrir quand même la porte mi-tour créerait une seconde porte : un
+        // bloc émis par habitude serait livré ici, puis une deuxième fois par
+        // le texte final (que notre branche structurée délivre après avoir
+        // retiré les balises mais gardé le contenu). Les deux capacités
+        // coexistent sur le provider claude ; c'est leur combinaison qu'il faut
+        // trancher, et le routage structuré prime.
+        if (emitsMidTurnText && !runnerStructuredDelivery) {
+          const scan = deliverMidTurnBlocks(event.text, routing, turnStartSeq, midTurnTail);
+          midTurnSent += scan.delivered;
+          midTurnTail = scan.tail;
         }
       } else if (event.type === 'result') {
         // A result — with or without text — means the turn is done. Mark
@@ -1600,10 +1695,9 @@ export async function processQuery(
           // apart from regular foreground messages, then end the query (bg
           // queries are single-turn, no follow-ups).
           if (active.kind === 'background') {
-            // Tag each delivered message with the bg job id so the user can tell
-            // it apart from foreground replies. dispatchResultText applies the
-            // tag for both delivery styles (envelope blocks or structured reply).
-            const { sent, hasUnwrapped } = dispatchResultText(event.text, routing, `\`${active.jobId}\` `);
+            const { sent, hasUnwrapped } = dispatchResultText(event.text, routing, {
+              bgTag: `\`${active.jobId}\` `,
+            });
             if (sent === 0 && event.isError === true) {
               deliverErrorResult(event.text, routing);
             }
@@ -1618,7 +1712,21 @@ export async function processQuery(
             query.end();
             break; // exit for-await; the finally + final return handle cleanup
           }
-          const { sent, hasUnwrapped, taskBlocks } = dispatchResultText(event.text, routing);
+          const { sent, hasUnwrapped, taskBlocks, resultBlocks } = dispatchResultText(event.text, routing, {
+            midTurnSent,
+            // For emitsMidTurnText providers the result door NEVER delivers
+            // content (error results excepted, below): mid-turn streaming is
+            // the single content door. The result door's remaining job is
+            // the nudge decision — see turnDelivered.
+            suppressDelivery: emitsMidTurnText,
+            // "Did anything user-visible go out this turn?" — door
+            // deliveries (midTurnSent) plus any chat row written since the
+            // turn boundary (which also sees MCP send_message calls the
+            // frame-local count can't). When false and the result still
+            // carries content, the wrap-nudge fires so the model re-sends
+            // and the retry streams through the mid-turn door.
+            turnDelivered: emitsMidTurnText ? midTurnSent > 0 || chatRowWrittenSince(turnStartSeq) : undefined,
+          });
           const willRetryTaskBlocks = shouldNudgeTaskBlocks(routing.taskRun, taskBlocks, taskBlockNudged);
           // One-door task delivery: the final text becomes the run log entry
           // while explicit append-log calls remain optional additive notes.
@@ -1626,7 +1734,7 @@ export async function processQuery(
           // A corrective retry handles delivery only; its result is not a
           // second run summary.
           if (routing.taskRun && !taskBlockNudged) autoAppendTaskLog(event.text);
-          if (sent === 0 && event.isError === true && !routing.taskRun) {
+          if (resultBlocks === 0 && event.isError === true && !routing.taskRun) {
             // Non-retryable error turn (e.g. a 403 billing_error) with no
             // <message> envelope: deliver the notice instead of dropping it as
             // scratchpad, and skip the re-wrap nudge — it would just re-hammer
@@ -1640,6 +1748,12 @@ export async function processQuery(
             });
             archivePrompts.shift();
           } else {
+            // An unwrapped final text only warrants the wrap-nudge when NOTHING
+            // was delivered this turn — hasUnwrapped already folds in the
+            // turn's mid-turn sent count. If a reply already went out as a
+            // mid-turn block, the unwrapped tail is a self-summary; nudging
+            // coaxes a redundant second message (live-observed). It stays in
+            // the scratchpad log.
             const willRetryWrapping = hasUnwrapped && !unwrappedNudged;
             notifyExchangeComplete(onExchangeComplete, {
               prompt: archivePrompts[0] ?? originalPrompt,
@@ -1695,6 +1809,19 @@ export async function processQuery(
           });
           archivePrompts.shift();
         }
+
+        // Turn boundary: reset the per-turn sent count after the result's
+        // nudge decision has used it. A nudge retry re-counts via its own
+        // text events before the retry result, so resetting on every result
+        // is safe. The seq high-water mark advances past everything written
+        // this turn (door and error deliveries alike), so the next turn's
+        // echo check never reaches back across the boundary — a later turn
+        // genuinely re-sending the same body still delivers. The assembly
+        // buffer dies with the turn: a fragment that never closed is not
+        // carried into the next turn — the wrap-nudge owns that case.
+        midTurnSent = 0;
+        turnStartSeq = maxOutboundSeq();
+        midTurnTail = '';
       } else if (event.type === 'file') {
         deliverHarnessFile(event.path, routing);
       }
@@ -1768,7 +1895,7 @@ function deliverToOrigin(text: string, routing: RoutingContext): void {
     platform_id: routing.platformId,
     channel_type: routing.channelType,
     thread_id: routing.threadId,
-    content: JSON.stringify({ text }),
+    content: JSON.stringify({ text: stripHarnessTagArtifacts(text) }),
   });
 }
 
@@ -1818,11 +1945,261 @@ export interface TaskMessageBlock {
   body: string;
 }
 
+/** Options for `dispatchResultText`, describing the turn it closes. */
+export interface ResultDispatchOptions {
+  /**
+   * Préfixe `bg-N` appliqué à chaque message livré par une requête d'arrière-
+   * plan, pour que l'utilisateur la distingue d'une réponse de premier plan.
+   * S'applique aux deux styles de livraison (enveloppes ou réponse structurée).
+   */
+  bgTag?: string;
+  /**
+   * How many <message> blocks were already delivered from streamed text
+   * events this turn. Folds into the returned `sent` total so a bare final
+   * text after a mid-turn delivery reads as a self-summary, not an
+   * undelivered reply.
+   */
+  midTurnSent?: number;
+  /**
+   * Providers declaring `emitsMidTurnText`: the result door NEVER delivers
+   * content. Mid-turn streaming (parse-time block delivery plus cross-
+   * segment assembly) is the single content door; a complete <message>
+   * block in the result text is at best a repeat of a mid-turn delivery and
+   * at worst content the streaming door missed — either way it is not sent
+   * from here. The result door keeps exactly two jobs: surfacing error
+   * results (see the isError branch in processQuery) and the wrap-nudge
+   * decision (`turnDelivered` below). Task runs, unknown destinations and
+   * empty bodies keep their existing result-door handling, none of which
+   * delivers content.
+   */
+  suppressDelivery?: boolean;
+  /**
+   * Did anything user-visible go out this turn? True when the mid-turn door
+   * delivered (midTurnSent > 0) OR any chat row landed in outbound.db since
+   * the turn boundary (covers MCP send_message calls the frame-local count
+   * cannot see). Only meaningful with `suppressDelivery`. When false and the
+   * result carries content — wrapped blocks or unwrapped prose — the turn
+   * counts as undelivered and the wrap-nudge fires, so the model re-sends
+   * and the retry streams through the mid-turn door. This is the deliberate
+   * degradation path for streaming-door misses (SDK drift, a destination
+   * appearing only after streaming, a block that never closed): nudge and
+   * retry, never a direct result-door send.
+   */
+  turnDelivered?: boolean;
+}
+/**
+ * `<internal>…</internal>` spans are explicitly not-for-delivery scratchpad.
+ * Broader than `stripInternalTags` (which the scratchpad log uses): it also
+ * matches an opening tag carrying attributes, and is case-insensitive, so a
+ * draft quoted inside one can never be promoted to a real send by the
+ * mid-turn scan.
+ */
+const INTERNAL_SPAN_RE = /<internal\b[\s\S]*?<\/internal>/gi;
+/**
+ * Deliver complete <message to="...">...</message> blocks found in a mid-turn
+ * assistant text segment. The SDK's final result carries only the last
+ * assistant text, so a wrapped reply composed before a trailing tool call
+ * would otherwise never be seen (and the unwrapped-nudge would coax out only
+ * a mangled re-send of the final fragment). Chat runs only — in task runs
+ * mid-turn blocks stay inert exactly like final-text blocks (one-door: only
+ * the send_message tool delivers). Blocks inside an <internal> span are never
+ * delivered. Blocks to unknown destinations are left for the result path,
+ * which logs the drop into the scratchpad and lets the nudge decide.
+ *
+ * Cross-segment assembly: `carry` is the unresolved tail of the previous
+ * text event (frame-local, turn-local — see midTurnTail in processQuery).
+ * The scan runs over carry + text, delivers every complete block in the
+ * SETTLED prefix, and returns the new unresolved tail: an unclosed
+ * <message …> open (or a bare tag prefix literally split mid-token, e.g.
+ * "<mess" / "age to=…"), or an unclosed <internal span — a draft quoted
+ * inside one must never be promoted to a send by assembly, so judgment on
+ * everything from an open <internal is deferred until it closes. Settled
+ * text is consumed exactly once: already-delivered blocks are never inside
+ * the carried tail, so they cannot re-match. Net effect: mid-turn parsing
+ * behaves as if run over the concatenation of all streamed text, delivered
+ * incrementally. A block that never closes anywhere stays in the tail until
+ * the turn ends and is then dropped — the wrap-nudge owns that case.
+ *
+ * Failure ordering: a writeMessageOut failure here propagates and fails the
+ * whole turn loudly — the result door never delivers content, so swallowing
+ * the error would silently lose the block. An outbound write failure means
+ * the session DB is broken; loud is correct.
+ */
+export interface MidTurnScanResult {
+  delivered: number;
+  tail: string;
+}
+
+export function deliverMidTurnBlocks(
+  text: string,
+  routing: RoutingContext,
+  turnStartSeq?: number,
+  carry = '',
+): MidTurnScanResult {
+  if (routing.taskRun) return { delivered: 0, tail: '' };
+  const input = carry + text;
+  const tailStart = unresolvedTailStart(input);
+  const settled = input.slice(0, tailStart);
+  const tail = input.slice(tailStart);
+  if (tail && carry !== tail) {
+    log(`Mid-turn scan: carrying ${tail.length}-char unresolved tail to the next segment`);
+  }
+  // Seq high-water mark at THIS scan's start: the echo check below only
+  // looks at rows written by EARLIER segments of the same turn — a verbatim
+  // duplicate within one settled scan (two identical blocks in one text) is
+  // an explicit double-send and still delivers twice, exactly as the result
+  // door always treated it.
+  const segStartSeq = turnStartSeq === undefined ? 0 : maxOutboundSeq();
+  const visible = settled.replace(INTERNAL_SPAN_RE, '');
+  const MESSAGE_RE = /<message\s+to="([^"]+)"\s*>([\s\S]*?)<\/message>/g;
+  let match: RegExpExecArray | null;
+  let delivered = 0;
+  while ((match = MESSAGE_RE.exec(visible)) !== null) {
+    const toName = match[1];
+    const rawBody = match[2];
+    const body = stripHarnessTagArtifacts(rawBody.trim());
+    const dest = findByName(toName);
+    if (!dest) continue;
+    // Never deliver a blank message: a body that is empty (or was only
+    // harness-tag artifacts) is skipped here; the result path logs it.
+    if (!body) {
+      log(`Mid-turn <message to="${toName}"> empty after sanitization — skipped`);
+      continue;
+    }
+    // Cross-segment echo guard (live-captured shape, SDK battery s03): after
+    // a tool call the model often re-emits the ALREADY-SENT block verbatim as
+    // its final text. That final text streams as its own text event, so
+    // without this check the door would deliver the same message twice. The
+    // check consults the outbound DB — the durable record of what this turn
+    // actually wrote — over the frame-local seq window (turnStartSeq,
+    // segStartSeq]: identical body, same destination, written this turn by an
+    // earlier segment ⇒ echo, skip. No in-process content ledger; cross-turn
+    // repeats are out of the window and deliver normally.
+    if (turnStartSeq !== undefined && wasWrittenInSeqWindow(dest, body, turnStartSeq, segStartSeq)) {
+      log(`Mid-turn <message to="${toName}"> is a verbatim repeat of a message already sent this turn — skipped`);
+      continue;
+    }
+    sendToDestination(dest, body, routing);
+    delivered++;
+    log(`Mid-turn delivery: <message to="${toName}"> (${body.length} chars)`);
+  }
+  return { delivered, tail };
+}
+
+const OPEN_INTERNAL_RE = /<internal\b/i;
+const OPEN_MESSAGE_RE = /<message\b/;
+
+/**
+ * Index where the UNRESOLVED tail of a mid-turn scan begins — everything
+ * before it is settled (safe to parse and deliver now), everything from it
+ * on must wait for the next text event. input.length when fully settled.
+ *
+ * Unresolved constructs, earliest wins:
+ *  - an unclosed <internal span (case-insensitive, attributes allowed):
+ *    blocks quoted inside must not deliver until the span closes and the
+ *    exclusion can apply — assembly must never promote a draft;
+ *  - an unclosed <message open after the last </message>: the growing block
+ *    the assembly exists for. Opens with a close somewhere after them are
+ *    finished text (a complete block, or malformed-and-done) — settled;
+ *  - a bare tag prefix at the very end ("<mess", "<inter"): a tag literally
+ *    split mid-token at the event boundary.
+ *
+ * Complete <internal> spans are blanked (same length, positions preserved)
+ * before looking: an unclosed construct inside a COMPLETED span is settled
+ * garbage, not a reason to buffer.
+ */
+export function unresolvedTailStart(input: string): number {
+  const masked = input.replace(INTERNAL_SPAN_RE, (m) => ' '.repeat(m.length));
+  const candidates: number[] = [];
+  const internalOpen = OPEN_INTERNAL_RE.exec(masked);
+  if (internalOpen) candidates.push(internalOpen.index);
+  const lastClose = masked.lastIndexOf('</message>');
+  const searchFrom = lastClose === -1 ? 0 : lastClose + '</message>'.length;
+  const msgOpen = OPEN_MESSAGE_RE.exec(masked.slice(searchFrom));
+  if (msgOpen) candidates.push(searchFrom + msgOpen.index);
+  if (candidates.length > 0) return Math.min(...candidates);
+  const prefixStart = trailingTagPrefixStart(masked);
+  return prefixStart === -1 ? input.length : prefixStart;
+}
+
+/**
+ * Start index of a proper prefix of '<message' (case-sensitive, mirroring
+ * MESSAGE_RE) or '<internal' (case-insensitive, mirroring INTERNAL_SPAN_RE)
+ * sitting at the very end of the string; -1 when the string does not end
+ * mid-token. Longest prefix wins.
+ */
+function trailingTagPrefixStart(masked: string): number {
+  const maxK = Math.min('<internal'.length - 1, masked.length);
+  for (let k = maxK; k >= 1; k--) {
+    const tailK = masked.slice(masked.length - k);
+    if (tailK === '<message'.slice(0, k)) return masked.length - k;
+    if (tailK.toLowerCase() === '<internal'.slice(0, k)) return masked.length - k;
+  }
+  return -1;
+}
+
+/** Current outbound seq high-water mark (0 when the table is empty). */
+function maxOutboundSeq(): number {
+  return (getOutboundDb().prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM messages_out').get() as { m: number }).m;
+}
+
+/**
+ * Has ANY chat row been written to outbound.db after `afterSeq`? Feeds the
+ * result door's nudge decision: unlike the frame-local midTurnSent count,
+ * this also sees MCP send_message / send_file deliveries made this turn, so
+ * an agent that already replied via tools is not nudged into repeating
+ * itself. Fail-open to false: if the lookup breaks, the nudge may fire
+ * spuriously (a repeat coax), never silently swallow an undelivered turn.
+ */
+function chatRowWrittenSince(afterSeq: number): boolean {
+  try {
+    const row = getOutboundDb()
+      .prepare("SELECT 1 AS hit FROM messages_out WHERE seq > ? AND kind = 'chat' LIMIT 1")
+      .get(afterSeq);
+    return row !== undefined && row !== null;
+  } catch (err) {
+    log(`chatRowWrittenSince failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
+/**
+ * Does messages_out already hold a chat row with this exact destination and
+ * body, written in the seq window (afterSeq, uptoSeq]? Used by the mid-turn
+ * door's cross-segment echo guard. Content equality is exact: the door writes
+ * `JSON.stringify({ text: body })` after the same trim/sanitize pipeline, so
+ * a true door-written duplicate always matches; a body differing by even one
+ * character is a different message and delivers.
+ */
+function wasWrittenInSeqWindow(dest: DestinationEntry, body: string, afterSeq: number, uptoSeq: number): boolean {
+  if (uptoSeq <= afterSeq) return false;
+  try {
+    const platformId = dest.type === 'channel' ? dest.platformId! : dest.agentGroupId!;
+    const channelType = dest.type === 'channel' ? dest.channelType! : 'agent';
+    const row = getOutboundDb()
+      .prepare(
+        `SELECT 1 AS hit FROM messages_out
+         WHERE seq > ? AND seq <= ? AND kind = 'chat'
+           AND platform_id = ? AND channel_type = ? AND content = ?
+         LIMIT 1`,
+      )
+      .get(afterSeq, uptoSeq, platformId, channelType, JSON.stringify({ text: body }));
+    return row !== undefined && row !== null;
+  } catch (err) {
+    // The guard is an anti-duplication refinement; if the lookup itself
+    // fails, fall through to delivery (the write will surface any real DB
+    // breakage loudly).
+    log(`Echo-guard lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
 export function dispatchResultText(
   rawText: string,
   routing: RoutingContext,
-  bgTag = '',
-): { sent: number; hasUnwrapped: boolean; taskBlocks: TaskMessageBlock[] } {
+  options?: ResultDispatchOptions,
+): { sent: number; hasUnwrapped: boolean; taskBlocks: TaskMessageBlock[]; resultBlocks: number } {
+  const bgTag = options?.bgTag ?? '';
   // Structured-delivery providers (e.g. Claude): routing comes from the
   // structured `send_message` tool, and the final result text is the reply to
   // the conversation this turn is in. Sanitize it (drop any leaked tool-call
@@ -1831,16 +2208,25 @@ export function dispatchResultText(
   // can bleed into a parsed reply. Empty after sanitizing → pure scratchpad.
   // TASK sessions are excluded: the one-door contract below applies whatever
   // the provider (final text becomes the run log, never a channel message).
+  //
+  // Placé AVANT le chemin d'enveloppes d'upstream : en routage structuré c'est
+  // la SEULE porte, donc ni `midTurnSent` ni `suppressDelivery` n'ont à être
+  // consultés (la porte mi-tour est elle-même fermée dans processQuery).
   if (runnerStructuredDelivery && !routing.taskRun) {
     const clean = stripEnvelopeTags(stripToolMarkup(stripInternalTags(rawText))).trim();
-    if (!clean) return { sent: 0, hasUnwrapped: false, taskBlocks: [] };
+    if (!clean) return { sent: 0, hasUnwrapped: false, taskBlocks: [], resultBlocks: 0 };
     deliverToOrigin(bgTag + clean, routing);
-    return { sent: 1, hasUnwrapped: false, taskBlocks: [] };
+    return { sent: 1, hasUnwrapped: false, taskBlocks: [], resultBlocks: 1 };
   }
 
   // Legacy text-envelope path: regex-parse <message to="…"> blocks.
   // Strip any orphan tool-call markup the model leaked first (defense-in-depth).
   let text = stripToolMarkup(rawText);
+  // <internal> spans are not-for-delivery scratchpad. Remove them BEFORE block
+  // extraction so a <message> drafted inside one is never delivered from the
+  // final text either — the mid-turn seam already guarantees this; without the
+  // same strip here the guarantee had a final-text hole.
+  text = text.replace(INTERNAL_SPAN_RE, '');
   // Background jobs prefix each delivered block with their `bg-N` id.
   if (bgTag) {
     text = text.replace(/<message(\s+to="[^"]+")\s*>/g, (_m, attrs) => `<message${attrs}>${bgTag}`);
@@ -1848,7 +2234,14 @@ export function dispatchResultText(
   const MESSAGE_RE = /<message\s+to="([^"]+)"\s*>([\s\S]*?)<\/message>/g;
 
   let match: RegExpExecArray | null;
-  let sent = 0;
+  // Blocks delivered mid-turn count toward this turn's sent total — a final
+  // text with no (new) blocks after a mid-turn delivery is scratchpad, not an
+  // undelivered reply.
+  let sent = options?.midTurnSent ?? 0;
+  // <message> blocks present in THIS result text (delivered, stripped, task
+  // or dropped alike) — drives the bare-error-text delivery gate, which must
+  // key on the error result itself, not on earlier mid-turn deliveries.
+  let resultBlocks = 0;
   // <message to> blocks left inert in a task run — drives the same-turn
   // "use send_message" nudge in processQuery.
   const taskBlocks: TaskMessageBlock[] = [];
@@ -1860,8 +2253,9 @@ export function dispatchResultText(
       scratchpadParts.push(text.slice(lastIndex, match.index));
     }
     const toName = match[1];
-    const body = match[2].trim();
+    const body = stripHarnessTagArtifacts(match[2].trim());
     lastIndex = MESSAGE_RE.lastIndex;
+    resultBlocks++;
 
     // One-door delivery in task sessions: only the send_message tool delivers.
     // A final-text <message to> block here is either an echo of a tool send the
@@ -1881,6 +2275,30 @@ export function dispatchResultText(
       scratchpadParts.push(`[dropped: unknown destination "${toName}"] ${body}`);
       continue;
     }
+    // Never deliver a blank message: a body that is empty (or was only
+    // harness-tag artifacts stripped by sanitization) goes to the scratchpad
+    // log instead of writing an empty chat row.
+    if (!body) {
+      log(`Empty <message to="${toName}"> body after sanitization — not delivered`);
+      scratchpadParts.push(`[not delivered — empty after sanitization; to="${toName}"]`);
+      continue;
+    }
+    // One content door: with an emitsMidTurnText provider the result door
+    // never sends. A deliverable block here is either a repeat of a mid-turn
+    // delivery (turnDelivered — keep it out of the scratchpad so it does not
+    // read as an undelivered reply) or content the streaming door missed —
+    // then it goes to the scratchpad as undelivered content, which makes the
+    // turn count as undelivered and fires the wrap-nudge: the model re-sends
+    // and the retry streams through the mid-turn door.
+    if (options?.suppressDelivery) {
+      if (options.turnDelivered) {
+        log(`<message to="${toName}"> in final result after a same-turn delivery — repeat, result door does not send`);
+      } else {
+        log(`<message to="${toName}"> in final result but nothing was delivered this turn — nudging for a mid-turn resend`);
+        scratchpadParts.push(`[not delivered — the result door does not send; to="${toName}"] ${body}`);
+      }
+      continue;
+    }
     sendToDestination(dest, body, routing);
     sent++;
   }
@@ -1896,11 +2314,15 @@ export function dispatchResultText(
 
   // In a task run, plain final text is the NORMAL ending (it becomes the run
   // log) — never treat it as an undelivered reply or nudge the agent to wrap it.
-  const hasUnwrapped = !routing.taskRun && sent === 0 && !!scratchpad;
+  // With suppressDelivery the delivered-this-turn question is answered by
+  // turnDelivered (door deliveries + DB-visible sends like MCP send_message);
+  // otherwise by this dispatch's own send count.
+  const anythingDelivered = options?.suppressDelivery ? options.turnDelivered === true : sent > 0;
+  const hasUnwrapped = !routing.taskRun && !anythingDelivered && !!scratchpad;
   if (hasUnwrapped) {
     log(`WARNING: agent output had no <message to="..."> blocks — nothing was sent`);
   }
-  return { sent, hasUnwrapped, taskBlocks };
+  return { sent, hasUnwrapped, taskBlocks, resultBlocks };
 }
 
 /**

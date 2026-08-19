@@ -50,10 +50,10 @@ interface AgentsMdSection {
   content: string;
 }
 
-export function composeGroupAgentsMd(group: AgentGroup, groupDir: string): void {
+export async function composeGroupAgentsMd(group: AgentGroup, groupDir: string): Promise<void> {
   if (!fs.existsSync(groupDir)) fs.mkdirSync(groupDir, { recursive: true });
 
-  const configRow = getContainerConfig(group.id);
+  const configRow = await getContainerConfig(group.id);
   const mcpServers: Record<string, McpServerConfig> = configRow
     ? (JSON.parse(configRow.mcp_servers) as Record<string, McpServerConfig>)
     : {};

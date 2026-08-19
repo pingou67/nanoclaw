@@ -80,9 +80,7 @@ export function collectOpenCodeTokens(): TokenEntry[] {
     try {
       const db = new Database(dbPath, { readonly: true, fileMustExist: true });
       try {
-        const rows = db
-          .prepare(
-            `SELECT json_extract(data,'$.modelID') AS model,
+        const rows = db.prepare(`SELECT json_extract(data,'$.modelID') AS model,
                     count(*) AS requests,
                     coalesce(sum(json_extract(data,'$.tokens.input')),0) AS input,
                     coalesce(sum(json_extract(data,'$.tokens.output')),0) AS output,
@@ -90,9 +88,7 @@ export function collectOpenCodeTokens(): TokenEntry[] {
                     coalesce(sum(json_extract(data,'$.tokens.cache.write')),0) AS cacheWrite
              FROM message
              WHERE json_extract(data,'$.role') = 'assistant' AND json_extract(data,'$.modelID') IS NOT NULL
-             GROUP BY 1`,
-          )
-          .all() as Array<{
+             GROUP BY 1`).all() as Array<{
           model: string;
           requests: number;
           input: number;
@@ -125,8 +121,8 @@ export function collectOpenCodeTokens(): TokenEntry[] {
  * Latest context-window usage per OpenCode session — same shape as the
  * pusher's Claude entries so the Overview section renders both.
  */
-export function collectOpenCodeContextWindows(): unknown[] {
-  const nameMap = new Map(getAllAgentGroups().map((g) => [g.id, g.name]));
+export async function collectOpenCodeContextWindows(): Promise<unknown[]> {
+  const nameMap = new Map((await getAllAgentGroups()).map((g) => [g.id, g.name]));
   // Newest entry per agent group only — mirrors the Claude collector (one
   // line per group), otherwise long-gone experiment sessions pile up.
   const byGroup = new Map<string, { ts: number; entry: unknown }>();
@@ -135,9 +131,7 @@ export function collectOpenCodeContextWindows(): unknown[] {
     try {
       const db = new Database(dbPath, { readonly: true, fileMustExist: true });
       try {
-        const r = db
-          .prepare(
-            `SELECT json_extract(data,'$.modelID') AS model,
+        const r = db.prepare(`SELECT json_extract(data,'$.modelID') AS model,
                     json_extract(data,'$.tokens.input') AS input,
                     json_extract(data,'$.tokens.output') AS output,
                     json_extract(data,'$.tokens.cache.read') AS cacheRead,
@@ -145,9 +139,7 @@ export function collectOpenCodeContextWindows(): unknown[] {
                     time_created AS ts
              FROM message
              WHERE json_extract(data,'$.role') = 'assistant' AND json_extract(data,'$.tokens.input') IS NOT NULL
-             ORDER BY time_created DESC LIMIT 1`,
-          )
-          .get() as
+             ORDER BY time_created DESC LIMIT 1`).get() as
           | { model: string; input: number; output: number; cacheRead: number; cacheWrite: number; ts: number }
           | undefined;
         if (!r || !r.model) return;
@@ -202,8 +194,8 @@ export interface ScheduledJob {
  * inbound.db (it's its side of the two-DB split), so reading it here is
  * within the single-writer rule.
  */
-export function collectScheduledJobs(): ScheduledJob[] {
-  const nameMap = new Map(getAllAgentGroups().map((g) => [g.id, g.name]));
+export async function collectScheduledJobs(): Promise<ScheduledJob[]> {
+  const nameMap = new Map((await getAllAgentGroups()).map((g) => [g.id, g.name]));
   const out: ScheduledJob[] = [];
   const sessionsRoot = path.join(DATA_DIR, 'v2-sessions');
   let groupDirs: string[] = [];
@@ -225,13 +217,9 @@ export function collectScheduledJobs(): ScheduledJob[] {
       try {
         const db = new Database(dbPath, { readonly: true, fileMustExist: true });
         try {
-          const rows = db
-            .prepare(
-              `SELECT id, status, process_after, recurrence, content FROM messages_in
+          const rows = db.prepare(`SELECT id, status, process_after, recurrence, content FROM messages_in
                WHERE kind = 'task' AND status IN ('pending', 'paused')
-               ORDER BY process_after`,
-            )
-            .all() as Array<{
+               ORDER BY process_after`).all() as Array<{
             id: string;
             status: string;
             process_after: string | null;
@@ -363,14 +351,14 @@ export interface RecapRow {
 
 /** Structured per-channel recap rows — pushed in the snapshot (`agents_recap`)
  * for the patched dashboard "Agents" page, and rendered to markdown below. */
-export function buildAgentsRecapRows(): RecapRow[] {
-  const groups = new Map(getAllAgentGroups().map((g) => [g.id, g]));
+export async function buildAgentsRecapRows(): Promise<RecapRow[]> {
+  const groups = new Map((await getAllAgentGroups()).map((g) => [g.id, g]));
   const rows: RecapRow[] = [];
-  for (const mg of getAllMessagingGroups()) {
-    for (const wiring of getMessagingGroupAgents(mg.id)) {
+  for (const mg of await getAllMessagingGroups()) {
+    for (const wiring of await getMessagingGroupAgents(mg.id)) {
       const group = groups.get(wiring.agent_group_id);
       if (!group) continue;
-      const config = getContainerConfig(group.id);
+      const config = await getContainerConfig(group.id);
       let mcpNames: string[] = [];
       try {
         mcpNames = Object.keys(JSON.parse(config?.mcp_servers || '{}')).filter((n) => n !== 'nanoclaw');
@@ -402,7 +390,7 @@ export function buildAgentsRecapRows(): RecapRow[] {
   return rows;
 }
 
-export function buildAgentsRecap(): string {
+export async function buildAgentsRecap(): Promise<string> {
   const lines: string[] = [
     '# Agents par channel — récap généré',
     '',
@@ -411,7 +399,7 @@ export function buildAgentsRecap(): string {
     "| Channel | Agent group | Provider / Modèle | Déclenchement | MCP actifs | Droits d'accès |",
     '|---|---|---|---|---|---|',
   ];
-  for (const r of buildAgentsRecapRows()) {
+  for (const r of await buildAgentsRecapRows()) {
     lines.push(
       `| ${r.channel} | ${r.folder} | ${r.provider} / ${r.model}${r.effort ? ` (effort ${r.effort}` + (r.thinking ? `, thinking ${r.thinking})` : ')') : r.thinking ? ` (thinking ${r.thinking})` : ''} | ${r.engage} | ${r.mcp.join(', ') || '—'} | ${r.rights.join(' · ') || '—'} |`,
     );
@@ -427,9 +415,9 @@ export function buildAgentsRecap(): string {
 }
 
 /** Write the recap next to health.json; called from the pusher each cycle. */
-export function writeAgentsRecap(): void {
+export async function writeAgentsRecap(): Promise<void> {
   try {
-    fs.writeFileSync(path.join(DATA_DIR, 'agents-recap.md'), buildAgentsRecap());
+    fs.writeFileSync(path.join(DATA_DIR, 'agents-recap.md'), await buildAgentsRecap());
   } catch {
     /* best effort */
   }

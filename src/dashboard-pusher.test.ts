@@ -78,13 +78,13 @@ async function waitFor(pred: () => boolean, timeoutMs = 2000): Promise<void> {
 }
 
 describe('add-dashboard integration point (startDashboard)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     if (fs.existsSync(TEST_DIR)) fs.rmSync(TEST_DIR, { recursive: true });
-    const db = initTestDb();
-    runMigrations(db);
+    const db = await initTestDb();
+    await runMigrations(db);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     stopDashboardPusher();
     closeDb();
     delete process.env.DASHBOARD_SECRET;
