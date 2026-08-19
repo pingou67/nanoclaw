@@ -1,9 +1,9 @@
 [
-  { "name": "agent-browser", "version": "0.33.2", "onlyBuilt": true },
-  { "name": "@anthropic-ai/claude-code", "version": "2.1.227", "onlyBuilt": true },
+  { "name": "agent-browser", "version": "0.34.0", "onlyBuilt": true },
+  { "name": "@anthropic-ai/claude-code", "version": "2.1.233", "onlyBuilt": true },
   { "name": "@gongrzhe/server-gmail-autoauth-mcp", "version": "1.1.11" },
   { "name": "@cocal/google-calendar-mcp", "version": "2.6.2" },
   { "name": "imap-mcp-server", "version": "2.0.0" },
-  { "name": "mcp-searxng", "version": "1.14.1" },
+  { "name": "mcp-searxng", "version": "1.15.0" },
   { "name": "@openai/codex", "version": "0.147.0" }
 ]
