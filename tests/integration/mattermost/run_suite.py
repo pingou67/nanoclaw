@@ -566,7 +566,11 @@ def scenario_container_reuse() -> Result:
     reset_replies()
     # Reap any pre-existing work container so T1 measures a true cold spawn.
     subprocess.run(
-        "docker rm -f $(docker ps -a --filter 'name=nanoclaw-v2-mattermost_work' -q) 2>/dev/null",
+        # Depuis le driver seam (2026-08), les containers portent un nom derive
+        # (`ncl-…`) : le nom lisible ne survit que comme LABEL. On filtre donc
+        # par label — le detecteur d'upstream ne scanne que les .ts et ne
+        # signale pas ce fichier.
+        "docker rm -f $(docker ps -a --filter 'label=nanoclaw-group-folder=mattermost_work' -q) 2>/dev/null",
         shell=True, check=False,
     )
     # Brief settle so the host sweep registers the kill before we inject.
@@ -654,7 +658,7 @@ def purge_continuation(group_id: str) -> None:
 def kill_group_container(folder: str) -> None:
     """Kill any running container for ag-<folder> so the next inject respawns it
     with the current DB config (provider/env changes take effect at spawn)."""
-    names = subprocess.run(["docker", "ps", "--filter", f"name=nanoclaw-v2-{folder}-",
+    names = subprocess.run(["docker", "ps", "--filter", f"label=nanoclaw-group-folder={folder}",
                             "--format", "{{.Names}}"], capture_output=True, text=True).stdout.split()
     for n in names:
         subprocess.run(["docker", "kill", n], capture_output=True)

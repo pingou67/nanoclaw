@@ -283,7 +283,7 @@ function createAdapter(): ChannelAdapter | null {
   async function ensureRegistration(ch: ChannelConfig, dmChannelId?: string): Promise<string> {
     const platformId = platformIdFor(ch.folder, dmChannelId);
 
-    let mg = getMessagingGroupByPlatform('mattermost', platformId);
+    let mg = await getMessagingGroupByPlatform('mattermost', platformId);
     if (!mg) {
       const mgId = `mg-mm-${ch.folder}${dmChannelId ? `-${dmChannelId.slice(0, 8)}` : ''}`;
       const newMg = {
@@ -296,28 +296,28 @@ function createAdapter(): ChannelAdapter | null {
         denied_at: null,
         created_at: new Date().toISOString(),
       };
-      createMessagingGroup(newMg);
+      await createMessagingGroup(newMg);
       mg = newMg;
       log.info('Mattermost: created messaging_group', { mgId, platformId });
     }
 
-    let agentGroup = getAgentGroupByFolder(ch.folder);
+    let agentGroup = await getAgentGroupByFolder(ch.folder);
     if (!agentGroup) {
       const agId = `ag-${ch.folder}`;
-      createAgentGroup({
+      await createAgentGroup({
         id: agId,
         name: `Claw (${ch.channel ?? ch.folder})`,
         folder: ch.folder,
         agent_provider: null,
         created_at: new Date().toISOString(),
       });
-      agentGroup = getAgentGroupByFolder(ch.folder)!;
+      agentGroup = (await getAgentGroupByFolder(ch.folder))!;
       log.info('Mattermost: created agent_group', { agentGroupId: agentGroup.id, folder: ch.folder });
     }
 
-    const existingMga = getMessagingGroupAgentByPair(mg.id, agentGroup.id);
+    const existingMga = await getMessagingGroupAgentByPair(mg.id, agentGroup.id);
     if (!existingMga) {
-      createMessagingGroupAgent({
+      await createMessagingGroupAgent({
         id: `mga-mm-${ch.folder}${dmChannelId ? `-${dmChannelId.slice(0, 8)}` : ''}`,
         messaging_group_id: mg.id,
         agent_group_id: agentGroup.id,
@@ -365,11 +365,11 @@ function createAdapter(): ChannelAdapter | null {
     if (!Array.isArray(entries) || entries.length === 0) return;
 
     const platformId = platformIdFor(ch.folder);
-    const mg = getMessagingGroupByPlatform('mattermost', platformId);
+    const mg = await getMessagingGroupByPlatform('mattermost', platformId);
     if (!mg) return;
-    const ag = getAgentGroupByFolder(ch.folder);
+    const ag = await getAgentGroupByFolder(ch.folder);
     if (!ag) return;
-    const { session } = resolveSession(ag.id, mg.id, null, 'shared');
+    const { session } = await resolveSession(ag.id, mg.id, null, 'shared');
 
     const db = openInboundDb(ag.id, session.id);
     try {
@@ -448,11 +448,11 @@ function createAdapter(): ChannelAdapter | null {
    */
   async function addDefaultWeeklySummary(ch: ChannelConfig): Promise<void> {
     const platformId = platformIdFor(ch.folder);
-    const mg = getMessagingGroupByPlatform('mattermost', platformId);
+    const mg = await getMessagingGroupByPlatform('mattermost', platformId);
     if (!mg) return;
-    const ag = getAgentGroupByFolder(ch.folder);
+    const ag = await getAgentGroupByFolder(ch.folder);
     if (!ag) return;
-    const { session } = resolveSession(ag.id, mg.id, null, 'shared');
+    const { session } = await resolveSession(ag.id, mg.id, null, 'shared');
 
     const taskId = `task-default-weekly-summary-${ch.folder}`;
     const schedule = '0 18 * * 0';
