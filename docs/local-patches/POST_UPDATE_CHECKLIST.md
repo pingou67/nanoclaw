@@ -4,6 +4,7 @@ description: All local modifications to verify and reapply after each upstream m
 type: project
 originSessionId: 7b0faab2-f973-4d6c-8c92-9292fadef9aa
 ---
+
 ## When to run
 
 Les sections numérotées se passent après chaque `/update-nanoclaw` et **avant**
@@ -230,12 +231,13 @@ merge — `pnpm test` couvre le cas, mais l'échec est sinon distant et trompeur
 pnpm exec vitest run src/secrets/ src/dashboard-redact.test.ts
 ```
 
-**Écart connu et assumé au 2026-07-30** : le contrôle 2 sort en 1 à cause de
-l'agent `default` de la passerelle, laissé en mode `all`. Nanoclaw ne l'utilise
-jamais (`ensureAgent` crée toujours une identité par groupe), mais c'est
-l'identité de repli d'OneCLI, hors périmètre nanoclaw — décision de Pegs, en
-attente. **Un seul écart attendu : si le script en signale d'autres, ils sont
-nouveaux.**
+**Depuis OneCLI 1.44**, les affectations historiques ont été remplacées par les
+« agent grants » et `GET /v1/agents/:id/secrets` répond volontairement `Gone`.
+Le contrôle 2 utilise `@onecli-sh/sdk` et `listAgentsWithGrants()` : le mode
+`grants` est traité comme `selective`, tandis qu'un mode `all` reste un écart.
+L'agent spécial `default` n'est jamais utilisé par NanoClaw (`ensureAgent` crée
+toujours une identité par groupe) : ses grants sélectifs sont hors périmètre de
+ce contrôle, mais un éventuel mode `all` reste signalé.
 
 Si le paquet `@nanoco/nanoclaw-dashboard` a changé de version, re-porter le
 patch pnpm (page Agents + actions) — voir `docs/local-patches/README.md`.
@@ -249,20 +251,19 @@ patch pnpm (page Agents + actions) — voir `docs/local-patches/README.md`.
 **If missing**, reapply in `buildContainerArgs()`. Find the line `args.push(imageTag);` and insert this block **immediately before** it:
 
 ```typescript
-  // Mount Claude OAuth credentials (Pro/Max subscription) if present.
-  // Allows the agent to authenticate using the host's subscription without
-  // exposing tokens as environment variables.
-  // When credentials.json is available, override OneCLI's placeholder API key
-  // and proxy so the Claude SDK reads OAuth tokens directly from the file.
-  const homeDir = process.env.HOME || `/home/${process.env.USER || 'node'}`;
-  const claudeCredentials = path.join(homeDir, '.claude', '.credentials.json');
-  if (fs.existsSync(claudeCredentials)) {
-    args.push(...readonlyMountArgs(claudeCredentials, '/home/node/.claude/.credentials.json'));
-    args.push('-e', 'ANTHROPIC_API_KEY=');
-    args.push('-e', 'HTTPS_PROXY=');
-    args.push('-e', 'HTTP_PROXY=');
-  }
-
+// Mount Claude OAuth credentials (Pro/Max subscription) if present.
+// Allows the agent to authenticate using the host's subscription without
+// exposing tokens as environment variables.
+// When credentials.json is available, override OneCLI's placeholder API key
+// and proxy so the Claude SDK reads OAuth tokens directly from the file.
+const homeDir = process.env.HOME || `/home/${process.env.USER || 'node'}`;
+const claudeCredentials = path.join(homeDir, '.claude', '.credentials.json');
+if (fs.existsSync(claudeCredentials)) {
+  args.push(...readonlyMountArgs(claudeCredentials, '/home/node/.claude/.credentials.json'));
+  args.push('-e', 'ANTHROPIC_API_KEY=');
+  args.push('-e', 'HTTPS_PROXY=');
+  args.push('-e', 'HTTP_PROXY=');
+}
 ```
 
 **Why:** NanoClaw uses a Claude Pro subscription via `~/.claude/.credentials.json`, not an API key. OneCLI's placeholder `ANTHROPIC_API_KEY` and HTTPS_PROXY would override the OAuth flow if not cleared. See `project_claude_pro_auth.md`.
@@ -287,19 +288,21 @@ la note historique ci-dessous qui explique pourquoi le fork la préservait.
 **Verify (obsolète) :** `grep -q "Local patch: keep groups/global" src/claude-md-compose.ts && echo OK || echo MISSING`.
 
 **If missing**, find the block in `migrateGroupsToClaudeLocal()` near the bottom:
+
 ```typescript
-  const globalDir = path.join(GROUPS_DIR, 'global');
-  if (fs.existsSync(globalDir)) {
-    fs.rmSync(globalDir, { recursive: true, force: true });
-    actions.push('groups/global/ removed');
-  }
+const globalDir = path.join(GROUPS_DIR, 'global');
+if (fs.existsSync(globalDir)) {
+  fs.rmSync(globalDir, { recursive: true, force: true });
+  actions.push('groups/global/ removed');
+}
 ```
 
 Replace with:
+
 ```typescript
-  // Local patch: keep groups/global/ — used by standalone mattermost-bot
-  // (commentaire bloc explicatif sur le keep-groups/global)
-  // v2-managed agents read the shared base from container/CLAUDE.md instead.
+// Local patch: keep groups/global/ — used by standalone mattermost-bot
+// (commentaire bloc explicatif sur le keep-groups/global)
+// v2-managed agents read the shared base from container/CLAUDE.md instead.
 ```
 
 **Why:** v2 considers `groups/global/` obsolete and wipes it on every startup. Notre fork préserve ce dossier comme safety net pour des futurs agent groups qui voudraient leur propre mount partagé, et pour ne pas perdre silencieusement un `groups/global/CLAUDE.md` customisé entre deux restarts. See `project_v2_migration.md` §8.
@@ -313,11 +316,13 @@ Replace with:
 **Verify:** `[ -f src/channels/mattermost.ts ] && wc -l src/channels/mattermost.ts`.
 
 Should exist with ~430 lines. Won't appear in upstream (we created it). If accidentally deleted, restore from backup:
+
 ```bash
 git checkout backup/pre-mattermost-v2-b2f9232-20260426-201218 -- src/channels/mattermost.ts
 ```
 
 Or from disk snapshot:
+
 ```bash
 cp ~/nanoclaw-backups/pre-mattermost-v2-20260426-201218/src/channels/mattermost.ts src/channels/
 ```
@@ -335,6 +340,7 @@ See `project_mattermost_v2_adapter.md` for the full design.
 **Verify:** `grep -q "import './mattermost.js'" src/channels/index.ts`.
 
 **If missing**, append after `import './cli.js';`:
+
 ```typescript
 import './mattermost.js';
 ```
@@ -348,6 +354,7 @@ The file's `registerChannelAdapter('mattermost', ...)` runs at import-time. With
 **Verify:** `grep -q '"ws":' package.json && grep -q '"@types/ws":' package.json`.
 
 **If missing**, reinstall:
+
 ```bash
 export PNPM_HOME="$HOME/.local/share/pnpm" && export PATH="$PNPM_HOME:$PATH"
 pnpm add ws @types/ws
@@ -362,24 +369,26 @@ pnpm add ws @types/ws
 **Verify:** `[ -f data/mattermost.json ] && jq -r .url data/mattermost.json`.
 
 This file is **gitignored** (data/ is excluded), so it survives merges but can be lost on disk wipes. If missing, restore from backup:
+
 ```bash
 cp ~/nanoclaw-backups/pre-mattermost-v2-20260426-201218/data/mattermost.json data/mattermost.json
 chmod 600 data/mattermost.json
 ```
 
 If no backup, recreate (full template in `project_mattermost_v2_adapter.md`):
+
 ```json
 {
   "url": "https://mm.pegs.fr",
   "token": "<bot-token-from-mm-system-console>",
   "channels": [
-    { "channel": "main",      "folder": "mattermost_main",      "requireMention": true  },
-    { "channel": "work",      "folder": "mattermost_work",      "requireMention": false },
+    { "channel": "main", "folder": "mattermost_main", "requireMention": true },
+    { "channel": "work", "folder": "mattermost_work", "requireMention": false },
     { "channel": "mainframe", "folder": "mattermost_mainframe", "requireMention": false },
-    { "channel": "adminsys",  "folder": "mattermost_adminsys",  "requireMention": false },
-    { "channel": "famille",   "folder": "mattermost_famille",   "requireMention": true  },
-    { "channel": "coding",    "folder": "mattermost_coding",    "requireMention": false },
-    { "isDM": true,           "folder": "mattermost_dm",        "requireMention": false }
+    { "channel": "adminsys", "folder": "mattermost_adminsys", "requireMention": false },
+    { "channel": "famille", "folder": "mattermost_famille", "requireMention": true },
+    { "channel": "coding", "folder": "mattermost_coding", "requireMention": false },
+    { "isDM": true, "folder": "mattermost_dm", "requireMention": false }
   ]
 }
 ```
@@ -407,6 +416,7 @@ done
 > périmée.
 
 These are gitignored in v2 (`groups/*` is excluded). If missing after a fresh checkout or accidental delete:
+
 ```bash
 for g in mattermost_adminsys mattermost_coding mattermost_dm mattermost_famille mattermost_main mattermost_mainframe mattermost_work; do
   cp ~/nanoclaw-backups/pre-mattermost-v2-20260426-201218/groups/$g/CLAUDE.md groups/$g/CLAUDE.md
@@ -468,6 +478,7 @@ docker ps --filter 'name=nanoclaw-mattermost' --format '{{.Names}}'
 ```
 
 Expected: empty. If anything appears (someone restarted the legacy script), stop it:
+
 ```bash
 docker ps --filter 'name=nanoclaw-mattermost' -q | xargs -r docker stop
 docker ps -a --filter 'name=nanoclaw-mattermost' -q | xargs -r docker rm
@@ -482,6 +493,7 @@ The image and source code are kept for reference (test-tools mock-mm). To fully 
 ## §11. Build + tests
 
 After applying any patch:
+
 ```bash
 export PNPM_HOME="$HOME/.local/share/pnpm" && export PATH="$PNPM_HOME:$PATH"
 pnpm install --frozen-lockfile     # if pnpm-lock.yaml changed
@@ -490,6 +502,7 @@ pnpm test                           # all 197+ tests should pass
 ```
 
 If TypeScript errors after upstream merge, resolve them — most often it's because v2 refactored a module's API and our local patch references the old name. Common cases:
+
 - `from '../db/messaging-groups.js'` — verify path/exports still match
 - `from '../session-manager.js'` — same
 - `from '../modules/scheduling/db.js'` — same
@@ -524,6 +537,7 @@ python3 tests/integration/mattermost/run_suite.py
 ```
 
 The suite (~2-3 min) runs in this order:
+
 1. Starts a local mock Mattermost server (`tests/integration/mattermost/mock_mm.py`)
 2. **Stops the live nanoclaw service**
 3. Backs up `data/mattermost.json` to `.bak`, swaps in a mock-pointing config
@@ -537,6 +551,7 @@ indefinitely so anything sent during the suite is delivered when the
 adapter reconnects to the real server.
 
 **Expected output (all green):**
+
 ```
 ============================================================
 RESULTS
@@ -557,6 +572,7 @@ RESULTS
 ```
 
 **If the suite fails midway** and leaves the service in mock mode:
+
 ```bash
 pkill -f mock_mm.py
 mv data/mattermost.json.bak data/mattermost.json
@@ -564,6 +580,7 @@ systemctl --user restart nanoclaw
 ```
 
 **To debug a single scenario**:
+
 ```bash
 python3 tests/integration/mattermost/run_suite.py --scenario scenario_main --keep-mock
 # inspect logs, then manually clean up as above
@@ -578,12 +595,13 @@ the mock API surface, and common failure modes.
 
 Each major change leaves a recovery point:
 
-| Tag | Date | What it precedes |
-|-----|------|------------------|
-| `pre-v2-63ea4d0-20260426-104215` | 2026-04-26 10:42 | The v2 core merge |
+| Tag                                         | Date             | What it precedes               |
+| ------------------------------------------- | ---------------- | ------------------------------ |
+| `pre-v2-63ea4d0-20260426-104215`            | 2026-04-26 10:42 | The v2 core merge              |
 | `pre-mattermost-v2-b2f9232-20260426-201218` | 2026-04-26 20:12 | The Mattermost adapter cutover |
 
 Disk snapshots:
+
 - `~/nanoclaw-backups/v1.2.53-20260426-104215/` (98M, full pre-v2)
 - `~/nanoclaw-backups/pre-mattermost-v2-20260426-201218/` (15M, src + data + groups + mattermost-bot)
 

@@ -20,9 +20,10 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
+import { OneCLI } from '@onecli-sh/sdk';
 import Database from 'better-sqlite3';
 
-import { onecliJson } from './onecli-cli.js';
+import { ONECLI_API_KEY, ONECLI_URL } from '../src/config.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -40,6 +41,25 @@ export type GroupNeeds = Record<string, string[]>;
 export interface ScopeFinding {
   level: 'écart' | 'info';
   message: string;
+}
+
+export interface AgentWithGrantSummary {
+  identifier: string;
+  grantsSummary: {
+    mode: 'all' | 'grants';
+    entries: Array<{ kind: 'app'; provider: string } | { kind: 'secret' | 'llm'; name: string }>;
+  };
+}
+
+/** Convertit le modèle grants OneCLI 1.44+ vers le modèle neutre de l'audit. */
+export function scopeFromGrantSummary(agent: AgentWithGrantSummary): AgentScope {
+  return {
+    identifier: agent.identifier,
+    secretMode: agent.grantsSummary.mode === 'grants' ? 'selective' : 'all',
+    secrets: agent.grantsSummary.entries
+      .filter((entry): entry is { kind: 'secret' | 'llm'; name: string } => entry.kind !== 'app')
+      .map((entry) => entry.name),
+  };
 }
 
 /** `ag-mattermost_work` -> `ag-mattermost-work` (convention d'`ensureAgent`). */
@@ -74,6 +94,9 @@ export function auditScope(
     }
 
     if (!group) {
+      // Agent de repli OneCLI, hors périmètre NanoClaw : ensureAgent crée une
+      // identité dédiée par groupe. Son éventuel mode `all` a déjà été signalé.
+      if (agent.identifier === 'default') continue;
       if (agent.secrets.length > 0) {
         findings.push({
           level: 'écart',
@@ -114,30 +137,26 @@ export function auditScope(
   return findings;
 }
 
-function collect(): { agents: AgentScope[]; needs: GroupNeeds; requiredBy: Record<string, string | undefined> } {
+async function collect(): Promise<{
+  agents: AgentScope[];
+  needs: GroupNeeds;
+  requiredBy: Record<string, string | undefined>;
+}> {
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'scripts', 'vault-onecli-map.json'), 'utf-8'));
   const requiredBy: Record<string, string | undefined> = {};
   for (const [name, entry] of Object.entries(manifest as Record<string, { requiredBy?: string }>)) {
     if (name !== '//') requiredBy[name] = entry?.requiredBy;
   }
 
-  const secrets = onecliJson<{ id: string; name: string }>(['secrets', 'list']);
-  const nameById = new Map(secrets.map((s) => [s.id, s.name]));
-
-  const agents = onecliJson<{ id: string; identifier: string; secretMode: string }>(['agents', 'list']).map((a) => ({
-    identifier: a.identifier,
-    secretMode: a.secretMode,
-    secrets:
-      a.secretMode === 'selective'
-        ? onecliJson<string>(['agents', 'secrets', '--id', a.id]).map((id) => nameById.get(id) ?? id)
-        : secrets.map((s) => s.name),
-  }));
+  const onecli = new OneCLI({ url: ONECLI_URL, apiKey: ONECLI_API_KEY });
+  const agents = (await onecli.listAgentsWithGrants()).map(scopeFromGrantSummary);
 
   const db = new Database(path.join(ROOT, 'data', 'v2.db'), { fileMustExist: true, readonly: true });
   const needs: GroupNeeds = {};
-  for (const row of db
-    .prepare('SELECT agent_group_id AS id, mcp_servers AS mcp FROM container_configs')
-    .all() as { id: string; mcp: string | null }[]) {
+  for (const row of db.prepare('SELECT agent_group_id AS id, mcp_servers AS mcp FROM container_configs').all() as {
+    id: string;
+    mcp: string | null;
+  }[]) {
     needs[row.id] = Object.keys(JSON.parse(row.mcp || '{}'));
   }
   db.close();
@@ -145,8 +164,8 @@ function collect(): { agents: AgentScope[]; needs: GroupNeeds; requiredBy: Recor
   return { agents, needs, requiredBy };
 }
 
-function main(): void {
-  const { agents, needs, requiredBy } = collect();
+async function main(): Promise<void> {
+  const { agents, needs, requiredBy } = await collect();
   const findings = auditScope(agents, needs, requiredBy);
   const gaps = findings.filter((f) => f.level === 'écart');
 
@@ -158,5 +177,5 @@ function main(): void {
 }
 
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main();
+  void main();
 }

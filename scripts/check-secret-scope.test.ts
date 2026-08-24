@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { auditScope, identifierForGroup } from './check-secret-scope.js';
+import { auditScope, identifierForGroup, scopeFromGrantSummary } from './check-secret-scope.js';
 
 const REQUIRED_BY = { Vikunja: 'vikunja' };
 
@@ -13,6 +13,30 @@ describe('identifierForGroup', () => {
   it('reproduit la convention d’ensureAgent (underscores -> tirets)', () => {
     expect(identifierForGroup('ag-mattermost_work')).toBe('ag-mattermost-work');
     expect(identifierForGroup('ag-mattermost_testor-claude')).toBe('ag-mattermost-testor-claude');
+  });
+});
+
+describe('scopeFromGrantSummary', () => {
+  it('traduit les grants et exclut les connexions applicatives', () => {
+    expect(
+      scopeFromGrantSummary({
+        identifier: 'ag-work',
+        grantsSummary: {
+          mode: 'grants',
+          entries: [
+            { kind: 'app', provider: 'github' },
+            { kind: 'secret', name: 'Vikunja' },
+            { kind: 'llm', name: 'Codex' },
+          ],
+        },
+      }),
+    ).toEqual({ identifier: 'ag-work', secretMode: 'selective', secrets: ['Vikunja', 'Codex'] });
+  });
+
+  it('conserve le mode all comme écart auditable', () => {
+    expect(
+      scopeFromGrantSummary({ identifier: 'default', grantsSummary: { mode: 'all', entries: [] } }).secretMode,
+    ).toBe('all');
   });
 });
 
@@ -37,7 +61,9 @@ describe('auditScope', () => {
       needs,
       REQUIRED_BY,
     );
-    expect(findings).toContainEqual(expect.objectContaining({ level: 'écart', message: expect.stringMatching(/sans le serveur MCP/) }));
+    expect(findings).toContainEqual(
+      expect.objectContaining({ level: 'écart', message: expect.stringMatching(/sans le serveur MCP/) }),
+    );
   });
 
   it('signale l’inverse : le besoin est là, l’injection ne suivra pas', () => {
@@ -59,8 +85,21 @@ describe('auditScope', () => {
     expect(findings[0]).toMatchObject({ level: 'écart', message: expect.stringMatching(/mode « all »/) });
   });
 
+  it('ignore les grants du fallback default sélectif que NanoClaw n’utilise pas', () => {
+    const findings = auditScope(
+      [{ identifier: 'default', secretMode: 'selective', secrets: ['Vikunja'] }],
+      needs,
+      REQUIRED_BY,
+    );
+    expect(findings).toEqual([]);
+  });
+
   it('distingue l’agent orphelin inoffensif de celui qui porte encore un secret', () => {
-    const armed = auditScope([{ identifier: 'disparu', secretMode: 'selective', secrets: ['Vikunja'] }], needs, REQUIRED_BY);
+    const armed = auditScope(
+      [{ identifier: 'disparu', secretMode: 'selective', secrets: ['Vikunja'] }],
+      needs,
+      REQUIRED_BY,
+    );
     expect(armed[0]).toMatchObject({ level: 'écart', message: expect.stringMatching(/orphelin/) });
 
     const harmless = auditScope([{ identifier: 'disparu', secretMode: 'selective', secrets: [] }], needs, REQUIRED_BY);
