@@ -47,8 +47,7 @@ import {
   getMessagingGroupByPlatform,
 } from '../db/messaging-groups.js';
 import { log } from '../log.js';
-import { insertTaskRow } from '../modules/scheduling/db.js';
-import { openInboundDb, resolveSession } from '../session-manager.js';
+import { resolveSession, withMailboxSession } from '../session-manager.js';
 import type { ChannelAdapter, ChannelSetup, OutboundMessage } from './adapter.js';
 import { registerChannelAdapter } from './channel-registry.js';
 
@@ -371,8 +370,7 @@ function createAdapter(): ChannelAdapter | null {
     if (!ag) return;
     const { session } = await resolveSession(ag.id, mg.id, null, 'shared');
 
-    const db = openInboundDb(ag.id, session.id);
-    try {
+    await withMailboxSession(ag.id, session.id, async (mailbox) => {
       const { CronExpressionParser } = await import('cron-parser');
       for (let i = 0; i < entries.length; i++) {
         const entry = entries[i];
@@ -380,10 +378,7 @@ function createAdapter(): ChannelAdapter | null {
 
         // Deterministic id: skip if already present (idempotent).
         const taskId = `cron-mm-${ch.folder}-${i}`;
-        const existing = db.prepare('SELECT id FROM messages_in WHERE series_id = ? OR id = ?').get(taskId, taskId) as
-          | { id: string }
-          | undefined;
-        if (existing) continue;
+        if (mailbox.getTask(taskId)) continue;
 
         let processAfter: string;
         try {
@@ -413,7 +408,7 @@ function createAdapter(): ChannelAdapter | null {
         // Legacy-style placement: the row lives in the channel's chat session
         // (kind='task' rows keep firing wherever they are), so the fire keeps
         // the session's Mattermost destinations.
-        insertTaskRow(db, {
+        await mailbox.insertTask({
           id: taskId,
           seriesId: taskId,
           processAfter,
@@ -427,9 +422,7 @@ function createAdapter(): ChannelAdapter | null {
           taskId,
         });
       }
-    } finally {
-      db.close();
-    }
+    });
   }
 
   /**
@@ -457,12 +450,8 @@ function createAdapter(): ChannelAdapter | null {
     const taskId = `task-default-weekly-summary-${ch.folder}`;
     const schedule = '0 18 * * 0';
 
-    const db = openInboundDb(ag.id, session.id);
-    try {
-      const existing = db.prepare('SELECT id FROM messages_in WHERE id = ? OR series_id = ?').get(taskId, taskId) as
-        | { id: string }
-        | undefined;
-      if (existing) return;
+    await withMailboxSession(ag.id, session.id, async (mailbox) => {
+      if (mailbox.getTask(taskId)) return;
 
       const { CronExpressionParser } = await import('cron-parser');
       let processAfter: string;
@@ -484,7 +473,7 @@ function createAdapter(): ChannelAdapter | null {
         "Si le dossier `semaines/` n'existe pas, crée-le. " +
         'Quand le fichier est écrit, termine ton turn sans répondre — pas de message de confirmation, pas de récap, rien dans le canal.';
 
-      insertTaskRow(db, {
+      await mailbox.insertTask({
         id: taskId,
         seriesId: taskId,
         processAfter,
@@ -497,9 +486,7 @@ function createAdapter(): ChannelAdapter | null {
         processAfter,
         taskId,
       });
-    } finally {
-      db.close();
-    }
+    });
   }
 
   function buildWsUrl(): string {

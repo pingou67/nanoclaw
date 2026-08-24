@@ -1,16 +1,8 @@
 /**
- * Session lifecycle: folders, DBs, messages, container status.
- *
- * Two-DB split — inbound.db (host writes) + outbound.db (container writes).
- * Three cross-mount invariants are load-bearing:
- *   1. journal_mode=DELETE — WAL's mmapped -shm doesn't refresh host→guest;
- *      the container would silently miss every new message.
- *   2. Host opens-writes-CLOSES per op — close invalidates the container's
- *      page cache; a long-lived connection freezes its view at first read.
- *   3. One writer per file — DELETE-mode journal-unlink isn't atomic across
- *      the mount; concurrent writers corrupt the DB.
+ * Session lifecycle: folders, mailboxes, messages, and container status.
+ * Storage layout and consistency belong to the registered mailbox.
  */
-import type Database from 'better-sqlite3';
+import { AsyncLocalStorage } from 'async_hooks';
 import fs from 'fs';
 import path from 'path';
 
@@ -31,16 +23,8 @@ import {
   taskThreadId,
   updateSession,
 } from './db/sessions.js';
-import {
-  ensureSchema,
-  openInboundDb as openInboundDbRaw,
-  openOutboundDb as openOutboundDbRaw,
-  openOutboundDbRw as openOutboundDbRwRaw,
-  upsertSessionRouting,
-  insertMessage,
-  migrateMessagesInTable,
-} from './db/session-db.js';
 import { log } from './log.js';
+import { getAgentMailbox, type InboundMessage, type MailboxSession } from './mailbox/index.js';
 import type { Session } from './types.js';
 
 /** Root directory for all session data. */
@@ -53,19 +37,26 @@ export function sessionDir(agentGroupId: string, sessionId: string): string {
   return path.join(sessionsBaseDir(), agentGroupId, sessionId);
 }
 
-/** Path to the host-owned inbound DB (messages_in + delivered). */
-export function inboundDbPath(agentGroupId: string, sessionId: string): string {
-  return path.join(sessionDir(agentGroupId, sessionId), 'inbound.db');
+/** Host-owned runner context, kept outside the agent-writable session directory. */
+export function sessionContextPath(agentGroupId: string, sessionId: string): string {
+  return path.join(DATA_DIR, 'v2-sessions', agentGroupId, '.context', `${sessionId}.json`);
 }
 
-/** Path to the container-owned outbound DB (messages_out + processing_ack). */
-export function outboundDbPath(agentGroupId: string, sessionId: string): string {
-  return path.join(sessionDir(agentGroupId, sessionId), 'outbound.db');
+/** Materialize the immutable context the runner receives at startup. */
+export function writeSessionContext(agentGroupId: string, sessionId: string, mailbox: unknown): void {
+  const contextPath = sessionContextPath(agentGroupId, sessionId);
+  fs.mkdirSync(path.dirname(contextPath), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(contextPath, JSON.stringify({ agentGroupId, sessionId, mailbox }), { mode: 0o600 });
+  fs.chmodSync(contextPath, 0o600);
 }
 
 /** Path to the container heartbeat file (touched instead of DB writes). */
 export function heartbeatPath(agentGroupId: string, sessionId: string): string {
   return path.join(sessionDir(agentGroupId, sessionId), '.heartbeat');
+}
+
+function mailboxKey(agentGroupId: string, sessionId: string) {
+  return { agentGroupId, sessionId };
 }
 
 function generateId(): string {
@@ -207,18 +198,22 @@ export async function resolveTaskSession(
   });
 }
 
-/** Create the session folder and initialize both DBs. */
+/** Create the workspace folders and synchronously prepare the registered mailbox. */
 export function initSessionFolder(agentGroupId: string, sessionId: string): void {
   const dir = sessionDir(agentGroupId, sessionId);
   fs.mkdirSync(dir, { recursive: true });
   fs.mkdirSync(path.join(dir, 'outbox'), { recursive: true });
+  getAgentMailbox().prepare(mailboxKey(agentGroupId, sessionId));
+}
 
-  ensureSchema(inboundDbPath(agentGroupId, sessionId), 'inbound');
-  ensureSchema(outboundDbPath(agentGroupId, sessionId), 'outbound');
+/** Destroy one session's implementation-owned mailbox after its container stops. */
+export async function destroySessionMailbox(agentGroupId: string, sessionId: string): Promise<void> {
+  await getAgentMailbox().destroy(mailboxKey(agentGroupId, sessionId));
+  fs.rmSync(sessionContextPath(agentGroupId, sessionId), { force: true });
 }
 
 /**
- * Write the current chat/thread routing for a session into its inbound.db.
+ * Write the current chat/thread routing for a session into its inbound mailbox.
  *
  * The container uses this to preserve thread_id when an explicitly named
  * destination resolves to the conversation this session is bound to.
@@ -229,9 +224,6 @@ export function initSessionFolder(agentGroupId: string, sessionId: string): void
  * place, including after admin rewiring.
  */
 export async function writeSessionRouting(agentGroupId: string, sessionId: string): Promise<void> {
-  const dbPath = inboundDbPath(agentGroupId, sessionId);
-  if (!fs.existsSync(dbPath)) return;
-
   const session = await getSession(sessionId);
   if (!session) return;
 
@@ -245,32 +237,25 @@ export async function writeSessionRouting(agentGroupId: string, sessionId: strin
     }
   }
 
-  const db = openInboundDb(agentGroupId, sessionId);
-  try {
-    upsertSessionRouting(db, {
-      channel_type: channelType,
-      platform_id: platformId,
-      thread_id: session.thread_id,
+  await withMailboxSession(agentGroupId, sessionId, (mailbox) => {
+    mailbox.setRouting({
+      channelType,
+      platformId,
+      threadId: session.thread_id,
     });
-  } finally {
-    db.close();
-  }
+  });
   log.debug('Session routing written', { sessionId, channelType, platformId, threadId: session.thread_id });
 }
 
 /**
- * Write a message to a session's inbound DB (messages_in). Host-only.
- *
- * ⚠ Opens and closes the DB on every call. Do not refactor to reuse a
- * long-lived connection — see the "Cross-mount visibility invariants" note
- * at the top of this file.
+ * Write a message to a session's inbound mailbox. Host-only.
  */
 export async function writeSessionMessage(
   agentGroupId: string,
   sessionId: string,
   message: {
     id: string;
-    kind: string;
+    kind: InboundMessage['kind'];
     timestamp: string;
     platformId?: string | null;
     channelType?: string | null;
@@ -279,12 +264,12 @@ export async function writeSessionMessage(
     processAfter?: string | null;
     recurrence?: string | null;
     /**
-     * 1 = this message should wake the agent (the default); 0 = accumulate
+     * true = this message should wake the agent (the default); false = accumulate
      * as context only, don't wake. Host's countDueMessages gates on this
      * column; the container still reads all prior messages as context when
-     * a trigger-1 message does arrive.
+     * a triggering message does arrive.
      */
-    trigger?: 0 | 1;
+    trigger?: boolean;
     /**
      * For agent-to-agent inbound: the source session id that emitted the
      * outbound message which became this inbound row. Used as the return
@@ -292,28 +277,25 @@ export async function writeSessionMessage(
      */
     sourceSessionId?: string | null;
     /**
-     * 1 = only deliver on the container's first poll (fresh start).
+     * true = only deliver on the container's first poll (fresh start).
      * Dying containers (past first poll) skip these rows.
      */
-    onWake?: 0 | 1;
+    onWake?: boolean;
   },
 ): Promise<void> {
   // Documented reset: operators `rm -rf` a session folder to clear a stuck
   // session. The sessions row survives, so the next message takes the
-  // existing-session path and lands here with a missing inbound.db — the open
+  // existing-session path and lands here with a missing mailbox — the open
   // below would throw and the message would be logged-and-dropped forever.
-  // Re-provision the folder + DBs (initSessionFolder is idempotent) so the
+  // Re-provision the folder + mailbox (initSessionFolder is idempotent) so the
   // documented reset actually re-provisions instead of killing the chat.
-  if (!fs.existsSync(inboundDbPath(agentGroupId, sessionId))) {
-    initSessionFolder(agentGroupId, sessionId);
-  }
+  initSessionFolder(agentGroupId, sessionId);
 
   // Extract base64 attachment data, save to inbox, replace with file paths
   const content = extractAttachmentFiles(agentGroupId, sessionId, message.id, message.content);
 
-  const db = openInboundDb(agentGroupId, sessionId);
-  try {
-    insertMessage(db, {
+  await withMailboxSession(agentGroupId, sessionId, async (mailbox) => {
+    await mailbox.insertMessage({
       id: message.id,
       kind: message.kind,
       timestamp: message.timestamp,
@@ -323,14 +305,11 @@ export async function writeSessionMessage(
       content,
       processAfter: message.processAfter ?? null,
       recurrence: message.recurrence ?? null,
-      trigger: message.trigger ?? 1,
+      trigger: message.trigger ?? true,
       sourceSessionId: message.sourceSessionId ?? null,
-      onWake: message.onWake ?? 0,
+      onWake: message.onWake ?? false,
     });
-  } finally {
-    db.close();
-  }
-
+  });
   await updateSession(sessionId, { last_active: new Date().toISOString() });
 }
 
@@ -430,43 +409,60 @@ function extractAttachmentFiles(
   return changed ? JSON.stringify(parsed) : contentStr;
 }
 
-/** Open the inbound DB for a session (host reads/writes). */
-export function openInboundDb(agentGroupId: string, sessionId: string): Database.Database {
-  const db = openInboundDbRaw(inboundDbPath(agentGroupId, sessionId));
-  migrateMessagesInTable(db);
-  return db;
+/**
+ * Detects same-key session() nesting, which is forbidden: implementations may
+ * serialize session() per key, so a nested call may deadlock. Tracked per async context so
+ * legitimately concurrent top-level sessions on the same key don't trip it.
+ */
+const activeMailboxKeys = new AsyncLocalStorage<ReadonlySet<string>>();
+
+/** Run one host operation against a session mailbox. The implementation owns persistence.
+ *
+ * Never call this (directly or via helpers like writeSessionMessage) from
+ * inside another withMailboxSession action on the same session — finish the
+ * open session first. See AgentMailbox.session in src/mailbox/types.ts.
+ */
+export function withMailboxSession<T>(
+  agentGroupId: string,
+  sessionId: string,
+  action: (mailbox: MailboxSession) => T | Promise<T>,
+): Promise<T> {
+  return runMailboxSession(agentGroupId, sessionId, action, true) as Promise<T>;
 }
 
-/** Open a session's inbound DB, run `fn`, and always close it. */
-export function withInboundDb<T>(agentGroupId: string, sessionId: string, fn: (db: Database.Database) => T): T {
-  const db = openInboundDb(agentGroupId, sessionId);
-  try {
-    return fn(db);
-  } finally {
-    db.close();
+/** Run against an already-provisioned mailbox without creating storage. */
+export function withExistingMailboxSession<T>(
+  agentGroupId: string,
+  sessionId: string,
+  action: (mailbox: MailboxSession) => T | Promise<T>,
+): Promise<T | undefined> {
+  return runMailboxSession(agentGroupId, sessionId, action, false);
+}
+
+async function runMailboxSession<T>(
+  agentGroupId: string,
+  sessionId: string,
+  action: (mailbox: MailboxSession) => T | Promise<T>,
+  provision: boolean,
+): Promise<T | undefined> {
+  const store = getAgentMailbox();
+  const key = mailboxKey(agentGroupId, sessionId);
+  const keyId = `${agentGroupId}/${sessionId}`;
+  const held = activeMailboxKeys.getStore();
+  if (held?.has(keyId)) {
+    throw new Error(`Nested mailbox session for ${keyId} — serialized implementations would deadlock here`);
   }
-}
-
-/** Open the outbound DB for a session (host reads only). */
-export function openOutboundDb(agentGroupId: string, sessionId: string): Database.Database {
-  return openOutboundDbRaw(outboundDbPath(agentGroupId, sessionId));
-}
-
-/** Open the outbound DB for a session with write access. Only safe to call when no container is running. */
-export function openOutboundDbRw(agentGroupId: string, sessionId: string): Database.Database {
-  return openOutboundDbRwRaw(outboundDbPath(agentGroupId, sessionId));
+  if (provision) store.prepare(key);
+  else if (!(await store.exists(key))) return undefined;
+  return activeMailboxKeys.run(new Set(held).add(keyId), () => store.session(key, action));
 }
 
 /**
- * Write a message directly to a session's outbound DB so the host delivery
+ * Write a message directly to a session's outbound mailbox so the host delivery
  * loop picks it up. Used by the command gate to send denial responses
  * without waking a container.
  *
- * Needs the read-write open — per openOutboundDbRw's caveat, that is only
- * strictly safe when no container is running. The deny-path callers (command
- * gate) accept the residual risk of racing a live container: both sides open
- * with DELETE journal + busy_timeout, and the even host seq stays out of the
- * container's odd-seq space.
+ * The selected mailbox owns persistence and sequencing.
  */
 export function writeOutboundDirect(
   agentGroupId: string,
@@ -479,42 +475,8 @@ export function writeOutboundDirect(
     threadId: string | null;
     content: string;
   },
-): void {
-  // Seq parity: the host owns EVEN seqs, the container odd, across BOTH
-  // session files (shared per-session namespace). MAX(seq)+2 would inherit
-  // the parity of the last writer — after a container (odd) write the host
-  // would emit an odd seq. Mirror nextEvenSeq (src/db/session-db.ts) / the
-  // container's odd-seq writeMessageOut: max across messages_out AND
-  // messages_in (read-only on inbound here), rounded up to the next even.
-  let maxInSeq = 0;
-  const inDb = openInboundDb(agentGroupId, sessionId);
-  try {
-    maxInSeq = (inDb.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM messages_in').get() as { m: number }).m;
-  } finally {
-    inDb.close();
-  }
-
-  const db = openOutboundDbRw(agentGroupId, sessionId);
-  try {
-    const maxOutSeq = (db.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM messages_out').get() as { m: number }).m;
-    const maxSeq = Math.max(maxInSeq, maxOutSeq);
-    const seq = maxSeq < 2 ? 2 : maxSeq + 2 - (maxSeq % 2);
-    db.prepare(
-      `INSERT OR IGNORE INTO messages_out (id, seq, timestamp, kind, platform_id, channel_type, thread_id, content)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      message.id,
-      seq,
-      new Date().toISOString(),
-      message.kind,
-      message.platformId,
-      message.channelType,
-      message.threadId,
-      message.content,
-    );
-  } finally {
-    db.close();
-  }
+): Promise<void> {
+  return withMailboxSession(agentGroupId, sessionId, (mailbox) => mailbox.writeDirect(message));
 }
 
 /**
@@ -522,7 +484,7 @@ export function writeOutboundDirect(
  *
  * Symmetric with `extractAttachmentFiles` on the inbound side: the container
  * writes files into the session's `outbox/<messageId>/` directory alongside
- * its `messages_out` row, and the host reads them back at delivery time.
+ * its outbound message, and the host reads them back at delivery time.
  *
  * Returns undefined when the outbox dir is missing or no declared file was
  * actually on disk — delivery continues without attachments rather than

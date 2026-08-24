@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { initTestSessionDb, closeSessionDb } from './db/connection.js';
+import { initTestSessionDb, closeSessionDb } from './mailbox/sqlite/connection.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
 import { enqueueFileOut } from './outbox.js';
 
@@ -31,10 +31,10 @@ function writeSrc(name: string, bytes: string): string {
 }
 
 describe('enqueueFileOut', () => {
-  it('stages the file under the outbox and enqueues a messages_out row with files[]', () => {
+  it('stages the file under the outbox and enqueues a messages_out row with files[]', async () => {
     const src = writeSrc('ig_abc.png', 'PNGDATA');
 
-    const { id, filename } = enqueueFileOut({
+    const { id, filename } = await enqueueFileOut({
       srcPath: src,
       routing: { platform_id: 'chan-1', channel_type: 'discord', thread_id: 'thr-9', in_reply_to: 'm1' },
       text: 'here you go',
@@ -58,10 +58,10 @@ describe('enqueueFileOut', () => {
     expect(content.text).toBe('here you go');
   });
 
-  it('defaults filename to the basename and text to empty', () => {
+  it('defaults filename to the basename and text to empty', async () => {
     const src = writeSrc('chart.png', 'X');
 
-    const { filename } = enqueueFileOut({
+    const { filename } = await enqueueFileOut({
       srcPath: src,
       routing: { platform_id: 'C-1', channel_type: 'slack', thread_id: null },
     });
@@ -74,13 +74,13 @@ describe('enqueueFileOut', () => {
     expect(content.files).toEqual(['chart.png']);
   });
 
-  it('throws when the source file is missing — callers decide how to surface it', () => {
-    expect(() =>
+  it('throws when the source file is missing — callers decide how to surface it', async () => {
+    await expect(
       enqueueFileOut({
         srcPath: path.join(srcDir, 'does-not-exist.png'),
         routing: { platform_id: 'C-1', channel_type: 'slack', thread_id: null },
       }),
-    ).toThrow();
+    ).rejects.toThrow();
     // Nothing enqueued on failure.
     expect(getUndeliveredMessages()).toHaveLength(0);
   });

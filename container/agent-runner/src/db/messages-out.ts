@@ -1,12 +1,10 @@
 /**
- * Outbound message operations (container side).
- *
- * Writes to outbound.db (container-owned).
- * The host polls this DB (read-only) for undelivered messages.
+ * Legacy runner-facing outbound API, backed by the registered mailbox.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-import { getInboundDb, getOutboundDb, openInboundDb } from './connection.js';
+import { getAgentMailbox } from '../mailbox/index.js';
+import type { OutboundMessage } from '../mailbox/types.js';
 
 export interface MessageOutRow {
   id: string;
@@ -77,142 +75,55 @@ function decorateContent(msg: WriteMessageOut): string {
   return changed ? JSON.stringify(payload) : msg.content;
 }
 
-/**
- * Write a new outbound message, auto-assigning an odd seq number.
- * Container uses odd seq (1, 3, 5...), host uses even (2, 4, 6...).
- *
- * The disjoint namespace is load-bearing, not just collision avoidance:
- * seq is the agent-facing message ID returned by send_message and accepted
- * by edit_message / add_reaction, and getMessageIdBySeq() below looks up
- * by seq across BOTH tables. If inbound and outbound could share a seq,
- * the agent's "edit message #5" could resolve to the wrong row.
- */
-export function writeMessageOut(msg: WriteMessageOut): number {
-  const outbound = getOutboundDb();
-  const inbound = getInboundDb();
-
-  // Read the inbound max outside the write lock — it only grows via the host
-  // (even seqs), so a slightly stale read can't produce an odd-seq collision.
-  const maxIn = (inbound.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM messages_in').get() as { m: number }).m;
-
-  // THREE processes write messages_out concurrently (agent-runner live-status,
-  // the mcp-tools stdio subprocess's send_message, the ncl CLI). The MAX(seq)
-  // read and the INSERT must be one atomic unit or two writers compute the
-  // same odd seq and the loser hits the UNIQUE(seq) constraint. BEGIN
-  // IMMEDIATE takes the write lock up front; busy_timeout=5000 (connection.ts)
-  // makes the loser wait instead of failing. ncl.ts does the same on its side.
-  outbound.exec('BEGIN IMMEDIATE');
-  let nextSeq: number;
-  try {
-    const maxOut = (outbound.prepare('SELECT COALESCE(MAX(seq), 0) AS m FROM messages_out').get() as { m: number })
-      .m;
-    const max = Math.max(maxOut, maxIn);
-    nextSeq = max % 2 === 0 ? max + 1 : max + 2; // next odd
-
-    // bun:sqlite requires named parameters to be passed with the prefix character
-    // in the JS object keys (better-sqlite3 auto-stripped it, bun:sqlite does not).
-    outbound
-      .prepare(
-        `INSERT INTO messages_out (id, seq, in_reply_to, timestamp, deliver_after, recurrence, kind, platform_id, channel_type, thread_id, content)
-     VALUES ($id, $seq, $in_reply_to, $timestamp, $deliver_after, $recurrence, $kind, $platform_id, $channel_type, $thread_id, $content)`,
-      )
-      .run({
-        $id: msg.id,
-        $seq: nextSeq,
-        $timestamp: new Date().toISOString(),
-        $in_reply_to: msg.in_reply_to ?? null,
-        $deliver_after: msg.deliver_after ?? null,
-        $recurrence: msg.recurrence ?? null,
-        $kind: msg.kind,
-        $platform_id: msg.platform_id ?? null,
-        $channel_type: msg.channel_type ?? null,
-        $thread_id: msg.thread_id ?? null,
-        $content: decorateContent(msg),
-      });
-    outbound.exec('COMMIT');
-  } catch (err) {
-    try {
-      outbound.exec('ROLLBACK');
-    } catch {
-      /* no open tx */
-    }
-    throw err;
-  }
-
-  return nextSeq;
+function messageRow(message: OutboundMessage): MessageOutRow {
+  return {
+    id: message.id,
+    seq: message.sequence,
+    in_reply_to: message.inReplyTo,
+    timestamp: message.timestamp,
+    deliver_after: message.deliverAfter,
+    recurrence: message.recurrence,
+    kind: message.kind,
+    platform_id: message.platformId,
+    channel_type: message.channelType,
+    thread_id: message.threadId,
+    content: message.content,
+  };
 }
 
-/**
- * Look up a message's platform ID by seq number.
- * Searches both inbound and outbound DBs since seq spans both.
- *
- * For inbound messages, the Chat SDK message ID is already the platform message ID
- * (e.g., "6037840640:42" for Telegram).
- *
- * For outbound messages, the internal ID (msg-xxx) won't work for edits/reactions.
- * Instead, look up the platform_message_id from the delivered table (host writes this
- * after successful delivery).
- */
+export function writeMessageOut(msg: WriteMessageOut): Promise<number> {
+  return getAgentMailbox().operations.writeMessageOut({
+    id: msg.id,
+    inReplyTo: msg.in_reply_to,
+    deliverAfter: msg.deliver_after,
+    recurrence: msg.recurrence,
+    kind: msg.kind,
+    platformId: msg.platform_id,
+    channelType: msg.channel_type,
+    threadId: msg.thread_id,
+    content: decorateContent(msg),
+  });
+}
+
 export function getMessageIdBySeq(seq: number): string | null {
-  // Fresh short-lived connection: messages_in and delivered are host-written
-  // mid-session, and the long-lived singleton's page cache can serve a stale
-  // view across the mount (connection.ts invariant — singleton is only safe
-  // for spawn-time-static tables).
-  const inbound = openInboundDb();
-  try {
-    // Inbound messages: ID is already the platform message ID
-    const inRow = inbound.prepare('SELECT id FROM messages_in WHERE seq = ?').get(seq) as
-      | { id: string }
-      | undefined;
-    if (inRow) return inRow.id;
-
-    // Outbound messages: look up platform message ID from delivered table
-    const outRow = getOutboundDb().prepare('SELECT id FROM messages_out WHERE seq = ?').get(seq) as
-      | { id: string }
-      | undefined;
-    if (!outRow) return null;
-
-    // Check if host has stored the platform message ID after delivery
-    const deliveredRow = inbound
-      .prepare('SELECT platform_message_id FROM delivered WHERE message_out_id = ?')
-      .get(outRow.id) as { platform_message_id: string | null } | undefined;
-    if (deliveredRow?.platform_message_id) return deliveredRow.platform_message_id;
-
-    // Fallback to internal ID (edits/reactions on undelivered messages won't work)
-    return outRow.id;
-  } finally {
-    inbound.close();
-  }
+  return getAgentMailbox().operations.getMessageIdBySeq(seq);
 }
 
-/**
- * Look up the routing fields for a message by seq (for edit/reaction targeting).
- * Returns the channel_type, platform_id, thread_id of the referenced message.
- */
 export function getRoutingBySeq(
   seq: number,
 ): { channel_type: string | null; platform_id: string | null; thread_id: string | null } | null {
-  const inbound = getInboundDb();
-  const inRow = inbound
-    .prepare('SELECT channel_type, platform_id, thread_id FROM messages_in WHERE seq = ?')
-    .get(seq) as { channel_type: string | null; platform_id: string | null; thread_id: string | null } | undefined;
-  if (inRow) return inRow;
-
-  const outRow = getOutboundDb()
-    .prepare('SELECT channel_type, platform_id, thread_id FROM messages_out WHERE seq = ?')
-    .get(seq) as { channel_type: string | null; platform_id: string | null; thread_id: string | null } | undefined;
-  return outRow ?? null;
+  const routing = getAgentMailbox().operations.getRoutingBySeq(seq);
+  return (
+    routing && {
+      channel_type: routing.channelType,
+      platform_id: routing.platformId,
+      thread_id: routing.threadId,
+    }
+  );
 }
 
-/** Get undelivered messages (for host polling — reads from outbound.db). */
 export function getUndeliveredMessages(): MessageOutRow[] {
-  return getOutboundDb()
-    .prepare(
-      `SELECT * FROM messages_out
-       WHERE (deliver_after IS NULL OR datetime(deliver_after) <= datetime('now'))
-       ORDER BY timestamp ASC`,
-    )
-    .all() as MessageOutRow[];
+  return getAgentMailbox().operations.getUndeliveredMessages().map(messageRow);
 }
 
 /**
@@ -222,18 +133,7 @@ export function getUndeliveredMessages(): MessageOutRow[] {
  * "edit" mode for the running status post.
  */
 export function getDeliveredPlatformId(outboundMsgId: string): string | null {
-  // Fresh connection — `delivered` is host-written continuously; the
-  // singleton's stale page cache would make finalizeLiveStatus's platform-id
-  // resolution retries spin forever on virtiofs mounts.
-  const inbound = openInboundDb();
-  try {
-    const row = inbound
-      .prepare('SELECT platform_message_id FROM delivered WHERE message_out_id = ?')
-      .get(outboundMsgId) as { platform_message_id: string | null } | undefined;
-    return row?.platform_message_id ?? null;
-  } finally {
-    inbound.close();
-  }
+  return getAgentMailbox().operations.getDeliveredPlatformId(outboundMsgId);
 }
 
 /**
@@ -243,14 +143,5 @@ export function getDeliveredPlatformId(outboundMsgId: string): string | null {
  * agent already made — the dedup happens where the duplication originates.
  */
 export function hasIdenticalSend(platformId: string, channelType: string, text: string): boolean {
-  const row = getOutboundDb()
-    .prepare(
-      `SELECT 1 FROM messages_out
-        WHERE platform_id = $platform_id AND channel_type = $channel_type
-          AND (in_reply_to IS NULL OR in_reply_to = '')
-          AND json_extract(content, '$.text') = $text
-        LIMIT 1`,
-    )
-    .get({ $platform_id: platformId, $channel_type: channelType, $text: text });
-  return row != null;
+  return getAgentMailbox().operations.hasIdenticalSend(platformId, channelType, text);
 }

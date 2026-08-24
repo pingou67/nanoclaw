@@ -18,8 +18,7 @@ import { getSessionsByAgentGroup } from './db/sessions.js';
 import { getMessagingGroup } from './db/messaging-groups.js';
 import { getContainerConfig, updateContainerConfigScalars, updateContainerConfigJson } from './db/container-configs.js';
 import { restartAgentGroupContainers } from './container-restart.js';
-import { writeSessionMessage, openInboundDb } from './session-manager.js';
-import { insertTaskRow, updateTask, cancelTask, pauseTask, resumeTask } from './modules/scheduling/db.js';
+import { withMailboxSession, writeSessionMessage } from './session-manager.js';
 import { log } from './log.js';
 
 export interface DashboardActionRequest {
@@ -124,7 +123,7 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
       if (!session) return refuse('aucune session active pour ce groupe', req);
       const mg = session.messaging_group_id ? await getMessagingGroup(session.messaging_group_id) : undefined;
       if (!mg) return refuse('session sans messaging group résoluble', req);
-      writeSessionMessage(gid, session.id, {
+      await writeSessionMessage(gid, session.id, {
         id: `dash-live-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         kind: 'chat',
         timestamp: new Date().toISOString(),
@@ -146,20 +145,22 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
       if (!when || Number.isNaN(Date.parse(when))) return refuse(`échéance invalide: ${when}`, req);
       const recurrence = normalizeCron(req.recurrence);
       if (recurrence === false) return refuse(`récurrence invalide (cron 5 champs attendu): ${req.recurrence}`, req);
-      const session = latestActiveSession(gid);
+      const session = await latestActiveSession(gid);
       if (!session) return refuse('aucune session active pour ce groupe', req);
       const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       // Legacy-style placement: the row lives in the group's chat session
       // (upstream keeps firing kind='task' rows wherever they are), so the
       // fire keeps the session's destinations — unlike ncl tasks' isolated
       // per-series sessions.
-      await insertTaskRow(openInboundDb(gid, (await session).id), {
-        id: taskId,
-        seriesId: taskId,
-        processAfter: new Date(when).toISOString(),
-        recurrence,
-        content: JSON.stringify({ prompt }),
-      });
+      await withMailboxSession(gid, session.id, (mailbox) =>
+        mailbox.insertTask({
+          id: taskId,
+          seriesId: taskId,
+          processAfter: new Date(when).toISOString(),
+          recurrence,
+          content: JSON.stringify({ prompt }),
+        }),
+      );
       return done(
         `tâche ${taskId} créée`,
         `job-add ${taskId} group=${group.folder} processAfter=${when} recurrence=${recurrence ?? '(ponctuelle)'} (via dashboard)`,
@@ -184,7 +185,7 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
         if (recurrence === false) return refuse(`récurrence invalide: ${req.recurrence}`, req);
         update.recurrence = recurrence;
       }
-      const n = await updateTask(openInboundDb(gid, target.sessionId), target.taskId, update);
+      const n = await withMailboxSession(gid, target.sessionId, (mailbox) => mailbox.updateTask(target.taskId, update));
       if (n === 0) return refuse(`tâche introuvable (ou plus pending/paused): ${target.taskId}`, req);
       audit(
         `job-update ${target.taskId} group=${group.folder} champs=${Object.keys(update).join(',')} (via dashboard)`,
@@ -195,11 +196,14 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
     case 'job-cancel': {
       const target = await requireTask(req);
       if ('error' in target) return refuse(target.error, req);
-      const db = openInboundDb(gid, target.sessionId);
-      if (countLiveTaskRows(db, target.taskId) === 0) {
+      const n = await withMailboxSession(gid, target.sessionId, (mailbox) => {
+        const task = mailbox.getTask(target.taskId);
+        if (!task || !['pending', 'paused'].includes(task.status)) return 0;
+        return mailbox.cancelTask(target.taskId);
+      });
+      if (n === 0) {
         return refuse(`tâche déjà supprimée/terminée (ou id inconnu): ${target.taskId}`, req);
       }
-      await cancelTask(db, target.taskId);
       return done(
         `tâche ${target.taskId} supprimée`,
         `job-cancel ${target.taskId} group=${group.folder} (via dashboard)`,
@@ -210,13 +214,15 @@ export async function handleDashboardAction(req: DashboardActionRequest): Promis
     case 'job-resume': {
       const target = await requireTask(req);
       if ('error' in target) return refuse(target.error, req);
-      const db = openInboundDb(gid, target.sessionId);
       const wanted = req.action === 'job-pause' ? 'pending' : 'paused';
-      if (countLiveTaskRows(db, target.taskId, wanted) === 0) {
+      const n = await withMailboxSession(gid, target.sessionId, (mailbox) => {
+        const task = mailbox.getTask(target.taskId);
+        if (!task || task.status !== wanted) return 0;
+        return req.action === 'job-pause' ? mailbox.pauseTask(target.taskId) : mailbox.resumeTask(target.taskId);
+      });
+      if (n === 0) {
         return refuse(`aucune tâche au statut « ${wanted} » pour ${target.taskId}`, req);
       }
-      if (req.action === 'job-pause') await pauseTask(db, target.taskId);
-      else await resumeTask(db, target.taskId);
       return done(
         `tâche ${req.action === 'job-pause' ? 'mise en pause' : 'reprise'}`,
         `${req.action} ${target.taskId} group=${group.folder} (via dashboard)`,
@@ -239,18 +245,6 @@ async function latestActiveSession(gid: string) {
   return (await getSessionsByAgentGroup(gid))
     .filter((s) => s.status === 'active')
     .sort((a, b) => (b.last_active ?? '').localeCompare(a.last_active ?? ''))[0];
-}
-
-/** Count live rows a job action would touch — gives honest "no-op" answers. */
-function countLiveTaskRows(db: ReturnType<typeof openInboundDb>, taskId: string, status?: string): number {
-  const statuses = status ? [status] : ['pending', 'paused'];
-  const row = db
-    .prepare(
-      `SELECT count(*) AS n FROM messages_in
-       WHERE (id = ? OR series_id = ?) AND kind = 'task' AND status IN (${statuses.map(() => '?').join(',')})`,
-    )
-    .get(taskId, taskId, ...statuses) as { n: number };
-  return row.n;
 }
 
 /** Resolve and validate the (sessionDir, taskId) pair of a job action. */

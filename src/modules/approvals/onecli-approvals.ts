@@ -171,6 +171,12 @@ async function handleRequest(request: ApprovalRequest): Promise<Decision> {
         question,
         options: onecliOptions,
       }),
+      undefined,
+      // ensureUserDm may resolve the DM through a named instance (its registry
+      // lookup falls back across instances of a channel type); dispatch here is
+      // exact-key, so the card must be addressed to the instance that owns the
+      // conversation or it cannot be posted at all.
+      target.messagingGroup.instance,
     );
   } catch (err) {
     log.error('Failed to deliver OneCLI approval card', { approvalId, oneCliRequestId: request.id, err });
@@ -195,6 +201,7 @@ async function handleRequest(request: ApprovalRequest): Promise<Decision> {
     agent_group_id: agentGroupId,
     channel_type: target.messagingGroup.channel_type,
     platform_id: target.messagingGroup.platform_id,
+    instance: target.messagingGroup.instance ?? null,
     platform_message_id: platformMessageId ?? null,
     expires_at: request.expiresAt,
     status: 'pending',
@@ -233,7 +240,8 @@ async function expireApproval(approvalId: string, reason: ExpiryReason): Promise
   log.info('OneCLI approval expired', { approvalId, reason });
 }
 
-async function editCardExpired(row: PendingApproval, reason: ExpiryReason): Promise<void> {
+/** Exported for tests — the sweep and the expiry timer are its only callers. */
+export async function editCardExpired(row: PendingApproval, reason: ExpiryReason): Promise<void> {
   if (!adapterRef || !row.platform_message_id || !row.channel_type || !row.platform_id) return;
   const resolution =
     reason === 'no response' ? '⏱️ Timed out — no response' : '⏱️ Timed out — host restarted before resolution';
@@ -255,9 +263,16 @@ async function editCardExpired(row: PendingApproval, reason: ExpiryReason): Prom
           resolution,
         },
       }),
+      undefined,
+      // Dispatch is exact-key: editing through the bare channel type finds no
+      // adapter at all on an install whose bots are all named instances.
+      row.instance ?? row.channel_type,
     );
   } catch (err) {
-    log.warn('Failed to edit expired OneCLI approval card', { approvalId: row.approval_id, err });
+    // Louder than a warn: the row is deleted straight after, so a swallowed
+    // failure leaves a card showing live Approve/Reject buttons that resolve
+    // nothing, with no other trace that it happened.
+    log.error('Failed to edit expired OneCLI approval card', { approvalId: row.approval_id, err });
   }
 }
 

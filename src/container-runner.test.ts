@@ -100,13 +100,20 @@ const mounts: VolumeMount[] = [
   },
 ];
 
-function compose(overrides: { gateway?: Record<string, unknown>; contribution?: Record<string, unknown> } = {}) {
+function compose(
+  overrides: {
+    gateway?: Record<string, unknown>;
+    contribution?: Record<string, unknown>;
+    containerConfig?: ContainerConfig;
+  } = {},
+) {
   return composeSessionSpec({
     agentGroup,
     session,
     containerName: 'nanoclaw-v2-agent-one-1700000000000',
     mounts,
-    containerConfig,
+    containerConfig: overrides.containerConfig ?? containerConfig,
+    mailboxEnvironment: { NANOCLAW_MAILBOX_BACKEND: 'sqlite' },
     contribution: (overrides.contribution ?? {}) as never,
     gateway: (overrides.gateway ?? {}) as never,
   });
@@ -119,6 +126,7 @@ function composeWithFolder(folder: string) {
     containerName: 'nanoclaw-v2-agent-one-1700000000000',
     mounts,
     containerConfig,
+    mailboxEnvironment: { NANOCLAW_MAILBOX_BACKEND: 'sqlite' },
     contribution: {} as never,
     gateway: {} as never,
   });
@@ -142,6 +150,10 @@ describe('composeSessionSpec', () => {
       ANTHROPIC_AUTH_TOKEN: 'placeholder',
     });
     expect(spec.containers[0].env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+  });
+
+  it('passes non-secret mailbox environment on the composed lane', () => {
+    expect(compose().containers[0].env.NANOCLAW_MAILBOX_BACKEND).toBe('sqlite');
   });
 
   it('the gateway contribution fills the contributed lane last and wins a collision', () => {
@@ -249,6 +261,14 @@ describe('composeSessionSpec', () => {
     expect(spec.hardening).toBe('standard');
     expect(spec.runtimeTier).toBe('container');
     expect(spec.stopGraceSeconds).toBe(1);
+  });
+
+  it('reads the isolation tier from the group container config, defaulting to container', () => {
+    expect(compose().runtimeTier).toBe('container');
+    expect(compose({ containerConfig: { ...containerConfig, runtimeTier: 'vm' } }).runtimeTier).toBe('vm');
+    expect(compose({ containerConfig: { ...containerConfig, runtimeTier: 'container' } }).runtimeTier).toBe(
+      'container',
+    );
   });
 
   it('composes an explicit runAs posture on a uid-1000 host', () => {

@@ -202,6 +202,7 @@ export type ProviderEvent =
   | { type: 'text'; text: string }
   | { type: 'error'; message: string; retryable: boolean; classification?: string }
   | { type: 'progress'; message: string }
+  | { type: 'file'; path: string }
   /**
    * A file the harness produced that the model won't deliver itself (e.g.
    * Codex's built-in image generation renders to its native client, so the

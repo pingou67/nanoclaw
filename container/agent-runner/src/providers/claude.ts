@@ -2,10 +2,15 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { query as sdkQuery, type HookCallback, type McpServerConfig as SdkMcpServerConfig, type PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
+import {
+  query as sdkQuery,
+  type HookCallback,
+  type McpServerConfig as SdkMcpServerConfig,
+  type PreCompactHookInput,
+} from '@anthropic-ai/claude-agent-sdk';
 
-import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/connection.js';
 import { writeMessageOut } from '../db/messages-out.js';
+import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/container-state.js';
 import type { MemorySessionHookRegistration } from '../memory/session-hook.js';
 import { TIMEZONE, formatLocalStamp } from '../timezone.js';
 import { shimCwd } from './cwd-shim.js';
@@ -154,9 +159,7 @@ function mcpAllowPattern(serverName: string): string {
 
 // Narrow our loose McpServerConfig into the SDK's discriminated union:
 // url-bearing entries become http/sse servers, the rest stdio.
-function toSdkMcpServers(
-  servers: Record<string, McpServerConfig>,
-): Record<string, SdkMcpServerConfig> {
+function toSdkMcpServers(servers: Record<string, McpServerConfig>): Record<string, SdkMcpServerConfig> {
   const out: Record<string, SdkMcpServerConfig> = {};
   // Discrimination sur `type` depuis l'adoption de l'union upstream
   // (2026-08-11) : `command` et `url` ne coexistent plus sur un même objet, le
@@ -367,7 +370,7 @@ function createPreCompactHook(assistantName?: string): HookCallback {
     // wondering why their last message went unanswered for ~30s. Best-effort:
     // never let a notification failure abort the actual archive/compaction.
     try {
-      writeMessageOut({
+      await writeMessageOut({
         id: `compact-notice-${Date.now()}`,
         kind: 'chat',
         content: JSON.stringify({ text: '⏳ Compaction de la conversation en cours, un instant…' }),
@@ -689,97 +692,105 @@ export class ClaudeProvider implements AgentProvider {
           // Yield activity for every SDK event so the poll loop knows the agent is working
           yield { type: 'activity' };
 
-        if (message.type === 'system' && message.subtype === 'init') {
-          yield { type: 'init', continuation: message.session_id };
-        } else if (message.type === 'assistant') {
-          // Surface each assistant message's text as it streams in. The final
-          // `result` event only carries the LAST assistant text — a wrapped
-          // <message> block composed between tool calls would otherwise be
-          // invisible to the poll-loop and silently lost.
-          //
-          // ONE text event per assistant message, joining its text blocks in
-          // content order ('' separator — the blocks are adjacent output).
-          // Emitting per-BLOCK events would hand the poll-loop's block parser
-          // fragments: a <message> block (or an <internal> span) spanning two
-          // text blocks of the same assistant message would look unterminated
-          // in each event, while the turn's result text — which reports the
-          // final message's text as a whole — could still contain it complete.
-          // Joining pins the containment premise at the granularity the
-          // result reports. Blocks split across ASSISTANT MESSAGES (a tool
-          // call between them) remain unparseable mid-turn by design; the
-          // poll-loop's midTurnSent===0 fallback and wrap-nudge cover that.
-          const content = (message as { message?: { content?: Array<{ type?: string; text?: string }> } }).message
-            ?.content;
-          if (Array.isArray(content)) {
-            const text = content
-              .filter((block) => block.type === 'text' && block.text)
-              .map((block) => block.text)
-              .join('');
-            if (text) yield { type: 'text', text };
-          }
-          // Fork : remonter les appels d'outils en événements `progress` pour
-          // que le poll-loop tienne le post de statut en direct (bascule
-          // `!live`, activée par défaut). Un événement par bloc tool_use, avec
-          // un résumé court (nom de l'outil + 1-2 arguments notables).
-          const toolBlocks =
-            (message as { message?: { content?: Array<{ type: string; name?: string; input?: Record<string, unknown> }> } })
-              .message?.content ?? [];
-          for (const block of toolBlocks) {
-            if (block.type === 'tool_use' && typeof block.name === 'string') {
-              yield { type: 'progress', message: summarizeToolUse(block.name, block.input ?? {}) };
+          if (message.type === 'system' && message.subtype === 'init') {
+            yield { type: 'init', continuation: message.session_id };
+          } else if (message.type === 'assistant') {
+            // Surface each assistant message's text as it streams in. The final
+            // `result` event only carries the LAST assistant text — a wrapped
+            // <message> block composed between tool calls would otherwise be
+            // invisible to the poll-loop and silently lost.
+            //
+            // ONE text event per assistant message, joining its text blocks in
+            // content order ('' separator — the blocks are adjacent output).
+            // Emitting per-BLOCK events would hand the poll-loop's block parser
+            // fragments: a <message> block (or an <internal> span) spanning two
+            // text blocks of the same assistant message would look unterminated
+            // in each event, while the turn's result text — which reports the
+            // final message's text as a whole — could still contain it complete.
+            // Joining pins the containment premise at the granularity the
+            // result reports. Blocks split across ASSISTANT MESSAGES (a tool
+            // call between them) remain unparseable mid-turn by design; the
+            // poll-loop's midTurnSent===0 fallback and wrap-nudge cover that.
+            const content = (message as { message?: { content?: Array<{ type?: string; text?: string }> } }).message
+              ?.content;
+            if (Array.isArray(content)) {
+              const text = content
+                .filter((block) => block.type === 'text' && block.text)
+                .map((block) => block.text)
+                .join('');
+              if (text) yield { type: 'text', text };
             }
-          }
-        } else if (message.type === 'result') {
-          // `result` text exists only on subtype:"success"; error subtypes
-          // (e.g. a non-retryable 403 billing_error) carry their message in
-          // `errors[]` instead. Surface either so the poll-loop can deliver a
-          // billing/quota notice to the user rather than dropping the turn.
-          const m = message as { result?: string; is_error?: boolean; errors?: string[] };
-          const text = m.result ?? (m.errors && m.errors.length > 0 ? m.errors.join('\n') : null);
-          yield { type: 'result', text, isError: m.is_error === true };
-        } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
-          yield { type: 'error', message: 'API retry', retryable: true };
-        } else if (message.type === 'rate_limit_event') {
-          // The SDK emits this "when rate limit info CHANGES" — it is telemetry,
-          // not necessarily an error. `rate_limit_info.status` is usually
-          // 'allowed' (here's your remaining headroom). Treating every one of
-          // these as a terminal quota error logged a spurious rate-limit line
-          // on healthy turns (#3016) — and aborted them outright wherever the
-          // classification is acted on. ONLY 'rejected' is an actual block.
-          //
-          // When it IS rejected the SDK tells us WHY, so we can finally
-          // distinguish the two cases properly instead of guessing:
-          //   errorCode 'credits_required' / overageDisabledReason
-          //   'out_of_credits'  → genuinely out of credits (billing)
-          //   otherwise         → a transient window limit that resets.
-          const info = (message as { rate_limit_info?: SdkRateLimitInfo }).rate_limit_info;
-          const blocked = classifyRateLimitEvent(info);
-          if (!blocked) {
-            // Informational ('allowed' / 'allowed_warning') — never kill the turn.
-            if (info?.status === 'allowed_warning') {
-              log(
-                `rate-limit warning: ${info.rateLimitType ?? 'window'} at ${
-                  info.utilization != null ? `${Math.round(info.utilization * 100)}%` : 'high'
-                } utilization`,
-              );
+            // Fork : remonter les appels d'outils en événements `progress` pour
+            // que le poll-loop tienne le post de statut en direct (bascule
+            // `!live`, activée par défaut). Un événement par bloc tool_use, avec
+            // un résumé court (nom de l'outil + 1-2 arguments notables).
+            const toolBlocks =
+              (
+                message as {
+                  message?: { content?: Array<{ type: string; name?: string; input?: Record<string, unknown> }> };
+                }
+              ).message?.content ?? [];
+            for (const block of toolBlocks) {
+              if (block.type === 'tool_use' && typeof block.name === 'string') {
+                yield { type: 'progress', message: summarizeToolUse(block.name, block.input ?? {}) };
+              }
             }
-          } else {
-            yield { type: 'error', message: blocked.message, retryable: false, classification: blocked.classification };
+          } else if (message.type === 'result') {
+            // `result` text exists only on subtype:"success"; error subtypes
+            // (e.g. a non-retryable 403 billing_error) carry their message in
+            // `errors[]` instead. Surface either so the poll-loop can deliver a
+            // billing/quota notice to the user rather than dropping the turn.
+            const m = message as { result?: string; is_error?: boolean; errors?: string[] };
+            const text = m.result ?? (m.errors && m.errors.length > 0 ? m.errors.join('\n') : null);
+            yield { type: 'result', text, isError: m.is_error === true };
+          } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
+            yield { type: 'error', message: 'API retry', retryable: true };
+          } else if (message.type === 'rate_limit_event') {
+            // The SDK emits this "when rate limit info CHANGES" — it is telemetry,
+            // not necessarily an error. `rate_limit_info.status` is usually
+            // 'allowed' (here's your remaining headroom). Treating every one of
+            // these as a terminal quota error logged a spurious rate-limit line
+            // on healthy turns (#3016) — and aborted them outright wherever the
+            // classification is acted on. ONLY 'rejected' is an actual block.
+            //
+            // When it IS rejected the SDK tells us WHY, so we can finally
+            // distinguish the two cases properly instead of guessing:
+            //   errorCode 'credits_required' / overageDisabledReason
+            //   'out_of_credits'  → genuinely out of credits (billing)
+            //   otherwise         → a transient window limit that resets.
+            const info = (message as { rate_limit_info?: SdkRateLimitInfo }).rate_limit_info;
+            const blocked = classifyRateLimitEvent(info);
+            if (!blocked) {
+              // Informational ('allowed' / 'allowed_warning') — never kill the turn.
+              if (info?.status === 'allowed_warning') {
+                log(
+                  `rate-limit warning: ${info.rateLimitType ?? 'window'} at ${
+                    info.utilization != null ? `${Math.round(info.utilization * 100)}%` : 'high'
+                  } utilization`,
+                );
+              }
+            } else {
+              yield {
+                type: 'error',
+                message: blocked.message,
+                retryable: false,
+                classification: blocked.classification,
+              };
+            }
+          } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary') {
+            const meta = (message as { compact_metadata?: { pre_tokens?: number } }).compact_metadata;
+            const detail = meta?.pre_tokens ? ` (${meta.pre_tokens.toLocaleString()} tokens compacted)` : '';
+            // Not a `result`: the poll loop treats result text as the agent's turn
+            // output — a synthetic "Context compacted." result has no <message>
+            // block, so it triggers the "response was not delivered — please
+            // re-send" nudge and the agent duplicates its previous message.
+            // Compaction is bookkeeping: log it, count it as activity only.
+            log(`Context compacted${detail}.`);
+            yield { type: 'activity' };
+          } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
+            const tn = message as { summary?: string };
+            yield { type: 'progress', message: tn.summary || 'Task notification' };
           }
-        } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary') {
-          const meta = (message as { compact_metadata?: { pre_tokens?: number } }).compact_metadata;
-          const detail = meta?.pre_tokens ? ` (${meta.pre_tokens.toLocaleString()} tokens compacted)` : '';
-          // Not a `result`: the poll loop treats result text as the agent's turn
-          // output — a synthetic "Context compacted." result has no <message>
-          // block, so it triggers the "response was not delivered — please
-          // re-send" nudge and the agent duplicates its previous message.
-          // Compaction is bookkeeping: log it, count it as activity only.
-          log(`Context compacted${detail}.`);
-          yield { type: 'activity' };
-        } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
-          const tn = message as { summary?: string };
-          yield { type: 'progress', message: tn.summary || 'Task notification' };
-        }
         }
       } catch (err) {
         // A hard abort makes the SDK iterator reject (AbortError) — that's

@@ -63,6 +63,21 @@ describe('resolveGroupTimezone', () => {
     await updateContainerConfigScalars(GROUP.id, { timezone: 'Not/AZone' });
     expect(configFromDb((await getContainerConfig(GROUP.id))!, GROUP).timezone).toBeUndefined();
   });
+
+  it('configFromDb ships a declared runtime tier and refuses an unknown one', async () => {
+    // The trunk schema carries no runtime_tier column, so the row surfaces it
+    // only where a deployment's migration added it — modeled here by spreading
+    // onto the fetched row. Absent stays absent (the composer's default); an
+    // invalid value fails closed rather than composing at the default tier.
+    const row = (await getContainerConfig(GROUP.id))!;
+    expect(configFromDb(row, GROUP).runtimeTier).toBeUndefined();
+    expect(configFromDb({ ...row, runtime_tier: 'container' }, GROUP).runtimeTier).toBe('container');
+    expect(configFromDb({ ...row, runtime_tier: 'vm' }, GROUP).runtimeTier).toBe('vm');
+    expect(() => configFromDb({ ...row, runtime_tier: 'hypervisor' }, GROUP)).toThrow(
+      /invalid runtime_tier "hypervisor"/,
+    );
+    expect(configFromDb({ ...row, runtime_tier: null }, GROUP).runtimeTier).toBeUndefined();
+  });
 });
 
 describe('parseMcpServerConfig', () => {

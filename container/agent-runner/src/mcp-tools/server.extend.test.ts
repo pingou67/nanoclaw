@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
-import { initTestSessionDb, closeSessionDb } from '../db/connection.js';
+import { initTestSessionDb, closeSessionDb } from '../mailbox/sqlite/connection.js';
 import { getUndeliveredMessages, writeMessageOut } from '../db/messages-out.js';
 import { createAgent } from './agents.js';
 import { extendTool, registerTools } from './server.js';
@@ -39,7 +39,7 @@ function fixtureTool(): McpToolDefinition {
       },
     },
     async handler(args) {
-      writeMessageOut({
+      await writeMessageOut({
         id: `msg-fixture-${n}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         kind: 'system',
         content: JSON.stringify({ action: 'fixture_action', name: args.name as string }),
@@ -183,8 +183,8 @@ describe('extendTool — passthrough keys land in the written payload', () => {
         inputSchema: { type: 'object' as const, properties: {} },
       },
       async handler() {
-        writeMessageOut({ id: `msg-plain-${n}`, kind: 'message', content: 'plain text reply' });
-        writeMessageOut({ id: `msg-rawsys-${n}`, kind: 'system', content: 'not json at all' });
+        await writeMessageOut({ id: `msg-plain-${n}`, kind: 'message', content: 'plain text reply' });
+        await writeMessageOut({ id: `msg-rawsys-${n}`, kind: 'system', content: 'not json at all' });
         return { content: [{ type: 'text' as const, text: 'ok' }] };
       },
     };

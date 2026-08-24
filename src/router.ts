@@ -348,7 +348,7 @@ export async function routeInbound(event: InboundEvent): Promise<void> {
   //    sender_scope, and access gate. An agent that engages gets its own
   //    session and container wake. An agent that declines but has
   //    ignored_message_policy='accumulate' still gets the message stored in
-  //    its session (trigger=0) so the context is available when it does
+  //    its session without triggering a wake so the context is available when it does
   //    engage later. Drop policy = skip silently.
   //
   //    Subscribe (for mention-sticky wirings on threaded platforms) fires
@@ -503,6 +503,13 @@ async function evaluateEngage(
       return existing !== undefined;
     }
     default:
+      // Unrecognized engage_mode (e.g. stale data from a past CLI version,
+      // or a direct DB write — the column has no CHECK constraint). Fail
+      // closed but leave a trail so this doesn't look like a mystery drop.
+      log.warn('Unknown engage_mode — treating as no-engage. Check wiring configuration.', {
+        engage_mode: agent.engage_mode,
+        wiring_id: agent.id,
+      });
       return false;
   }
 }
@@ -587,7 +594,7 @@ async function deliverToAgent(
       return;
     }
     if (gate.action === 'deny') {
-      writeOutboundDirect(session.agent_group_id, session.id, {
+      await writeOutboundDirect(session.agent_group_id, session.id, {
         id: `deny-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         kind: 'chat',
         platformId: deliveryAddr.platformId,
@@ -617,7 +624,7 @@ async function deliverToAgent(
     channelType: deliveryAddr.channelType,
     threadId: deliveryAddr.threadId,
     content: event.message.content,
-    trigger: wake ? 1 : 0,
+    trigger: wake,
   });
 
   if (wake) {

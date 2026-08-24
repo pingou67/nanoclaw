@@ -264,6 +264,8 @@ export interface ContainerConfig {
    */
   env?: Record<string, string>;
   timezone?: string;
+  /** Session isolation tier for the group's containers; absent = the composer's default ('container'). */
+  runtimeTier?: 'container' | 'vm';
 }
 
 /**
@@ -325,6 +327,20 @@ export function sanitizeStoredMcpServers(raw: unknown, groupName: string): Recor
   return servers;
 }
 
+/**
+ * runtime_tier is an isolation control: dropping an unknown stored value would
+ * silently compose the group at the default tier — a weaker boundary than the
+ * one the value asked for. Fail closed instead: the group refuses to compose
+ * until the stored value is fixed. (A *declared* tier the driver cannot
+ * realize is refused separately by validateSpec, against the driver's
+ * capabilities.)
+ */
+function parseRuntimeTier(raw: string | null | undefined, groupName: string): 'container' | 'vm' | undefined {
+  if (raw == null) return undefined;
+  if (raw === 'container' || raw === 'vm') return raw;
+  throw new Error(`agent group "${groupName}" has invalid runtime_tier "${raw}" — expected "container" or "vm"`);
+}
+
 /** Build a `ContainerConfig` from a DB row + agent group identity. */
 export function configFromDb(row: ContainerConfigRow, group: AgentGroup): ContainerConfig {
   return {
@@ -346,6 +362,7 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     thinking: row.thinking ? (JSON.parse(row.thinking) as ContainerConfig['thinking']) : undefined,
     env: row.env ? (JSON.parse(row.env) as Record<string, string>) : undefined,
     timezone: row.timezone && isValidTimezone(row.timezone) ? row.timezone : undefined,
+    runtimeTier: parseRuntimeTier(row.runtime_tier, group.name),
   };
 }
 

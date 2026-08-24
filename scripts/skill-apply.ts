@@ -37,6 +37,11 @@ export interface InputMeta {
   validate?: string; // regex source (nc:prompt validate:<re>)
   flags?: string; // regex flags   (nc:prompt flags:<f>)
   normalize?: 'trim' | 'rstrip-slash' | 'lower'; // applied by the ENGINE at bind
+  // Interactive select options, `|`-separated (nc:prompt choices:a|b). When a
+  // value is legal only via pre-bound inputs (e.g. slack's `provisioned`
+  // connection), validate stays wider than the offered set — so a consumer
+  // must prefer this over options derived from the validate alternation.
+  choices?: string;
 }
 
 // Everything the engine EMITS — the core seam's output contract. Every
@@ -553,6 +558,7 @@ function inputMetaOf(d: Directive, secret: boolean, validate: string | undefined
   if (typeof d.attrs.normalize === 'string' && NORMALIZE_KINDS.has(d.attrs.normalize)) {
     meta.normalize = d.attrs.normalize as InputMeta['normalize'];
   }
+  if (typeof d.attrs.choices === 'string') meta.choices = d.attrs.choices;
   return meta;
 }
 

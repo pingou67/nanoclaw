@@ -100,13 +100,13 @@ export function isTaskThread(threadId: string | null): boolean {
   return threadId === TASKS_SYSTEM_THREAD_ID || (threadId?.startsWith(`${TASKS_SYSTEM_THREAD_ID}:`) ?? false);
 }
 
-/** All active task sessions for a group — one per live series, plus any legacy shared one. */
-export async function findTaskSessions(agentGroupId: string): Promise<Session[]> {
+/** Task sessions for a group — active by default, optionally including closed history. */
+export async function findTaskSessions(agentGroupId: string, includeClosed = false): Promise<Session[]> {
   return getDb().all<Session>(
     `SELECT * FROM sessions
-       WHERE agent_group_id = ?
-         AND messaging_group_id IS NULL
-         AND status = 'active'
+      WHERE agent_group_id = ?
+        AND messaging_group_id IS NULL
+        ${includeClosed ? '' : "AND status = 'active'"}
          AND (thread_id = ? OR thread_id LIKE ?)
        ORDER BY created_at DESC`,
     agentGroupId,
@@ -204,11 +204,11 @@ export async function createPendingApproval(
   const result = await getDb().run(
     `INSERT INTO pending_approvals
          (approval_id, session_id, request_id, action, payload, created_at,
-          agent_group_id, channel_type, platform_id, platform_message_id, expires_at, status,
+          agent_group_id, channel_type, platform_id, instance, platform_message_id, expires_at, status,
           title, question, options_json, approver_user_id)
        VALUES
          (@approval_id, @session_id, @request_id, @action, @payload, @created_at,
-          @agent_group_id, @channel_type, @platform_id, @platform_message_id, @expires_at, @status,
+          @agent_group_id, @channel_type, @platform_id, @instance, @platform_message_id, @expires_at, @status,
           @title, @question, @options_json, @approver_user_id)
        ON CONFLICT (approval_id) DO NOTHING`,
     {
@@ -216,6 +216,7 @@ export async function createPendingApproval(
       agent_group_id: null,
       channel_type: null,
       platform_id: null,
+      instance: null,
       platform_message_id: null,
       expires_at: null,
       status: 'pending',

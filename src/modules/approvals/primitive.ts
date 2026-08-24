@@ -252,6 +252,10 @@ export async function requestApproval(opts: RequestApprovalOptions): Promise<voi
     action,
     payload: JSON.stringify(payload),
     created_at: new Date().toISOString(),
+    // The bot identity this card goes out as. This flow persists no delivery
+    // address (it has no card-edit path today), but the instance is the one
+    // piece that cannot be re-derived later, so record it while we hold it.
+    instance: target.messagingGroup.instance ?? null,
     title,
     question,
     options_json: JSON.stringify(normalizedOptions),

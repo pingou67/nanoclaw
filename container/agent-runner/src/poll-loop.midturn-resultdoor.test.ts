@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
-import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from './db/connection.js';
+import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from './mailbox/sqlite/connection.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
 import { processQuery } from './poll-loop.js';
 import type { AgentQuery, ProviderEvent } from './providers/types.js';
@@ -451,7 +451,7 @@ describe('DB-visible sends gate the nudge', () => {
       // Simulate an MCP send_message call landing mid-turn: a chat row
       // appears in outbound.db without going through the mid-turn door.
       const { writeMessageOut } = await import('./db/messages-out.js');
-      writeMessageOut({
+      await writeMessageOut({
         id: 'mcp-1',
         kind: 'chat',
         platform_id: 'chan-1',

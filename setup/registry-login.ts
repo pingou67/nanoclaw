@@ -167,6 +167,15 @@ interface Options {
   interactive: boolean;
   /** Sign in again even when a valid credential is already on disk. */
   force: boolean;
+  /**
+   * Only exit 0 for a credential this run actually verified against the
+   * service. Off by default: the image pull tolerates an unverified
+   * credential because a cached image needs no round trip at all, so a
+   * transient outage there costs nothing. A caller that is about to spend
+   * the token cannot make that trade — for it, "could not check" and "not
+   * signed in" are the same answer, and only the exit code carries it.
+   */
+  requireVerified: boolean;
   api?: string;
   code?: string;
 }
@@ -855,7 +864,7 @@ async function deviceLogin(api: string, cfg: IdpConfig): Promise<EnrollResult> {
 // Entry
 
 function parseArgs(argv: string[]): Options {
-  const opts: Options = { interactive: Boolean(process.stdin.isTTY), force: false };
+  const opts: Options = { interactive: Boolean(process.stdin.isTTY), force: false, requireVerified: false };
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
       case '--non-interactive':
@@ -863,6 +872,9 @@ function parseArgs(argv: string[]): Options {
         break;
       case '--force':
         opts.force = true;
+        break;
+      case '--require-verified':
+        opts.requireVerified = true;
         break;
       case '--api':
         opts.api = argv[++i];
@@ -887,10 +899,12 @@ function parseArgs(argv: string[]): Options {
 function printHelp(): void {
   console.log(
     [
-      'Usage: setup/registry-login.sh [--non-interactive] [--force] [--api <url>] [--code <code>]',
+      'Usage: setup/registry-login.sh [--non-interactive] [--force] [--require-verified] [--api <url>] [--code <code>]',
       '',
       '  --non-interactive  Never prompt. Uses only the environment; exits 2 if nothing is set.',
       '  --force            Sign in again even if a valid credential is already stored.',
+      '  --require-verified Exit 2 rather than 0 when a stored credential could not be',
+      '                     checked against the service. For callers that spend the token.',
       `  --api <url>        Account service base URL (default ${DEFAULT_BROKER_URL}).`,
       '  --code <code>      Enrollment code, instead of the browser sign-in.',
       '',
@@ -1058,6 +1072,23 @@ export async function run(argv: string[]): Promise<void> {
       return;
     }
     if (probe.state === 'unreachable') {
+      // `unreachable` is broader than "offline": probeSession reports it for
+      // every status that is not 200/401/403, so a gateway 404, a proxy error
+      // and a credential the service no longer knows all land here. Keeping
+      // the credential is therefore a guess, and which way to guess depends
+      // on what the caller does next.
+      //
+      // It is also the only outcome a stale credential can reach without
+      // being caught: the `existing.api !== api` check above cannot fire on
+      // a record written before that field existed, because
+      // `readAccountCredential` fills the gap with the current target.
+      if (opts.requireVerified) {
+        reportSkipped(
+          'unverified',
+          `Couldn't reach the account service (${probe.reason}); the stored sign-in could not be checked.`,
+        );
+        return;
+      }
       // Offline is not a reason to discard a working credential — the pull that
       // needs it may well be served from the local image cache anyway.
       console.log(`Couldn't reach the account service (${probe.reason}); keeping the stored sign-in.`);

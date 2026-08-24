@@ -94,7 +94,7 @@ export const sendMessage: McpToolDefinition = {
     if ('error' in routing) return err(routing.error);
 
     const id = generateId();
-    const seq = writeMessageOut({
+    const seq = await writeMessageOut({
       id,
       in_reply_to: getCurrentInReplyTo(),
       kind: 'chat',
@@ -136,7 +136,7 @@ export const sendFile: McpToolDefinition = {
     const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve('/workspace/agent', filePath);
     if (!fs.existsSync(resolvedPath)) return err(`File not found: ${filePath}`);
 
-    const { id, filename } = enqueueFileOut({
+    const { id, filename } = await enqueueFileOut({
       srcPath: resolvedPath,
       routing: {
         platform_id: routing.platform_id,
@@ -180,7 +180,7 @@ export const editMessage: McpToolDefinition = {
     }
 
     const id = generateId();
-    writeMessageOut({
+    await writeMessageOut({
       id,
       kind: 'chat',
       platform_id: routing.platform_id,
@@ -221,7 +221,7 @@ export const addReaction: McpToolDefinition = {
     }
 
     const id = generateId();
-    writeMessageOut({
+    await writeMessageOut({
       id,
       kind: 'chat',
       platform_id: routing.platform_id,

@@ -46,7 +46,7 @@ export interface EnqueueFileOut {
  * should surface to the user (the MCP tool validates existence first; the
  * poll-loop consumer logs and moves on so one bad image can't fail the turn).
  */
-export function enqueueFileOut(opts: EnqueueFileOut): { id: string; filename: string; seq: number } {
+export async function enqueueFileOut(opts: EnqueueFileOut): Promise<{ id: string; filename: string; seq: number }> {
   const id = generateId();
   const filename = opts.filename ?? path.basename(opts.srcPath);
 
@@ -54,7 +54,7 @@ export function enqueueFileOut(opts: EnqueueFileOut): { id: string; filename: st
   fs.mkdirSync(outboxDir, { recursive: true });
   fs.copyFileSync(opts.srcPath, path.join(outboxDir, filename));
 
-  const seq = writeMessageOut({
+  const seq = await writeMessageOut({
     id,
     in_reply_to: opts.routing.in_reply_to ?? null,
     kind: 'chat',
