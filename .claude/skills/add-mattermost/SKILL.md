@@ -23,39 +23,36 @@ Skip to **Credentials** if all of these are already in place:
 
 Otherwise continue. Every step below is safe to re-run.
 
-### 1. Fetch the channels branch
+### 1. Fetch and copy the adapter payload
 
-```bash
-git fetch origin channels
+The registry resolver selects this fork's `channels` branch and overwrites all
+skill-owned files, including the E2E harness:
+
+```nc:copy from-branch:channels
+src/channels/mattermost.ts
+src/channels/mattermost-registration.test.ts
+tests/integration/mattermost/README.md
+tests/integration/mattermost/mock_mm.py
+tests/integration/mattermost/run_suite.py
+tests/integration/mattermost/.gitignore
 ```
 
-### 2. Copy the adapter, its registration test, and the E2E harness
-
-```bash
-git show origin/channels:src/channels/mattermost.ts                   > src/channels/mattermost.ts
-git show origin/channels:src/channels/mattermost-registration.test.ts > src/channels/mattermost-registration.test.ts
-mkdir -p tests/integration/mattermost
-for f in README.md mock_mm.py run_suite.py .gitignore; do
-  git show "origin/channels:tests/integration/mattermost/$f" > "tests/integration/mattermost/$f"
-done
-```
-
-### 3. Append the self-registration import
+### 2. Append the self-registration import
 
 Append to `src/channels/index.ts` (skip if already present):
 
-```typescript
+```nc:append to:src/channels/index.ts
 import './mattermost.js';
 ```
 
-### 4. Install the WebSocket dependency (pinned)
+### 3. Install the WebSocket dependency (pinned)
 
 ```bash
 pnpm install ws@^8.20.0
 pnpm install -D @types/ws@^8.18.1
 ```
 
-### 5. Build and validate
+### 4. Build and validate
 
 ```bash
 pnpm run build

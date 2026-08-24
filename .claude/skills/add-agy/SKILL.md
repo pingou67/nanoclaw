@@ -31,34 +31,31 @@ If all of the following are present, skip to **Host auth**:
 
 Missing pieces — continue below. Every step is safe to re-run.
 
-### 1. Fetch the providers branch
+### 1. Fetch and copy the provider payload
 
-The module lives on the `providers` branch of **this fork's origin**
-(pingou67/nanoclaw) — upstream has no agy provider.
+The module lives on the `providers` branch selected by the registry resolver.
+On this fork that is `origin/providers`; official upstream has no agy provider.
+Overwrite every skill-owned file with the canonical registry copy:
 
-```bash
-git fetch origin providers
+```nc:copy from-branch:providers
+src/providers/agy.ts
+src/providers/agy-registration.test.ts
+container/agent-runner/src/providers/agy.ts
+container/agent-runner/src/providers/agy-registration.test.ts
+container/agent-runner/src/providers/agy.factory.test.ts
+container/agent-runner/src/providers/agy.memory.test.ts
+docs/agy-provider.md
 ```
 
-### 2. Copy the provider files (wholesale, skill-owned)
-
-```bash
-git show origin/providers:src/providers/agy.ts                                        > src/providers/agy.ts
-git show origin/providers:src/providers/agy-registration.test.ts                      > src/providers/agy-registration.test.ts
-git show origin/providers:container/agent-runner/src/providers/agy.ts                 > container/agent-runner/src/providers/agy.ts
-git show origin/providers:container/agent-runner/src/providers/agy-registration.test.ts > container/agent-runner/src/providers/agy-registration.test.ts
-git show origin/providers:container/agent-runner/src/providers/agy.factory.test.ts    > container/agent-runner/src/providers/agy.factory.test.ts
-git show origin/providers:container/agent-runner/src/providers/agy.memory.test.ts     > container/agent-runner/src/providers/agy.memory.test.ts
-git show origin/providers:docs/agy-provider.md                                        > docs/agy-provider.md
-```
-
-### 3. Append the self-registration imports
+### 2. Append the self-registration imports
 
 One line at the end of each barrel — skip if already present.
 
-`src/providers/index.ts` and `container/agent-runner/src/providers/index.ts`:
+```nc:append to:src/providers/index.ts
+import './agy.js';
+```
 
-```typescript
+```nc:append to:container/agent-runner/src/providers/index.ts
 import './agy.js';
 ```
 

@@ -23,17 +23,13 @@ container/agent-runner/src/providers/opencode.ts
 container/agent-runner/src/providers/mcp-to-opencode.ts
 container/agent-runner/src/providers/mcp-to-opencode.test.ts
 container/agent-runner/src/providers/opencode-registration.test.ts
-container/agent-runner/src/providers/opencode.attachments.test.ts
-container/agent-runner/src/providers/opencode.compaction.test.ts
-container/agent-runner/src/providers/opencode.config.test.ts
 container/agent-runner/src/providers/opencode.factory.test.ts
-container/agent-runner/src/providers/opencode.memory.test.ts
-container/agent-runner/src/providers/opencode.question.test.ts
 container/agent-runner/src/providers/summarize.ts
 container/agent-runner/src/providers/summarize.test.ts
 container/agent-runner/src/providers/opencode.plugins.test.ts
 container/agent-runner/src/providers/opencode.timeout.test.ts
 container/agent-runner/src/providers/opencode.tool-progress.test.ts
+src/opencode-dockerfile.test.ts
 ```
 
 (`cwd-shim.ts` and its test are deliberately **not** in this payload even though `mcp-to-opencode.ts` imports the shim: trunk ships and owns them — the default provider imports `cwd-shim.ts` — and every path listed here becomes a skill-owned file that removal deletes.)
@@ -58,29 +54,17 @@ The agent-runner is a separate Bun package tree. Keep its SDK on the same exact
 version as the globally installed `opencode-ai` CLI:
 
 ```nc:dep manager:bun cwd:container/agent-runner
-@opencode-ai/sdk@1.4.17
+@opencode-ai/sdk@1.18.20
 ```
 
-```nc:json-merge into:container/cli-tools.json key:name
-{
-  "name": "opencode-ai",
-  "version": "1.4.17"
-}
-```
+The matching `opencode-ai` CLI pin is the exact `OPENCODE_VERSION` in
+`container/Dockerfile`; this fork deliberately keeps that binary outside
+`container/cli-tools.json`. Do not use `latest`. OpenCode's CLI and SDK have
+changed their session API in lockstep before; mismatched versions can build
+cleanly and fail at runtime. `src/opencode-dockerfile.test.ts`, carried in the
+payload above, guards the Dockerfile installation seam.
 
-Do not use `latest`. OpenCode's CLI and SDK have changed their session API in
-lockstep before; mismatched versions can build cleanly and fail at runtime.
-
-### 4. Install the pin guard
-
-Copy the structural test that asserts the CLI manifest and SDK package stay on
-the same exact version:
-
-```nc:copy
-opencode-cli-tools.test.ts -> src/opencode-cli-tools.test.ts
-```
-
-### 5. Build and validate
+### 4. Build and validate
 
 ```nc:run effect:build
 pnpm run build
@@ -91,7 +75,7 @@ pnpm exec tsc -p container/agent-runner/tsconfig.json --noEmit
 ```
 
 ```nc:run effect:test
-pnpm exec vitest run src/providers/opencode-registration.test.ts src/opencode-cli-tools.test.ts
+pnpm exec vitest run src/providers/opencode-registration.test.ts src/opencode-dockerfile.test.ts
 ```
 
 ```nc:run effect:test
