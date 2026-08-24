@@ -39,17 +39,18 @@ le délai en cours aurait tenu un quart d'heure de plus sans intervention.
 Corollaire : ne pas « réparer » le tripwire en le contournant. Il fait
 exactement son travail — c'est de le déclencher inutilement qu'il faut éviter.
 
-### 2. `/usr/bin` en tête du PATH pour tout `install` / `rebuild`
+### 2. Le Node 22 du service en tête du PATH pour tout `install` / `rebuild`
 
 ```bash
 export PNPM_HOME="$HOME/.local/share/pnpm"
-export PATH="/usr/bin:$PNPM_HOME:$PATH"    # node 20 = celui du service
+export NODE_SERVICE_HOME="$HOME/.local/opt/node-v22.23.2-linux-x64"
+export PATH="$NODE_SERVICE_HOME/bin:$PNPM_HOME:/usr/local/bin:/usr/bin:/bin:$PATH"
 ```
 
-**Pourquoi.** Le PATH interactif met souvent en avant le node 22 de pi-node.
-`better-sqlite3` est natif : compilé sous 22 (`NODE_MODULE_VERSION 127`), il est
-illisible par le node 20 du service (`115`), et l'hôte crash-loop. Vécu le
-2026-08-01 : seize crashes d'affilée. Voir `CLAUDE.local.md`.
+**Pourquoi.** Le service utilise cette installation exacte de Node 22.23.2.
+`better-sqlite3` est natif : s'il est compilé sous une autre ABI Node que celle
+du service, l'hôte crash-loop. Le risque a déjà produit seize crashes d'affilée
+le 2026-08-01. Voir `CLAUDE.local.md`.
 
 Ne pas remplacer le PATH complet non plus — `onecli` doit y rester,
 sinon les commandes de cette checklist échouent avec un `command not found`

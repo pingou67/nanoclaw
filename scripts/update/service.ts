@@ -78,6 +78,22 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function definitionReferencesProject(definition: string, projectRoot: string): boolean {
+  try {
+    const lines = fs.readFileSync(definition, 'utf8').split(/\r?\n/);
+    return lines.some((rawLine) => {
+      const line = rawLine.trim();
+      return (
+        line === `WorkingDirectory=${projectRoot}` ||
+        line.includes(`${projectRoot}/dist/index.js`) ||
+        line.includes(`${projectRoot}/src/index.ts`)
+      );
+    });
+  } catch {
+    return false;
+  }
+}
+
 export function detectService(projectRoot: string, env: ServiceEnvironment): ServiceHandle {
   const slug = getInstallSlug(projectRoot);
   if (env.platform === 'darwin') {
@@ -111,6 +127,19 @@ export function detectService(projectRoot: string, env: ServiceEnvironment): Ser
         name,
         definition: systemDefinition,
         active: env.runner.tryRun('systemctl', ['is-active', '--quiet', name]).ok,
+      };
+    }
+
+    // v1 and early v2 installs used a non-slugged unit. Keep recognizing it
+    // during transactional upgrades, but only when it belongs to this checkout.
+    const legacyName = 'nanoclaw';
+    const legacyUserDefinition = path.join(env.home, '.config', 'systemd', 'user', `${legacyName}.service`);
+    if (fs.existsSync(legacyUserDefinition) && definitionReferencesProject(legacyUserDefinition, projectRoot)) {
+      return {
+        mode: 'systemd-user',
+        name: legacyName,
+        definition: legacyUserDefinition,
+        active: env.runner.tryRun('systemctl', ['--user', 'is-active', '--quiet', legacyName]).ok,
       };
     }
 

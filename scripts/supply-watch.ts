@@ -327,8 +327,8 @@ function collectNpmTargets(errors: string[]): NpmTarget[] {
         applyHint:
           name === 'better-sqlite3'
             ? // Piège vécu : binding natif, un seul ABI à la fois. Recompilé sous
-              // le node 22 de pi-node, le service (node 20) crash-loope.
-              'package.json + `pnpm install` SOUS NODE 20 (`PATH=/usr/bin:…`) + `pnpm rebuild better-sqlite3` + tests'
+              // un autre Node que celui du service, l'hôte crash-loope.
+              'package.json + `pnpm install` SOUS LE NODE 22 DU SERVICE (`PATH=/home/pegon/.local/opt/node-v22.23.2-linux-x64/bin:…`) + `pnpm rebuild better-sqlite3` + tests'
             : 'package.json + `pnpm install` + `pnpm run build` + tests',
       });
     }

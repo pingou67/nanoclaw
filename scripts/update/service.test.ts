@@ -89,6 +89,27 @@ describe('service-mode detection and control', () => {
     expect(calls).toEqual(['systemctl stop nanoclaw-v2-root', 'systemctl start nanoclaw-v2-root']);
   });
 
+  it('recognizes a legacy user unit only when it belongs to this checkout', () => {
+    const root = temp();
+    const { env, home } = makeEnv('linux', {
+      ['systemctl --user is-active --quiet nanoclaw']: { ok: true },
+    });
+    const unit = path.join(home, '.config', 'systemd', 'user', 'nanoclaw.service');
+    fs.mkdirSync(path.dirname(unit), { recursive: true });
+    fs.writeFileSync(unit, `[Service]\nWorkingDirectory=${root}\n`);
+
+    expect(detectService(root, env)).toMatchObject({
+      mode: 'systemd-user',
+      active: true,
+      name: 'nanoclaw',
+      definition: unit,
+    });
+    expect(detectService(path.join(root, 'other-install'), env)).toMatchObject({
+      mode: 'none',
+      active: false,
+    });
+  });
+
   it('bootstraps an unloaded launchd plist instead of relying on kickstart alone', () => {
     const root = temp();
     const name = `com.nanoclaw-v2-${slug(root)}`;
