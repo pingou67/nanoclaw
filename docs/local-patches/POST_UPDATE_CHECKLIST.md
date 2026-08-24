@@ -533,7 +533,10 @@ adapter's contract (routing, threading, attachments, container reuse):
 
 ```bash
 cd /home/pegon/nanoclaw
-python3 tests/integration/mattermost/run_suite.py
+export PNPM_HOME="$HOME/.local/share/pnpm"
+export NODE_SERVICE_HOME="$HOME/.local/opt/node-v22.23.2-linux-x64"
+export PATH="$NODE_SERVICE_HOME/bin:$PNPM_HOME:/usr/local/bin:/usr/bin:/bin:$PATH"
+python3 -u tests/integration/mattermost/run_suite.py 2>&1 | tee logs/e2e-run-$(date +%Y%m%d-%H%M).log
 ```
 
 The suite (~2-3 min) runs in this order:
