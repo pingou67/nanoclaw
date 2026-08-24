@@ -12,8 +12,11 @@ import type {
   QueryInput,
 } from './types.js';
 import { archiveProviderExchange } from './exchange-archive.js';
+import { summarizeToolUse } from './summarize.js';
 import {
   type AppServer,
+  type CodexMcpServer,
+  type CodexMemorySessionHook,
   type CodexReasoningEffort,
   type JsonRpcNotification,
   STALE_THREAD_RE,
@@ -29,7 +32,15 @@ import {
 } from './codex-app-server.js';
 
 const TURN_TIMEOUT_MS = 10 * 60 * 1000;
-const SUPPORTED_EFFORTS = new Set<CodexReasoningEffort>(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+const SUPPORTED_EFFORTS = new Set<CodexReasoningEffort>([
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max', // GPT-5.6 (GA 2026-07-09) — voir CodexReasoningEffort
+]);
 
 export interface CodexRuntimeDeps {
   writeCodexConfigToml: typeof writeCodexConfigToml;
@@ -72,11 +83,139 @@ function normalizeEffort(effort: string | undefined): CodexReasoningEffort | und
   return normalized as CodexReasoningEffort;
 }
 
+/**
+ * Items que codex émet et qui constituent une ACTION visible pour l'utilisateur.
+ * `reasoning` et `agentMessage` en sont volontairement absents : ce sont le
+ * modèle qui pense et qui parle, pas des outils. Les compter donnerait des
+ * décomptes d'« actions » sans rapport avec ce que l'agent a fait.
+ */
+const ACTION_ITEM_TYPES = new Set(['commandExecution', 'fileChange', 'mcpToolCall', 'webSearch']);
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
+
+/** Première clé présente dont la valeur est une chaîne non vide. */
+function firstString(o: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const k of keys) if (typeof o[k] === 'string' && o[k]) return o[k] as string;
+  return undefined;
+}
+
+/**
+ * Résume un item codex pour le post de statut, dans le MÊME format que claude
+ * et opencode (`summarizeToolUse`), ou `null` si ce n'est pas une action.
+ *
+ * Volontairement défensif sur les noms de champs : le protocole app-server
+ * n'est pas figé, et le pire cas doit rester un libellé générique mais juste
+ * (`Bash`, `Edit`) — jamais un `[object Object]`, ni une action fantôme.
+ */
+export function summarizeCodexItem(item: unknown): string | null {
+  if (!isRecord(item)) return null;
+  const type = typeof item.type === 'string' ? item.type : '';
+  if (!ACTION_ITEM_TYPES.has(type)) return null;
+
+  switch (type) {
+    case 'commandExecution': {
+      const command = firstString(item, ['command', 'commandLine', 'cmd']);
+      return command ? summarizeToolUse('Bash', { command }) : 'Bash';
+    }
+    case 'fileChange': {
+      const path = firstString(item, ['path', 'file_path', 'filePath']);
+      return path ? summarizeToolUse('Edit', { path }) : 'Edit';
+    }
+    case 'mcpToolCall': {
+      const name =
+        [firstString(item, ['server', 'serverName']), firstString(item, ['tool', 'toolName', 'name'])]
+          .filter(Boolean)
+          .join('.') || 'MCP tool';
+      const args = isRecord(item.arguments) ? item.arguments : isRecord(item.input) ? item.input : {};
+      return summarizeToolUse(name, args);
+    }
+    default: {
+      const query = firstString(item, ['query', 'q']);
+      return query ? summarizeToolUse('Web search', { query }) : 'Web search';
+    }
+  }
+}
+
+/**
+ * Traduit `McpServerConfig` vers les deux formes du config.toml de codex
+ * (pendant de `toSdkMcpServers` dans claude.ts) : `url` pour un serveur
+ * distant, `command`/`args`/`env` pour un stdio.
+ *
+ * Depuis l'adoption de l'union upstream (2026-08-11), plus AUCUN serveur ne peut
+ * être écarté, et les deux gardes que portait cette fonction ont disparu avec
+ * leur cause :
+ *  - « ni command ni url » n'est plus représentable — le typage l'interdit ;
+ *  - « en-têtes personnalisés » non plus : le modèle upstream n'a pas de champ
+ *    `headers`. La limite de codex (uniquement `bearer_token_env_var`, jamais
+ *    d'en-tête arbitraire) reste vraie, elle n'est simplement plus atteignable
+ *    par la configuration. Si `headers` revenait un jour côté cœur, il faudrait
+ *    RÉTABLIR le rejet nommé sur stderr : un MCP droppé en silence ne se voit
+ *    que par des outils absents, mode de panne qui a coûté un long diagnostic
+ *    sous kimi le 2026-07-28.
+ */
+export function toCodexMcpServers(
+  servers: Record<string, McpServerConfig>,
+  parentEnv: Record<string, string | undefined> = process.env,
+): Record<string, CodexMcpServer> {
+  const out: Record<string, CodexMcpServer> = {};
+  for (const [name, cfg] of Object.entries(servers)) {
+    if (cfg.type === 'http') {
+      out[name] = { url: cfg.url };
+      continue;
+    }
+    // Le bloc `env` d'un serveur stdio REMPLACE l'environnement côté codex : il
+    // n'hérite pas de celui du container. Sans réinjection, un serveur MCP perd
+    // le proxy OneCLI et son CA, sort donc du périmètre de la passerelle — et
+    // celui dont le secret est injecté dans un en-tête prend un 401. Il plante
+    // au démarrage, codex l'écarte, et la panne ne se voit que par des outils
+    // absents. Vécu le 2026-08-12 : vikunja muet sur dm/famille/work après la
+    // bascule, et sur testor-codex depuis son installation le 2026-08-03.
+    // Le `env` déclaré du groupe garde le dernier mot.
+    const env = { ...inheritedNetworkEnv(parentEnv), ...(cfg.env ?? {}) };
+    out[name] = {
+      command: cfg.command,
+      ...(cfg.args ? { args: cfg.args } : {}),
+      ...(Object.keys(env).length > 0 ? { env } : {}),
+    };
+  }
+  return out;
+}
+
+/**
+ * Variables qui rattachent un processus enfant au proxy OneCLI et à son CA.
+ * Même intention que `CODEX_ENV_ALLOWLIST` (codex-app-server.ts), appliquée
+ * cette fois aux serveurs MCP que codex lance lui-même.
+ */
+const MCP_NETWORK_ENV_KEYS = [
+  'ALL_PROXY',
+  'CURL_CA_BUNDLE',
+  'DENO_CERT',
+  'GIT_SSL_CAINFO',
+  'HTTPS_PROXY',
+  'HTTP_PROXY',
+  'NODE_EXTRA_CA_CERTS',
+  'NODE_USE_ENV_PROXY',
+  'NO_PROXY',
+  'REQUESTS_CA_BUNDLE',
+  'SSL_CERT_DIR',
+  'SSL_CERT_FILE',
+  'all_proxy',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+] as const;
+
+function inheritedNetworkEnv(parentEnv: Record<string, string | undefined>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of MCP_NETWORK_ENV_KEYS) {
+    const value = parentEnv[key];
+    if (value) env[key] = value;
+  }
+  return env;
+}
+
 export class CodexProvider implements AgentProvider {
   readonly supportsNativeSlashCommands = false;
-  // Codex has no native NanoClaw memory — opt in to the runner's persistent
-  // memory/ scaffold (see memory-scaffold.ts).
-  readonly usesMemoryScaffold = true;
   // The app-server keeps history server-side; there is no on-disk transcript,
   // so the provider persists each exchange itself into `conversations/`
   // (see exchange-archive.ts). The poll-loop reports exchanges through this
@@ -95,6 +234,7 @@ export class CodexProvider implements AgentProvider {
   private readonly model?: string;
   private readonly effort?: CodexReasoningEffort;
   private readonly runtime: CodexRuntimeDeps;
+  private memorySessionHook?: CodexMemorySessionHook;
 
   constructor(options: ProviderOptions = {}, runtime: CodexRuntimeDeps = defaultCodexRuntimeDeps) {
     this.mcpServers = options.mcpServers ?? {};
@@ -103,12 +243,18 @@ export class CodexProvider implements AgentProvider {
     this.effort = normalizeEffort(options.effort);
   }
 
+  registerMemorySessionHook(hook: CodexMemorySessionHook): void {
+    this.memorySessionHook = hook;
+  }
+
   isSessionInvalid(err: unknown): boolean {
     const msg = err instanceof Error ? err.message : String(err);
     return STALE_THREAD_RE.test(msg);
   }
 
   query(input: QueryInput): AgentQuery {
+    if (!this.memorySessionHook) throw new Error('Codex memory session hook was not registered');
+    const memorySessionHook = this.memorySessionHook;
     const pending: string[] = [input.prompt];
     let waiting: (() => void) | null = null;
     let ended = false;
@@ -138,7 +284,10 @@ export class CodexProvider implements AgentProvider {
     const self = this;
 
     async function* gen(): AsyncGenerator<ProviderEvent> {
-      self.runtime.writeCodexConfigToml(self.mcpServers, { model: self.model, effort: self.effort });
+      self.runtime.writeCodexConfigToml(toCodexMcpServers(self.mcpServers), memorySessionHook, {
+        model: self.model,
+        effort: self.effort,
+      });
       const server = self.runtime.spawnCodexAppServer();
       activeServer = server;
       self.runtime.attachCodexAutoApproval(server);
@@ -282,14 +431,28 @@ async function* runOneTurn(
         if (delta) resultText += delta;
         break;
       }
+      case 'item/started': {
+        // Les VRAIS outils passent par ici. Le poll-loop compte chaque
+        // `progress` comme une action et l'affiche dans le post de statut :
+        // n'émettre que pour un item qui est réellement une action.
+        const summary = summarizeCodexItem(params.item);
+        buffer.push(summary ? { type: 'progress', message: summary } : { type: 'activity' });
+        break;
+      }
       case 'item/completed': {
         const item = params.item as { type?: string; text?: string } | undefined;
         if (item?.type === 'agentMessage' && item.text) resultText = item.text;
         break;
       }
       case 'thread/status/changed': {
-        const status = params.status as string | undefined;
-        if (status) buffer.push({ type: 'progress', message: `status: ${status}` });
+        // Signal de LIVENESS, pas une action. L'émettre en `progress` faisait
+        // deux choses fausses à la fois (vécu le 2026-08-03 sur un simple
+        // « Hello ») : un post « 🔧 status: [object Object] » dans le canal —
+        // `params.status` est un objet depuis 0.14x, pas une chaîne — et
+        // surtout un décompte « 2 actions • 10s » pour un tour SANS le moindre
+        // appel d'outil. `activity` est exactement fait pour ça : garder le
+        // minuteur d'inactivité honnête sans rien afficher.
+        buffer.push({ type: 'activity' });
         break;
       }
       case 'error': {

@@ -4,8 +4,8 @@
  * AGENTS.md is Codex's project doc (its CLAUDE.md equivalent). Composed fresh
  * on every spawn by the codex provider contribution (see ./codex.ts) from:
  *   - the shared base (`container/AGENTS.md`)
- *   - a pointer to the runner-scaffolded memory system (created container-side
- *     at boot via the `usesMemoryScaffold` capability — nothing is written here)
+ *   - a pointer to the runner-scaffolded memory system (content is supplied by
+ *     the provider's native SessionStart hook — nothing is read here)
  *   - a pointer to codex-native skills under `.agents/skills`
  *   - each enabled NanoClaw module's `*.instructions.md` fragment
  *   - MCP server `instructions` from container.json
@@ -30,27 +30,13 @@ const HEADER = '<!-- Composed at spawn. Do not edit. Edit memory/system/definiti
 const MCP_TOOLS_HOST_SUBPATH = path.join('container', 'agent-runner', 'src', 'mcp-tools');
 
 const MEMORY_POINTER = [
+  'The live memory index and definition are supplied by NanoClaw at session startup, clear, and after compaction.',
   'Editable memory-system definition: `/workspace/agent/memory/system/definition.md`.',
   'Top memory index: `/workspace/agent/memory/index.md`.',
-  'Read the definition and index, then use memories, data, and conversation archives when relevant.',
-  'Stored user preferences are binding: before your first reply in a session, check the index below and read any memory file relevant to the user or the request, and apply it without being asked.',
+  'Read the definition and index, then use linked memory files and conversation archives when relevant.',
+  'Stored user preferences are binding: read any linked memory file relevant to the user or the request, and apply it without being asked.',
   'Do not use `AGENTS.local.md` or `AGENTS.override.md` for memory.',
 ].join('\n\n');
-
-/**
- * Inline the group's current memory index into the composed doc. Recall must
- * not depend on the model choosing to read a file before its first reply —
- * with the map already in the system prompt, applying a stored preference is
- * one hop (read the relevant memory file), not three. The index is small
- * (hundreds of bytes); the 32KB fit logic above bounds the worst case.
- */
-function memoryIndexInline(groupDir: string): string {
-  const indexPath = path.join(groupDir, 'memory', 'index.md');
-  if (!fs.existsSync(indexPath)) return '';
-  const content = fs.readFileSync(indexPath, 'utf-8').trim();
-  if (!content) return '';
-  return ['Current memory index (paths relative to `/workspace/agent/memory/`):', content].join('\n\n');
-}
 
 const NATIVE_RUNTIME_SKILLS_POINTER = [
   'Selected NanoClaw runtime skills are available as Codex-native skills at `/workspace/agent/.agents/skills`.',
@@ -64,10 +50,10 @@ interface AgentsMdSection {
   content: string;
 }
 
-export function composeGroupAgentsMd(group: AgentGroup, groupDir: string): void {
+export async function composeGroupAgentsMd(group: AgentGroup, groupDir: string): Promise<void> {
   if (!fs.existsSync(groupDir)) fs.mkdirSync(groupDir, { recursive: true });
 
-  const configRow = getContainerConfig(group.id);
+  const configRow = await getContainerConfig(group.id);
   const mcpServers: Record<string, McpServerConfig> = configRow
     ? (JSON.parse(configRow.mcp_servers) as Record<string, McpServerConfig>)
     : {};
@@ -91,7 +77,7 @@ export function composeGroupAgentsMd(group: AgentGroup, groupDir: string): void 
     pushSection('NanoClaw Runtime Contract', fs.readFileSync(sharedBase, 'utf-8'));
   }
 
-  pushSection('Memory System', MEMORY_POINTER, memoryIndexInline(groupDir));
+  pushSection('Memory System', MEMORY_POINTER);
   pushSection('Native Runtime Skills', NATIVE_RUNTIME_SKILLS_POINTER);
 
   const cliDisabled = configRow?.cli_scope === 'disabled';

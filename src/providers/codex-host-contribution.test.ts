@@ -39,20 +39,28 @@ function group(id: string, folder: string): AgentGroup {
   return { id, name: folder, folder, agent_provider: null, created_at: new Date().toISOString() } as AgentGroup;
 }
 
+// `ProviderContainerContext` carries `groupEnv` + `containerConfig` in this
+// install; the upstream payload predates both. Same minimal shape as
+// provider-surfaces.test.ts — the codex contribution reads neither field, so
+// an empty config keeps the test about what it actually covers.
+function containerConfig(): ContainerConfig {
+  return { mcpServers: {}, packages: { apt: [], npm: [] }, additionalMounts: [], skills: [] };
+}
+
 describe('codex host contribution against real core', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     fs.rmSync(TEST_ROOT, { recursive: true, force: true });
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.mkdirSync(GROUPS_DIR, { recursive: true });
-    runMigrations(initTestDb());
+    await runMigrations(await initTestDb());
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     closeDb();
     fs.rmSync(TEST_ROOT, { recursive: true, force: true });
   });
 
-  it('creates the per-group state dir, composes AGENTS.md from the real config row, and mounts both', () => {
+  it('creates the per-group state dir, composes AGENTS.md from the real config row, and mounts both', async () => {
     const ag = group('ag-codex', 'codex-group');
     createAgentGroup(ag);
     ensureContainerConfig(ag.id);
@@ -63,12 +71,14 @@ describe('codex host contribution against real core', () => {
 
     const contributionFn = getProviderContainerConfig('codex');
     expect(contributionFn).toBeDefined();
-    const contribution = contributionFn!({
+    const contribution = await contributionFn!({
       sessionDir: path.join(DATA_DIR, 'v2-sessions', ag.id, 'session-1'),
       agentGroupId: ag.id,
       groupDir,
       selectedSkills: [],
       hostEnv: process.env,
+      groupEnv: {},
+      containerConfig: containerConfig(),
     });
 
     // Per-group codex state dir exists and is mounted RW at ~/.codex.
@@ -94,14 +104,14 @@ describe('codex host contribution against real core', () => {
       additionalMounts: [],
       skills: [],
     };
-    const mounts = buildMounts(ag, session, config, 'codex', contribution);
+    const mounts = await buildMounts(ag, session, config, 'codex', contribution);
     const containerPaths = mounts.map((m) => m.containerPath);
     expect(containerPaths).toContain('/home/node/.codex');
     expect(containerPaths.some((p) => p.endsWith('AGENTS.md'))).toBe(true);
     expect(containerPaths).not.toContain('/home/node/.claude');
   });
 
-  it('mirrors per-group template skills from the Claude plane into .agents/skills', () => {
+  it('mirrors per-group template skills from the Claude plane into .agents/skills', async () => {
     const ag = group('ag-codex-skills', 'codex-skills-group');
     createAgentGroup(ag);
     ensureContainerConfig(ag.id);
@@ -112,12 +122,14 @@ describe('codex host contribution against real core', () => {
     fs.writeFileSync(path.join(templateSkill, 'SKILL.md'), '---\nname: widget\n---\n');
 
     const contributionFn = getProviderContainerConfig('codex');
-    contributionFn!({
+    await contributionFn!({
       sessionDir: path.join(DATA_DIR, 'v2-sessions', ag.id, 'session-1'),
       agentGroupId: ag.id,
       groupDir: path.join(GROUPS_DIR, ag.folder),
       selectedSkills: [],
       hostEnv: process.env,
+      groupEnv: {},
+      containerConfig: containerConfig(),
     });
 
     const mirrored = path.join(GROUPS_DIR, ag.folder, '.agents', 'skills', 'widget');

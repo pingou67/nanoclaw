@@ -14,6 +14,14 @@ function log(msg: string): void {
 
 const INIT_TIMEOUT_MS = 30_000;
 
+export const CODEX_APP_SERVER_ARGS = ['--dangerously-bypass-hook-trust', 'app-server', '--listen', 'stdio://'] as const;
+
+export interface CodexMemorySessionHook {
+  readonly command: string;
+  readonly legacyCommands: readonly string[];
+  readonly sources: readonly string[];
+}
+
 export const STALE_THREAD_RE = /thread\s+not\s+found|unknown\s+thread|thread[_\s]id|no such thread/i;
 
 let nextRequestId = 1;
@@ -55,13 +63,41 @@ export interface AppServer {
   exitHandlers: Array<(err: Error) => void>;
 }
 
-export interface CodexMcpServer {
+/** Serveur MCP lancé par codex lui-même (transport stdio). */
+export interface CodexStdioMcpServer {
   command: string;
   args?: string[];
   env?: Record<string, string>;
 }
 
-export type CodexReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+/**
+ * Serveur MCP **distant**. Codex n'a qu'un seul transport distant, le
+ * streamable HTTP (`codex mcp add <nom> --url …`) — il n'expose pas de
+ * transport SSE séparé.
+ *
+ * `bearerTokenEnvVar` nomme une variable d'environnement où codex ira lire un
+ * jeton porteur. C'est la SEULE forme d'authentification par en-tête qu'il
+ * sache exprimer : pas d'en-têtes arbitraires. Un serveur qui en exige
+ * (`McpServerConfig.headers`) reste hors de portée — voir `toCodexMcpServers`.
+ */
+export interface CodexRemoteMcpServer {
+  url: string;
+  bearerTokenEnvVar?: string;
+}
+
+export type CodexMcpServer = CodexStdioMcpServer | CodexRemoteMcpServer;
+
+function isRemote(s: CodexMcpServer): s is CodexRemoteMcpServer {
+  return typeof (s as CodexRemoteMcpServer).url === 'string';
+}
+
+/**
+ * `max` a été introduit avec la famille GPT-5.6 (GA 2026-07-09) : il étend le
+ * budget de chaîne de pensée au-delà de `xhigh`. Le payload upstream, épinglé
+ * sur codex-cli 0.138.0 (2026-06-08), est antérieur d'un mois et ne le
+ * connaissait pas — d'où son absence ici jusqu'au 2026-08-03.
+ */
+export type CodexReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 // Codex runs unrestricted inside the container. NanoClaw's container isolation and
 // the OneCLI allow-list are the security boundary — not Codex's own sandbox/approval
@@ -116,7 +152,9 @@ export interface TurnParams {
 }
 
 export function spawnCodexAppServer(): AppServer {
-  const args = ['app-server', '--listen', 'stdio://'];
+  // NanoClaw generates the hook config and has no interactive user available
+  // to approve hook trust inside the container.
+  const args = [...CODEX_APP_SERVER_ARGS];
   log(`Spawning: codex ${args.join(' ')}`);
 
   const proc = spawn('codex', args, {
@@ -261,7 +299,7 @@ export async function startOrResumeCodexThread(
   threadId: string | undefined,
   params: ThreadParams,
 ): Promise<string> {
-  const baseParams = {
+  const commonParams = {
     model: params.model,
     cwd: params.cwd,
     approvalPolicy: CODEX_APPROVAL_POLICY,
@@ -269,14 +307,13 @@ export async function startOrResumeCodexThread(
     baseInstructions: params.baseInstructions,
     developerInstructions: params.developerInstructions,
     personality: 'friendly',
-    sessionStartSource: 'startup',
     persistExtendedHistory: false,
   };
 
   if (threadId) {
     const resp = await sendCodexRequest(server, 'thread/resume', {
       threadId,
-      ...baseParams,
+      ...commonParams,
       excludeTurns: true,
     });
     if (!resp.error) return threadId;
@@ -287,7 +324,8 @@ export async function startOrResumeCodexThread(
   }
 
   const resp = await sendCodexRequest(server, 'thread/start', {
-    ...baseParams,
+    ...commonParams,
+    sessionStartSource: 'startup',
     experimentalRawEvents: false,
   });
   if (resp.error) throw new Error(`thread/start failed: ${resp.error.message}`);
@@ -372,11 +410,13 @@ export function attachCodexAutoApproval(server: AppServer): void {
 
 export function writeCodexConfigToml(
   servers: Record<string, CodexMcpServer>,
+  memorySessionHook: CodexMemorySessionHook,
   opts: { model?: string; effort?: string } = {},
 ): void {
   const codexConfigDir = path.join(process.env.HOME || '/home/node', '.codex');
   fs.mkdirSync(codexConfigDir, { recursive: true });
   const configTomlPath = path.join(codexConfigDir, 'config.toml');
+  const hooksJsonPath = path.join(codexConfigDir, 'hooks.json');
 
   // Instance-level defaults the app-server reads on startup; threads/turns inherit them.
   const lines: string[] = [
@@ -388,8 +428,28 @@ export function writeCodexConfigToml(
   if (opts.effort) lines.push(`model_reasoning_effort = ${tomlBasicString(opts.effort)}`);
   lines.push('');
 
+  // NanoClaw owns persistent memory across providers. Keep Codex's native
+  // memory disabled even if its defaults or a user-level config change.
+  lines.push('[features]');
+  lines.push('memories = false');
+  lines.push('');
+  lines.push('[memories]');
+  lines.push('use_memories = false');
+  lines.push('generate_memories = false');
+  lines.push('');
+
+  // Deux formes, celles que `codex mcp add` écrit lui-même (vérifié contre
+  // codex-cli 0.146) : `url` pour un serveur distant, `command`/`args`/`env`
+  // pour un stdio. Émettre `command` pour un serveur distant produirait
+  // `command = "undefined"` et un démarrage en échec.
   for (const [name, config] of Object.entries(servers)) {
     lines.push(`[mcp_servers.${name}]`);
+    if (isRemote(config)) {
+      lines.push(`url = ${tomlBasicString(config.url)}`);
+      if (config.bearerTokenEnvVar) lines.push(`bearer_token_env_var = ${tomlBasicString(config.bearerTokenEnvVar)}`);
+      lines.push('');
+      continue;
+    }
     lines.push(`command = ${tomlBasicString(config.command)}`);
     if (config.args && config.args.length > 0) {
       lines.push(`args = [${config.args.map(tomlBasicString).join(', ')}]`);
@@ -404,6 +464,64 @@ export function writeCodexConfigToml(
   }
 
   fs.writeFileSync(configTomlPath, lines.join('\n'));
+  const hooksConfig = readHooksConfig(hooksJsonPath);
+  const hooks = objectProperty(hooksConfig, 'hooks');
+  const sessionStart = arrayProperty(hooks, 'SessionStart');
+
+  const memoryCommands = new Set([memorySessionHook.command, ...memorySessionHook.legacyCommands]);
+  const nextSessionStart = sessionStart
+    .map((entry) => removeNanoClawMemoryHooks(entry, memoryCommands))
+    .filter((entry) => entry !== undefined);
+  nextSessionStart.push({
+    matcher: memorySessionHook.sources.join('|'),
+    hooks: [{ type: 'command', command: memorySessionHook.command, timeout: 10 }],
+  });
+  hooks.SessionStart = nextSessionStart;
+  fs.writeFileSync(hooksJsonPath, JSON.stringify(hooksConfig, null, 2) + '\n');
+}
+
+function readHooksConfig(filePath: string): Record<string, unknown> {
+  if (!fs.existsSync(filePath)) return {};
+  const parsed: unknown = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  if (!isRecord(parsed)) {
+    throw new Error(`${filePath} must contain a JSON object`);
+  }
+  return parsed;
+}
+
+function objectProperty(parent: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = parent[key];
+  if (value === undefined) {
+    const created: Record<string, unknown> = {};
+    parent[key] = created;
+    return created;
+  }
+  if (!isRecord(value)) {
+    throw new Error(`Codex hooks config property '${key}' must be an object`);
+  }
+  return value;
+}
+
+function arrayProperty(parent: Record<string, unknown>, key: string): unknown[] {
+  const value = parent[key];
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`Codex hooks config property '${key}' must be an array`);
+  }
+  return value;
+}
+
+function removeNanoClawMemoryHooks(value: unknown, commands: ReadonlySet<string>): unknown {
+  if (!isRecord(value) || !Array.isArray(value.hooks)) return value;
+  const remaining = value.hooks.filter((hook) => {
+    if (!isRecord(hook)) return true;
+    return typeof hook.command !== 'string' || !commands.has(hook.command);
+  });
+  return remaining.length > 0 ? { ...value, hooks: remaining } : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 export function buildCodexProcessEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
