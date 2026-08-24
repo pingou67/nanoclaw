@@ -629,6 +629,8 @@ def _q(db: str, sql: str) -> str:
     stdout (pipe-separated rows, like sqlite3 -list)."""
     res = subprocess.run(["node_modules/.bin/tsx", "scripts/q.ts", db, sql],
                          cwd=ROOT, capture_output=True, text=True, timeout=30)
+    if res.returncode != 0:
+        raise RuntimeError(f"q.ts failed for {db}: {res.stderr.strip()[-500:]}")
     return res.stdout.strip()
 
 def group_provider(folder: str) -> str:
@@ -658,10 +660,26 @@ def purge_continuation(group_id: str) -> None:
 def kill_group_container(folder: str) -> None:
     """Kill any running container for ag-<folder> so the next inject respawns it
     with the current DB config (provider/env changes take effect at spawn)."""
-    names = subprocess.run(["docker", "ps", "--filter", f"label=nanoclaw-group-folder={folder}",
-                            "--format", "{{.Names}}"], capture_output=True, text=True).stdout.split()
-    for n in names:
-        subprocess.run(["docker", "kill", n], capture_output=True)
+    group_id = f"ag-{folder}"
+    restarted = subprocess.run([str(ROOT / "bin" / "ncl"), "groups", "restart", "--id", group_id],
+                               cwd=ROOT, capture_output=True, text=True, timeout=30)
+    if restarted.returncode != 0:
+        raise RuntimeError(f"ncl restart failed for {group_id}: {restarted.stderr.strip()[-500:]}")
+
+    # ncl asks the host to terminate the tracked process. Wait until Docker has
+    # actually removed it and the host's onExit bookkeeping has settled before
+    # injecting the message that must spawn the fresh provider container.
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        names = subprocess.run(
+            ["docker", "ps", "--filter", f"label=nanoclaw-group-folder={folder}", "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.split()
+        if not names:
+            time.sleep(0.5)
+            return
+        time.sleep(0.2)
+    raise RuntimeError(f"container for {group_id} did not stop within 30s")
 
 
 # --- reply matching that ignores live-status posts ---------------------------
