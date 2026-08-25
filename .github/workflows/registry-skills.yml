@@ -12,6 +12,10 @@ permissions:
 
 jobs:
   discover:
+    # Registry branches are maintained by the official repository. Forks may
+    # intentionally carry only the payloads they install, so do not test the
+    # incomplete registry mirror on ordinary fork pushes.
+    if: github.repository == 'nanocoai/nanoclaw'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.skills.outputs.matrix }}
@@ -36,6 +40,7 @@ jobs:
           echo "providers=$(git rev-parse origin/providers)" >> "$GITHUB_OUTPUT"
 
   test:
+    if: github.repository == 'nanocoai/nanoclaw'
     needs: discover
     runs-on: ubuntu-latest
     strategy:
