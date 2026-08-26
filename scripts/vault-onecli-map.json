@@ -1,9 +1,14 @@
 {
   "//": "Secrets HTTP dont Bitwarden est la SOURCE DE VÉRITÉ et OneCLI la couche d'injection. Clé = nom du secret OneCLI, `vaultRef` = élément[/champ] du coffre, `requiredBy` = clé du serveur MCP qui consomme ce secret (sert à `scripts/check-secret-scope.ts` pour auditer le périmètre ; sans lui le secret n'est pas auditable). Rotation : changer la valeur dans Bitwarden puis `pnpm exec tsx scripts/sync-vault-to-onecli.ts`. N'y mettre QUE des secrets qui voyagent dans un en-tête HTTP — le reste passe par une référence `vault:` résolue au spawn (voir CLAUDE.md § Secrets).",
   "//codex": "Le secret OneCLI « Codex » est DÉLIBÉRÉMENT absent de ce manifeste, et il ne faut pas l'y ajouter. Deux raisons : (1) Bitwarden n'en est pas la source — c'est une session OAuth ChatGPT créée par `scripts/codex-vault-login.sh` et renouvelée par la passerelle, donc rien à synchroniser depuis le coffre ; (2) son consommateur est le PROVIDER codex, pas un serveur MCP, or `requiredBy` désigne une clé de `container_configs.mcp_servers` — l'y déclarer ferait conclure à `check-secret-scope.ts` qu'un secret est porté « sans le serveur MCP qui le justifie », soit un faux écart. Conséquence assumée : l'audit le range en `ℹ non auditable`. Le jour où plusieurs secrets seront consommés par des providers, c'est `auditScope` qu'il faudra étendre, pas ce fichier.",
+  "//litellm": "Le secret OneCLI « LiteLLM » est consommé par le PROVIDER opencode (baseURL lllm.pegs.fr), pas par un serveur MCP — donc sans `requiredBy`, même statut « ℹ non auditable » assumé que Codex. Bitwarden est en revanche bien la source : l'entrée ci-dessous permet la rotation via sync-vault-to-onecli.ts.",
   "Vikunja": {
     "vaultRef": "vikunja/token",
     "requiredBy": "vikunja",
     "note": "Bearer sur vikunja.pegs.fr — consommé par le serveur MCP vikunja, jamais présent dans un container."
+  },
+  "LiteLLM": {
+    "vaultRef": "litellm/api_key",
+    "note": "Bearer sur llm.pegs.fr — proxy litellm, consommé par le provider opencode des groupes migrés. Injection OneCLI à la requête."
   }
 }
