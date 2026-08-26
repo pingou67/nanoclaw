@@ -176,7 +176,7 @@ async function push(config: PusherConfig): Promise<void> {
     const health = await collectHealth();
     snapshot.health = health;
     snapshot.session_runtime = collectSessionRuntime();
-    snapshot.agents_recap = buildAgentsRecapRows();
+    snapshot.agents_recap = await buildAgentsRecapRows();
     snapshot.scheduled_jobs = collectScheduledJobs();
     const lines = healthLogLines(health);
     if (lines.length > 0) postJson(config, '/api/logs/push', { lines });
