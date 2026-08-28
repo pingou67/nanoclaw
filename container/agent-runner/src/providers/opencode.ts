@@ -34,7 +34,7 @@ function killProcessTree(proc: ChildProcess): void {
   }
 }
 
-function spawnOpencodeServer(config: Record<string, unknown>, timeoutMs = 10_000): Promise<{ url: string; proc: ChildProcess }> {
+function spawnOpencodeServer(config: Record<string, unknown>, timeoutMs = 30_000): Promise<{ url: string; proc: ChildProcess }> {
   return new Promise((resolve, reject) => {
     const hostname = '127.0.0.1';
     const port = 4096;
