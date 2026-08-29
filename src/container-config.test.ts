@@ -230,6 +230,47 @@ describe('sanitizeStoredMcpServers', () => {
     expect(sanitized.plugin).toMatchObject({ cwd: '${PLUGIN_DATA}/x' });
   });
 
+  it('preserves validated IMAP account declarations for spawn-time vault materialization', () => {
+    const accounts = [
+      {
+        id: 'account-1',
+        name: 'unistra',
+        host: 'partage.unistra.fr',
+        port: 993,
+        user: 'pegon@unistra.fr',
+        tls: true,
+        passwordRef: 'vault:mail_unistra',
+      },
+    ];
+    const sanitized = sanitizeStoredMcpServers({ imap: { command: 'imap-mcp-server', accounts } }, 'dm');
+
+    expect(sanitized.imap).toMatchObject({ command: 'imap-mcp-server', accounts });
+  });
+
+  it('drops an IMAP server whose account password is not a vault reference', () => {
+    const sanitized = sanitizeStoredMcpServers(
+      {
+        imap: {
+          command: 'imap-mcp-server',
+          accounts: [
+            {
+              id: 'account-1',
+              name: 'unistra',
+              host: 'partage.unistra.fr',
+              port: 993,
+              user: 'pegon@unistra.fr',
+              tls: true,
+              passwordRef: 'plaintext',
+            },
+          ],
+        },
+      },
+      'dm',
+    );
+
+    expect(sanitized.imap).toBeUndefined();
+  });
+
   it('returns empty on a non-object blob', () => {
     expect(sanitizeStoredMcpServers('garbage', 'test-group')).toEqual({});
   });

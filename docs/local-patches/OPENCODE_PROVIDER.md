@@ -242,9 +242,9 @@ EnvironmentFile=-/home/pegon/nanoclaw/.env
 
 (Le `-` rend le fichier optionnel — pas de fail si absent.)
 
-## 5. Configuration per-group (testor)
+## 5. Configuration per-group (testor-opencode)
 
-`groups/mattermost_testor/container.json` :
+`groups/mattermost_testor-opencode/container.json` :
 
 ```json
 {
@@ -259,17 +259,17 @@ EnvironmentFile=-/home/pegon/nanoclaw/.env
   "packages": { "apt": [], "npm": [] },
   "additionalMounts": [],
   "skills": "all",
-  "groupName": "Claw (testor)",
-  "assistantName": "Claw (testor)",
-  "agentGroupId": "ag-mattermost_testor"
+  "groupName": "Hal (testor-opencode)",
+  "assistantName": "Hal",
+  "agentGroupId": "ag-mattermost_testor-opencode"
 }
 ```
 
-`groups/mattermost_testor/CLAUDE.local.md` : identité agent, style, etc.
+`groups/mattermost_testor-opencode/CLAUDE.local.md` : identité agent, style, etc.
 
 `data/mattermost.json` : entry du channel
 ```json
-{ "channel": "testor", "folder": "mattermost_testor", "requireMention": false }
+{ "channel": "testor-opencode", "folder": "mattermost_testor-opencode", "requireMention": false }
 ```
 
 ## 6. OneCLI vault
@@ -298,11 +298,11 @@ onecli agents set-secrets --id <agent-uuid> --secret-ids <secret-uuid>
 sudo systemctl --user daemon-reload
 sudo systemctl --user enable --now openrouter-proxy-host
 sudo systemctl --user restart nanoclaw
-docker rm -f $(docker ps -a --filter 'name=mattermost_testor' -q)   # reap stale
+docker rm -f $(docker ps -a --filter 'name=mattermost_testor-opencode' -q)   # reap stale
 ```
 
 ### Smoke
-- Pose un message dans `#testor` → réponse arrive
+- Pose un message dans `#testor-opencode` → réponse arrive
 - `journalctl --user -u openrouter-proxy-host -f` montre :
   ```
   req1 200 /api/v1/chat/completions prov=NextBit 1567ms (42tps) in=18193 (cached 17968/99%) out=66 reasoning=38 (effort=medium)
@@ -313,7 +313,7 @@ docker rm -f $(docker ps -a --filter 'name=mattermost_testor' -q)   # reap stale
   panne du système, juste un choix du modèle)
 
 ### Test image
-- Drag & drop d'un PNG/JPG dans #testor → Gemma le décrit (vision native)
+- Drag & drop d'un PNG/JPG dans #testor-opencode → Gemma le décrit (vision native)
 
 ### Test PDF
 - Drag & drop d'un PDF → chaque page rasterisée en PNG 150 DPI → Gemma
@@ -329,12 +329,13 @@ docker rm -f $(docker ps -a --filter 'name=mattermost_testor' -q)   # reap stale
 | Pas de réponse, container `Created` jamais `Up` | Stale `processing_ack` claim de >2h sur message_in | `DELETE FROM processing_ack WHERE status='processing'` dans outbound.db + reset `messages_in.status='pending'` |
 | Container démarre mais réponse "I can't read PDFs" | Patch attachment opencode.ts manquant | Rebuild container, vérifier que `[image: …]` regex matche les markers du formatter |
 | Modèle figé sur ancienne version (ex. v3.1 alors que .env dit v3.2) | Session OpenCode persistée dans XDG state | Wipe `data/v2-sessions/<group>/<sess>/opencode-xdg/*` + `DELETE FROM session_state` dans outbound.db |
+| `Timeout waiting for OpenCode server to start after 10000ms` à froid | Budget historique trop court pendant initialisation MCP/XDG | Conserver le timeout de 30 s dans `spawnOpencodeServer`; vérifier la synchro `add-opencode` |
 | Proxy log montre `prov=Ionstream` lent (1tps) | Provider instable sélectionné en premier | Réordonner `OPENROUTER_PROVIDERS` (mettre les providers fiables en premier ; Ionstream uptime 48% en avril 2026) |
 | `Invalid environment assignment, ignoring: Net,NextBit` dans systemd | Valeur Environment= avec espace non-quotée | Wrap dans guillemets : `Environment="OPENROUTER_PROVIDERS=NextBit,Io Net,Ionstream"` |
 
 ## 9. Ajouter un autre channel sur le même setup OpenCode
 
-1. Créer `groups/mattermost_<nom>/container.json` avec `provider: "opencode"` et MCP DDG (copier celui de testor)
+1. Créer `groups/mattermost_<nom>/container.json` avec `provider: "opencode"` et les MCP requis (copier la structure de `testor-opencode`)
 2. Ajouter entry dans `data/mattermost.json`
 3. Restart nanoclaw
 4. Le default weekly summary task est inséré auto, agent_group créé via `mattermost.json`
@@ -357,7 +358,7 @@ côté host. Pas implémenté — actuellement un seul modèle par instance prox
 | `~/.config/systemd/user/openrouter-proxy-host.service` | unit pour le proxy |
 | `~/.config/systemd/user/nanoclaw.service` | + `EnvironmentFile=-/home/pegon/nanoclaw/.env` |
 | `.env` | + OPENCODE_*, ANTHROPIC_BASE_URL |
-| `groups/mattermost_testor/` | dossier complet (container.json, CLAUDE.local.md) |
-| `data/mattermost.json` | entry testor |
+| `groups/mattermost_testor-opencode/` | dossier complet (container.json, CLAUDE.local.md) |
+| `data/mattermost.json` | entrée testor-opencode |
 
 Tout sauf les unit files systemd et `.env` est versionné dans git (sous le repo).

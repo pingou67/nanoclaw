@@ -65,6 +65,20 @@ export interface McpStdioServerConfig {
    */
   plugin?: string;
   instructions?: string;
+  /**
+   * Host-only account declarations for imap-mcp-server. The password remains a
+   * vault reference; container-runner materializes the encrypted credentials
+   * into the session at spawn time.
+   */
+  accounts?: Array<{
+    id: string;
+    name: string;
+    host: string;
+    port: number;
+    user: string;
+    tls: boolean;
+    passwordRef: string;
+  }>;
 }
 
 export interface McpHttpServerConfig {
@@ -313,6 +327,27 @@ export function sanitizeStoredMcpServers(raw: unknown, groupName: string): Recor
         // lands in host logs instead of nowhere.
         delete server.cwd;
         log.warn('Stripping cwd from stored MCP server without plugin provenance', { group: groupName, server: name });
+      }
+      if (name === 'imap' && server.type !== 'http' && Array.isArray((entry as Record<string, unknown>).accounts)) {
+        const accounts = (entry as Record<string, unknown>).accounts as Array<Record<string, unknown>>;
+        if (
+          accounts.every(
+            (account) =>
+              account &&
+              typeof account.id === 'string' &&
+              typeof account.name === 'string' &&
+              typeof account.host === 'string' &&
+              typeof account.port === 'number' &&
+              typeof account.user === 'string' &&
+              typeof account.tls === 'boolean' &&
+              typeof account.passwordRef === 'string' &&
+              account.passwordRef.startsWith('vault:'),
+          )
+        ) {
+          server.accounts = accounts as NonNullable<McpStdioServerConfig['accounts']>;
+        } else {
+          throw new Error('imap accounts must contain valid non-secret fields and vault: passwordRef values');
+        }
       }
       servers[name] = server;
       // eslint-disable-next-line no-catch-all/no-catch-all -- validation failures are data errors, not bugs

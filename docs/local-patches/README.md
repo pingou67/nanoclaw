@@ -202,6 +202,52 @@ Le périmètre OneCLI a suivi la bascule : le secret `Codex` a été accordé au
 agents (`agents set-secrets`, mode `selective` conservé), en union avec
 `Vikunja` là où le serveur MCP le justifie — jamais par symétrie.
 
+### Audit flotte providers + MCP (2026-08-28) — trois pannes préventives corrigées
+
+Audit statique puis appels MCP réels, par tâche silencieuse isolée, sur tous les
+groupes câblés. Résultat final : `adminsys`, `coding`, `work-ei`, `work`,
+`famille`, `dm`, `testor-opencode`, `testor-codex` et `agc` verts. Le seul rouge
+restant est `testor-claude`, volontairement neutralisé par
+`engage_pattern='(?!)'` : l'abonnement Claude n'est pas renouvelé et son fichier
+OAuth ne contient plus de refresh token.
+
+Trois défauts ont été trouvés et corrigés :
+
+1. **Le validateur MCP supprimait `imap.accounts` à la matérialisation.**
+   `parseMcpServerConfig` ne connaît que la forme transport ;
+   `sanitizeStoredMcpServers` reconstruisait donc l'entrée `imap` sans son
+   extension host-only `accounts`. Le serveur démarrait, `.key` existait, mais
+   `accounts.json` n'était plus régénéré : `imap_list_accounts` rendait vide.
+   `src/container-config.ts` conserve désormais cette extension uniquement pour
+   `imap`, après validation complète des champs non secrets et obligation d'un
+   `passwordRef` préfixé `vault:`. Tests : `src/container-config.test.ts` et
+   `src/secrets/imap-creds.test.ts`. Validation réelle : compte `unistra`
+   visible et recherche dans `INBOX/TO` réussie.
+
+2. **Les MCP OAuth Google ne doivent pas passer par OneCLI.** Gmail et Calendar
+   utilisent les fichiers OAuth montés sous `/workspace/extra/google-mcp` ; si
+   leurs appels à Google traversent le proxy OneCLI, la passerelle répond
+   `app_not_connected` et propose à tort une connexion Gmail OneCLI. Les entrées
+   `gmail`, `gmail-perso` et `google-calendar` portent désormais `NO_PROXY` et
+   `no_proxy` pour `gmail.googleapis.com`, `www.googleapis.com`,
+   `oauth2.googleapis.com` et `accounts.google.com`. Cela ne réduit pas le
+   périmètre des secrets OneCLI : ces MCP ne consomment aucun secret OneCLI, ils
+   possèdent leur OAuth sur fichier. Validation réelle : Gmail
+   `search_emails("is:unread in:inbox")` et Calendar `list_calendars` réussis.
+
+3. **Le démarrage OpenCode à froid dépassait parfois 10 secondes.** Le provider
+   tuait alors un serveur sain avec `Timeout waiting for OpenCode server to
+   start after 10000ms`. Le budget de démarrage passe à 30 secondes dans
+   `container/agent-runner/src/providers/opencode.ts`. Le fichier étant
+   skill-owned, la copie a été resynchronisée vers `origin/providers` par
+   `skills-sync sync add-opencode`. Validation réelle sur `testor-opencode` :
+   Gmail, Calendar, SearXNG, Vikunja et Home Assistant appelés dans le même tour.
+
+Contrôles complémentaires passés : aucun secret en clair en DB, aucun `npx`,
+aucun mount absolu, grants OneCLI conformes aux besoins, dashboard caviardé,
+une seule instance hôte, aucune violation de clé étrangère, build host vert,
+tests container ciblés verts et suite hôte **2176/2176**.
+
 ### Migration driver seam + base centrale asynchrone (2026-08-19)
 
 Merge de 112 commits upstream. Deux ruptures structurelles, et la carte de ce

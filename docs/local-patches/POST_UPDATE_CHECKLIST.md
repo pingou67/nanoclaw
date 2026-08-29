@@ -231,6 +231,54 @@ merge — `pnpm test` couvre le cas, mais l'échec est sinon distant et trompeur
 pnpm exec vitest run src/secrets/ src/dashboard-redact.test.ts
 ```
 
+### MCP non-HTTP et OAuth sur fichier — contrôles anti-régression
+
+Ces deux chemins ne passent pas par l'injection de secrets HTTP OneCLI et ont
+déjà cassé silencieusement après une migration de provider :
+
+```bash
+# IMAP : la déclaration host-only doit survivre à sanitizeStoredMcpServers.
+# Les groupes imap doivent avoir un tableau accounts non vide.
+pnpm exec tsx scripts/q.ts data/v2.db \
+  "SELECT agent_group_id, json_array_length(json_extract(mcp_servers,'$.imap.accounts'))
+     FROM container_configs WHERE json_type(mcp_servers,'$.imap') IS NOT NULL"
+
+# Gmail / Calendar : OAuth sur fichiers, donc les API Google doivent contourner
+# OneCLI. Chaque ligne doit porter les quatre hôtes dans NO_PROXY.
+pnpm exec tsx scripts/q.ts data/v2.db \
+  "SELECT agent_group_id, key, json_extract(value,'$.env.NO_PROXY')
+     FROM container_configs, json_each(json(mcp_servers))
+    WHERE key IN ('gmail','gmail-perso','google-calendar')"
+
+# Tests structurels du format IMAP + validation coffre.
+pnpm exec vitest run src/container-config.test.ts src/secrets/imap-creds.test.ts
+```
+
+Attendu pour IMAP : `accounts >= 1`. Un MCP `imap` présent avec `NULL` ou `0`
+reproduit le symptôme « aucun compte unistra disponible » alors que le serveur
+est bien lancé. Attendu pour Google :
+`gmail.googleapis.com,www.googleapis.com,oauth2.googleapis.com,accounts.google.com`.
+Sans ce bypass, l'erreur propose à tort une URL `/connections?connect=gmail`.
+
+### Smoke MCP réel après migration de provider
+
+Une présence dans `container_configs` ne prouve pas qu'un outil est utilisable.
+Après toute migration de provider, lancer une tâche silencieuse par groupe qui
+appelle réellement chaque MCP en lecture seule, puis lire son `outbound.db`.
+La matrice validée le 2026-08-28 est :
+
+| Groupe | Appels minimum |
+|---|---|
+| `work` | IMAP + Vikunja |
+| `famille` | Calendar + Vikunja + Home Assistant |
+| `dm` | IMAP + Gmail + Calendar + Vikunja + Home Assistant |
+| `testor-opencode` | Gmail + Calendar + SearXNG + Vikunja + Home Assistant |
+| `testor-codex` | Gmail + Calendar + Vikunja + Home Assistant |
+| `agc` | IMAP + Gmail + Calendar + Vikunja |
+
+`testor-claude` est volontairement hors matrice tant que l'abonnement Claude
+n'est pas renouvelé ; son wiring doit rester neutralisé par `(?!)`.
+
 **Depuis OneCLI 1.44**, les affectations historiques ont été remplacées par les
 « agent grants » et `GET /v1/agents/:id/secrets` répond volontairement `Gone`.
 Le contrôle 2 utilise `@onecli-sh/sdk` et `listAgentsWithGrants()` : le mode
