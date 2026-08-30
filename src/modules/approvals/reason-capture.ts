@@ -123,7 +123,7 @@ export async function armReasonCapture(approval: PendingApproval, session: Sessi
   // first arming. Finalize the displaced approval as a plain reject right
   // away (same terminal state the sweep applies to ghosted holds) so its
   // requester isn't left hanging until the window elapses.
-  const key = dmKey(dm.channel_type, dm.platform_id);
+  const key = dmKey(channelType, platformId, instance);
   const displaced = awaitingReason.get(key);
   if (displaced && displaced.approvalId !== approval.approval_id) {
     awaitingReason.delete(key);

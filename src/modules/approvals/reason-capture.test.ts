@@ -167,6 +167,17 @@ describe('reject with reason', () => {
     expect(vi.mocked(writeSessionMessage)).not.toHaveBeenCalled();
   });
 
+  it('finalizes a displaced hold before arming the next one for the same DM', async () => {
+    await seedApproval('appr-first');
+    await seedApproval('appr-second');
+    await clickRejectWithReason('appr-first');
+    await clickRejectWithReason('appr-second');
+
+    expect(await getPendingApproval('appr-first')).toBeUndefined();
+    expect((await getPendingApproval('appr-second'))?.status).toBe('awaiting_reason');
+    expect(lastRelayedText()).toBe('Your create_agent request was rejected by admin.');
+  });
+
   it('relays the captured reason as one combined message and clears the row', async () => {
     const { captureReasonReply } = await import('./reason-capture.js');
     await seedApproval('appr-2', 'install_packages');
