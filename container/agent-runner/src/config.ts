@@ -21,6 +21,8 @@ export interface RunnerConfig {
   model?: string;
   effort?: string;
   thinking?: { type: 'adaptive' | 'enabled' | 'disabled'; budgetTokens?: number };
+  /** API fast serving tier (host-configured; see the host's container-config). */
+  fastMode?: boolean;
 }
 
 const DEFAULT_MAX_MESSAGES = 10;
@@ -51,6 +53,7 @@ export function loadConfig(): RunnerConfig {
     model: (raw.model as string) || undefined,
     effort: (raw.effort as string) || undefined,
     thinking: (raw.thinking as RunnerConfig['thinking']) || undefined,
+    fastMode: raw.fastMode === true || undefined,
   };
 
   return _config;

@@ -107,13 +107,17 @@ export interface ProviderOptions {
    * through to the underlying SDK. If omitted, the SDK default is used.
    */
   effort?: string;
-
   /**
    * Extended-thinking configuration. `adaptive` lets Claude decide, `enabled`
    * uses a fixed token budget (`budgetTokens`), `disabled` turns it off. Passed
    * through to the underlying SDK; ignored by providers that don't support it.
    */
   thinking?: { type: 'adaptive' | 'enabled' | 'disabled'; budgetTokens?: number };
+  /**
+   * API fast serving tier: faster output at a higher per-token price. Passed
+   * through to the underlying SDK. If omitted, the SDK default is used.
+   */
+  fastMode?: boolean;
 }
 
 export interface QueryInput {

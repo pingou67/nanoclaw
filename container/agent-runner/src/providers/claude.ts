@@ -563,6 +563,7 @@ export class ClaudeProvider implements AgentProvider {
   private model?: string;
   private effort?: string;
   private thinking?: { type: 'adaptive' | 'enabled' | 'disabled'; budgetTokens?: number };
+  private fastMode?: boolean;
   private memorySessionHook?: MemorySessionHookRegistration;
 
   constructor(options: ProviderOptions = {}) {
@@ -574,6 +575,7 @@ export class ClaudeProvider implements AgentProvider {
     this.model = options.model;
     this.effort = options.effort;
     this.thinking = options.thinking;
+    this.fastMode = options.fastMode;
     this.env = {
       // MCP_TIMEOUT / MCP_TOOL_TIMEOUT first, so an operator override in the
       // group env still wins.
@@ -670,6 +672,10 @@ export class ClaudeProvider implements AgentProvider {
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         settingSources: ['project', 'user', 'local'],
+        // Only sent when enabled, so an install that never turns it on passes
+        // exactly the options it always did. `fastMode` is a Settings member
+        // rather than a query option, which is why it rides `settings`.
+        ...(this.fastMode ? { settings: { fastMode: true } } : {}),
         mcpServers: toSdkMcpServers(this.mcpServers),
         hooks: {
           PreToolUse: [{ hooks: [preToolUseHook] }],

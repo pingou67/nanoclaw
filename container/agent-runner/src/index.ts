@@ -110,6 +110,7 @@ async function main(): Promise<void> {
     model: config.model,
     effort: config.effort,
     thinking: config.thinking,
+    fastMode: config.fastMode,
   });
   provider.registerMemorySessionHook(MEMORY_SESSION_HOOK);
 
