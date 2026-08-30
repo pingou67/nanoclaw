@@ -74,6 +74,7 @@ CHANNELS = {
     "adminsys":  ("ch-adminsys",  False),
     "famille":   ("ch-famille",   True),
     "coding":    ("ch-coding",    False),
+    "testor-opencode": ("ch-testor-opencode", False),
 }
 
 
@@ -638,6 +639,34 @@ def group_provider(folder: str) -> str:
     out = _q(CENTRAL_DB, f"SELECT COALESCE(provider,'claude') FROM container_configs WHERE agent_group_id='ag-{folder}'")
     return out.strip() or "claude"
 
+def group_e2e_reachable(folder: str) -> bool:
+    """A deliberately paused wiring must be skipped, not reported as a
+    provider timeout.  The operator uses ``(?!)`` as the canonical pattern
+    that can never match while a subscription or channel is paused."""
+    out = _q(
+        CENTRAL_DB,
+        "SELECT count(*) FROM messaging_group_agents "
+        f"WHERE agent_group_id='ag-{folder}' AND COALESCE(engage_pattern,'') <> '(?!)'",
+    )
+    return out.strip() != "0"
+
+def provider_e2e_enabled(provider: str) -> bool:
+    """Use the explicit testor-claude wiring as the operator's Claude E2E
+    switch.  If that group exists and is paused, temporary/default Claude
+    groups created by the mock must not silently re-enable paid calls."""
+    if provider != "claude":
+        return True
+    out = _q(
+        CENTRAL_DB,
+        "SELECT CASE "
+        "WHEN NOT EXISTS (SELECT 1 FROM agent_groups WHERE id='ag-mattermost_testor-claude') THEN 1 "
+        "WHEN EXISTS (SELECT 1 FROM messaging_group_agents "
+        "             WHERE agent_group_id='ag-mattermost_testor-claude' "
+        "               AND COALESCE(engage_pattern,'') <> '(?!)') THEN 1 "
+        "ELSE 0 END",
+    )
+    return out.strip() == "1"
+
 def any_opencode_env() -> str | None:
     """An opencode group's env JSON, to seed the switch-test group's opencode leg."""
     out = _q(CENTRAL_DB, "SELECT env FROM container_configs WHERE provider='opencode' AND env LIKE '%OPENCODE_API_KEY%' LIMIT 1")
@@ -773,6 +802,8 @@ def scenario_provider_switch() -> Result:
     throwaway ag-e2e_switch group only — never a production group."""
     name = "provider switch opencode→claude (continuity)"
     group, folder, ch = "ag-e2e_switch", "e2e_switch", "ch-e2e-switch"
+    if not group_e2e_reachable(folder) or not provider_e2e_enabled("claude"):
+        return Result(name, True, "SKIP — wiring e2e-switch pausé", skipped=True)
     if not OPENCODE_INSTALLED:
         return skip_result(name, "add-opencode")
     env = any_opencode_env()
@@ -808,6 +839,7 @@ PROVIDER_MATRIX_CANDIDATES = [
     ("adminsys",  "ch-adminsys",  False),
     ("famille",   "ch-famille",   True),
     ("testor",    "ch-testor",    False),  # OpenCode-backed — keeps both providers covered
+    ("testor-opencode", "ch-testor-opencode", False),
     ("testor-claude", "ch-testor-claude", False),  # Claude-backed depuis la migration opencode de 2026-07 — garde la couverture claude
     ("testor-codex", "ch-testor-codex", False),  # Codex (GPT-5.6 Terra) — couvre le chemin app-server JSON-RPC
 ]
@@ -820,6 +852,9 @@ def run_provider_matrix() -> list[Result]:
     seen: dict[str, str] = {}
     for label, ch_id, req in PROVIDER_MATRIX_CANDIDATES:
         prov = group_provider(f"mattermost_{label}")
+        if (not group_e2e_reachable(f"mattermost_{label}")
+                or not provider_e2e_enabled(prov)):
+            continue
         if prov in seen:
             continue
         seen[prov] = label
@@ -828,15 +863,25 @@ def run_provider_matrix() -> list[Result]:
         out.append(_relabel(scenario_channel_text(label, ch_id, req, f"OK-MX-{label.upper()}"),
                             f"matrix {tag} / text"))
         out.append(_relabel(scenario_tool_use(label, ch_id, req), f"matrix {tag} / tool-use"))
-    # Coverage expectation follows the INSTALLED providers: claude ships in
-    # trunk; opencode only counts when /add-opencode is installed. An absent
-    # skill is a SKIP, not a missing provider.
-    expected = {"claude"} | ({"opencode"} if OPENCODE_INSTALLED else set())
+    # Coverage expectation follows installed and operator-enabled providers.
+    # An absent skill or an explicitly paused provider is a SKIP, not missing
+    # coverage.
+    reachable = {
+        group_provider(f"mattermost_{label}")
+        for label, _, _ in PROVIDER_MATRIX_CANDIDATES
+        if group_e2e_reachable(f"mattermost_{label}")
+        and provider_e2e_enabled(group_provider(f"mattermost_{label}"))
+    }
+    installed = {"claude"} | ({"opencode"} if OPENCODE_INSTALLED else set())
+    expected = installed & reachable
     covered = expected.issubset(set(seen.keys()))
     detail = f"covered {sorted(seen.keys())}" + ("" if covered else f" — MISSING {sorted(expected - set(seen.keys()))}")
     out.append(Result("matrix provider coverage", covered, detail))
     if not OPENCODE_INSTALLED:
         out.append(skip_result("matrix opencode leg", "add-opencode"))
+    if not provider_e2e_enabled("claude"):
+        out.append(Result("matrix claude leg", True,
+                          "SKIP — tous les wirings Claude candidats sont pausés", skipped=True))
     return out
 
 
@@ -854,6 +899,7 @@ WAIT_MCP_SEC = 120  # npx-based servers download into the container on cold star
 MCP_CHANNEL_CANDIDATES = [
     ("work",     "ch-work",     False),
     ("testor",   "ch-testor",   False),
+    ("testor-opencode", "ch-testor-opencode", False),
     ("testor-claude", "ch-testor-claude", False),
     ("testor-codex", "ch-testor-codex", False),
     ("famille",  "ch-famille",  True),
@@ -920,10 +966,14 @@ MCP_FAILURE_MARKERS = (
 
 def run_mcp_matrix() -> list[Result]:
     out: list[Result] = []
-    servers_by_label = {label: _group_mcp_servers(label) for label, _, _ in MCP_CHANNEL_CANDIDATES}
+    reachable_candidates = [
+        candidate for candidate in MCP_CHANNEL_CANDIDATES
+        if group_e2e_reachable(f"mattermost_{candidate[0]}")
+    ]
+    servers_by_label = {label: _group_mcp_servers(label) for label, _, _ in reachable_candidates}
     for name, prompt, expects, *rest in MCP_SCENARIOS:
         prefer = rest[0] if rest else []
-        candidates = sorted(MCP_CHANNEL_CANDIDATES,
+        candidates = sorted(reachable_candidates,
                             key=lambda c: prefer.index(c[0]) if c[0] in prefer else len(prefer) + 1)
         # Match `gmail` against `gmail` AND `gmail-perso` (per-group aliases).
         target = next(

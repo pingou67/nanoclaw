@@ -47,9 +47,9 @@ CHANNELS = {
     "famille":      {"id": "ch-famille",      "type": "O"},
     "adminsys":     {"id": "ch-adminsys",     "type": "O"},
     "work":         {"id": "ch-work",         "type": "O"},
-    # OpenCode-backed test channel — keeps the provider matrix exercising an
-    # OpenCode group now that main/adminsys/coding moved to Claude.
+    # Legacy generic test channel plus explicit provider test channels.
     "testor":       {"id": "ch-testor",       "type": "O"},
+    "testor-opencode": {"id": "ch-testor-opencode", "type": "O"},
     "testor-claude": {"id": "ch-testor-claude", "type": "O"},
     # Codex-backed (GPT-5.6 Terra, effort medium) — couvre le 4e provider et,
     # avec lui, le chemin app-server JSON-RPC + AGENTS.md.
