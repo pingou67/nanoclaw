@@ -74,10 +74,10 @@ import './codex.js';
 The agent's global Node CLIs install from `container/cli-tools.json` (a json-merge seam), not hand-edited Dockerfile layers. Add Codex by appending one entry — idempotent on `name`, so a re-run is a no-op. `@openai/codex` has no native postinstall, so no `onlyBuilt`. The Dockerfile already installs every manifest entry via pinned `pnpm install -g`; no Dockerfile edit is needed.
 
 ```nc:json-merge into:container/cli-tools.json key:name
-{ "name": "@openai/codex", "version": "0.150.1" }
+{ "name": "@openai/codex", "version": "0.151.0" }
 ```
 
-The version (`0.150.1`) is the canonical pin — this SKILL.md is the source of truth.
+The version (`0.151.0`) is the canonical pin — this SKILL.md is the source of truth.
 
 > **Écart fork assumé (2026-08-03).** Upstream épingle `0.138.0`, publiée le
 > **2026-06-08** — un mois avant la GA de la famille GPT-5.6 (Sol/Terra/Luna,
@@ -89,7 +89,7 @@ The version (`0.150.1`) is the canonical pin — this SKILL.md is the source of 
 >
 > Le pin a suivi ce chemin depuis : `0.146.0` (2026-07-29), `0.147.0`
 > (2026-08-07, montée le 2026-08-13), **`0.149.0`** (2026-08-20), puis
-> **`0.150.1`** (2026-08-27),
+> **`0.150.1`** (2026-08-27), puis **`0.151.0`** (2026-08-29),
 > chaque fois éligible à la règle des 3
 > jours de `pnpm-workspace.yaml` / `scripts/supply-watch.ts`. La veille
 > supply-chain suit cette entrée automatiquement dès qu'elle est dans
