@@ -23,7 +23,7 @@ ARG INSTALL_CJK_FONTS=false
 # runtime) and the opencode binary (provider-runtime, not an MCP tool) are
 # pinned here because they install from a different source.
 ARG BUN_VERSION=1.4.0
-ARG OPENCODE_VERSION=1.18.23
+ARG OPENCODE_VERSION=1.18.25
 
 # ---- System dependencies -----------------------------------------------------
 # tini: correct PID 1 / signal forwarding so outbound.db writes finalize on
