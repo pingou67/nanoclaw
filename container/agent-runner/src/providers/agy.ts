@@ -12,6 +12,40 @@ function log(msg: string): void {
   console.error(`[agy-provider] ${msg}`);
 }
 
+/** Opt-in, per-container settings: never write permissions through the host symlink. */
+export function isolateAgySettings(realGemini: string, fakeGemini: string, raw: string): void {
+  const allow: unknown = JSON.parse(raw);
+  if (!Array.isArray(allow) || !allow.every(rule => typeof rule === 'string' &&
+    /^(read_file|mcp)\([^*\r\n]+\)$/.test(rule))) {
+    throw new Error('AGY_PERMISSIONS_ALLOW must contain exact read_file or mcp rules, without wildcards');
+  }
+  const realCli = path.join(realGemini, 'antigravity-cli');
+  const localCli = path.join(fakeGemini, 'antigravity-cli');
+  for (const target of [localCli, path.join(localCli, 'settings.json')]) {
+    if (fs.existsSync(target) && fs.lstatSync(target).isSymbolicLink()) {
+      throw new Error('Refusing symlinked AGY permission settings');
+    }
+  }
+  fs.mkdirSync(localCli, { recursive: true });
+  for (const item of fs.existsSync(realCli) ? fs.readdirSync(realCli) : []) {
+    if (item === 'settings.json' || item === 'mcp') continue;
+    const link = path.join(localCli, item);
+    if (!fs.existsSync(link)) fs.symlinkSync(path.join(realCli, item), link);
+  }
+  const source = path.join(realCli, 'settings.json');
+  const settings = fs.existsSync(source) ? JSON.parse(fs.readFileSync(source, 'utf8')) : {};
+  // Preserve restrictive host rules, but do not inherit broad host grants.
+  settings.permissions = { deny: settings.permissions?.deny ?? [], ask: settings.permissions?.ask ?? [], allow };
+  fs.writeFileSync(path.join(localCli, 'settings.json'), JSON.stringify(settings), { mode: 0o600 });
+}
+
+/** Do not leak arbitrary stderr (URLs/tokens) into a chat error. */
+export function agyFailure(stderr: string, code: number | null, signal: string | null): string | undefined {
+  const denied = stderr.match(/permission[^\n]*auto-denied|auto-denied|denied_actions/i);
+  if (denied) return 'AGY permission denied in headless mode; review this group\'s scoped permissions.';
+  if (signal || (code !== null && code !== 0)) return `AGY process failed (${signal ?? `exit ${code}`}).`;
+}
+
 /**
  * Make agy's memory portable across providers.
  *
@@ -152,7 +186,7 @@ export class AgyProvider implements AgentProvider {
         }
         
         let spawnEnv: NodeJS.ProcessEnv = process.env;
-        if (options.mcpServers && Object.keys(options.mcpServers).length > 0) {
+        if ((options.mcpServers && Object.keys(options.mcpServers).length > 0) || process.env.AGY_PERMISSIONS_ALLOW) {
           // Antigravity does NOT read a raw mcp.json — it loads MCP servers from
           // imported "plugins". To keep MCP servers ISOLATED PER CONTAINER (so
           // different agy groups don't share a single ~/.gemini/config), we run
@@ -172,15 +206,19 @@ export class AgyProvider implements AgentProvider {
             // Share everything except config/extensions with the real .gemini.
             if (fs.existsSync(realGemini)) {
               for (const item of fs.readdirSync(realGemini)) {
-                if (item === 'config' || item === 'extensions') continue;
+                if (item === 'config' || item === 'extensions' ||
+                    (item === 'antigravity-cli' && process.env.AGY_PERMISSIONS_ALLOW)) continue;
                 const link = path.join(fakeGemini, item);
                 if (!fs.existsSync(link)) {
                   try { fs.symlinkSync(path.join(realGemini, item), link); } catch (e) { /* ignore */ }
                 }
               }
             }
+            if (process.env.AGY_PERMISSIONS_ALLOW) {
+              isolateAgySettings(realGemini, fakeGemini, process.env.AGY_PERMISSIONS_ALLOW);
+            }
             const cleanServers: Record<string, unknown> = {};
-            for (const [name, cfg] of Object.entries(options.mcpServers)) {
+            for (const [name, cfg] of Object.entries(options.mcpServers ?? {})) {
               if (cfg.type === 'http') {
                 // Gemini extensions support remote MCP via httpUrl.
                 cleanServers[name] = { httpUrl: cfg.url };
@@ -209,6 +247,10 @@ export class AgyProvider implements AgentProvider {
         // a temporal-dead-zone reference (spawn errors can fire during the
         // awaits of the session-id resolution block).
         let resultText = '';
+        let stderrText = '';
+        let exitCode: number | null = null;
+        let exitSignal: string | null = null;
+        let spawnFailed = false;
         let lastContent = '';
         let rawBuffer = '';
         let processFinished = false;
@@ -228,7 +270,17 @@ export class AgyProvider implements AgentProvider {
         // oversized --prompt argv) emits an unhandled 'error' event and
         // crashes the whole agent-runner mid-session.
         activeProc.on('error', (err) => {
-          log(`agy spawn error: ${err.message}`);
+          spawnFailed = true;
+          log('agy process could not be started');
+          processFinished = true;
+          wakeProgress?.();
+        });
+        // Attach before any await: fast failures/answers otherwise disappear.
+        activeProc.stdout?.on('data', (d) => { resultText += d.toString(); });
+        activeProc.stderr?.on('data', (d) => { stderrText = (stderrText + d.toString()).slice(-16384); });
+        activeProc.on('close', (code, signal) => {
+          exitCode = code;
+          exitSignal = signal;
           processFinished = true;
           wakeProgress?.();
         });
@@ -240,7 +292,7 @@ export class AgyProvider implements AgentProvider {
             // Poll for up to 5 seconds to find the newly created database file
             const startTime = Date.now();
             let found = false;
-            while (Date.now() - startTime < 5000 && !found) {
+            while (Date.now() - startTime < 5000 && !found && !processFinished) {
               await new Promise((resolve) => setTimeout(resolve, 100));
               try {
                 const files = fs.readdirSync(convDir);
@@ -278,11 +330,6 @@ export class AgyProvider implements AgentProvider {
         let resolvedTranscriptFile: string | null = transcriptCandidates.find(p => fs.existsSync(p)) || null;
         let lastReadBytes = resolvedTranscriptFile ? fs.statSync(resolvedTranscriptFile).size : 0;
 
-        activeProc!.stdout?.on('data', (d) => { resultText += d.toString(); });
-        activeProc!.on('exit', () => {
-          processFinished = true;
-          wakeProgress?.();
-        });
 
         // Tail transcript.jsonl for live progress updates
         const readTranscript = () => {
@@ -368,6 +415,9 @@ export class AgyProvider implements AgentProvider {
         // "⏹ Arrêté" acknowledgement (and queue it as a bg result).
         if (aborted) return;
         readTranscript();
+
+        const failure = spawnFailed ? 'AGY process could not be started.' : agyFailure(stderrText, exitCode, exitSignal);
+        if (failure) throw new Error(failure);
 
         // Use the explicit transcript content if available to avoid echoing history from stdout
         yield { type: 'result', text: lastContent || resultText || null };
