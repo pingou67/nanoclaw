@@ -25,8 +25,8 @@ describe('classifyClaudeExpiry', () => {
 
 describe('containerPathToHost', () => {
   it('maps /workspace/agent/ paths into the group folder', () => {
-    const p = containerPathToHost('mattermost_agc', '/workspace/agent/google-oauth/gmail-token.json');
-    expect(p).toMatch(/groups\/mattermost_agc\/google-oauth\/gmail-token\.json$/);
+    const p = containerPathToHost('mattermost_testor-agy', '/workspace/agent/google-oauth/gmail-token.json');
+    expect(p).toMatch(/groups\/mattermost_testor-agy\/google-oauth\/gmail-token\.json$/);
   });
 
   // Un credential mutualisé vit sur un mount, pas dans le dossier du groupe.

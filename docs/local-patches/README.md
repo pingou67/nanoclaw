@@ -206,7 +206,7 @@ agents (`agents set-secrets`, mode `selective` conservé), en union avec
 
 Audit statique puis appels MCP réels, par tâche silencieuse isolée, sur tous les
 groupes câblés. Résultat final : `adminsys`, `coding`, `work-ei`, `work`,
-`famille`, `dm`, `testor-opencode`, `testor-codex` et `agc` verts. Le seul rouge
+`famille`, `dm`, `testor-opencode`, `testor-codex` et `testor-agy` verts. Le seul rouge
 restant est `testor-claude`, volontairement neutralisé par
 `engage_pattern='(?!)'` : l'abonnement Claude n'est pas renouvelé et son fichier
 OAuth ne contient plus de refresh token.

@@ -78,7 +78,7 @@ détail opérationnel risque d'évoluer.
   Codex, modèle `gpt-5.6-terra`, effort `medium`.
 - `testor-claude` et `globalbuilder` : Claude/Opus ; `e2e_switch` : Claude/Sonnet.
 - `testor` uniquement : OpenCode. Ne jamais le traiter comme un container Claude.
-- `agc` : provider `agy`/Gemini.
+- `testor-agy` : provider `agy`/Gemini.
 
 Une migration de provider doit préserver les réglages utiles au rollback et
 purger la continuation du provider quitté si elle provoque des erreurs de modèle.
@@ -293,7 +293,7 @@ ramenés à leur leçon durable.
 | `project-update-2-1-54.md` | Ancres rollback, image durcie et pièges de merge historiques. |
 | `project_agent_runner_changes.md` | Patches v1 dépréciés. |
 | `project_agy_compaction_design.md` | Plan de compaction agy non implémenté. |
-| `project_agy_provider.md` | Provider agy actif sur `agc`. |
+| `project_agy_provider.md` | Provider agy actif sur `testor-agy`. |
 | `project_background_tasks.md` | Architecture foreground/background et auto-bg. |
 | `project_bascule_codex_flotte.md` | Bascule prod Codex et deux pannes silencieuses. |
 | `project_claude_ai_connectors_block.md` | Connecteurs claude.ai bloqués via outils interdits. |

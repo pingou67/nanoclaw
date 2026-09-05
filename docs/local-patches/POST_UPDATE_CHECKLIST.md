@@ -274,7 +274,7 @@ La matrice validée le 2026-08-28 est :
 | `dm` | IMAP + Gmail + Calendar + Vikunja + Home Assistant |
 | `testor-opencode` | Gmail + Calendar + SearXNG + Vikunja + Home Assistant |
 | `testor-codex` | Gmail + Calendar + Vikunja + Home Assistant |
-| `agc` | IMAP + Gmail + Calendar + Vikunja |
+| `testor-agy` | IMAP + Gmail + Calendar + Vikunja |
 
 `testor-claude` est volontairement hors matrice tant que l'abonnement Claude
 n'est pas renouvelé ; son wiring doit rester neutralisé par `(?!)`.

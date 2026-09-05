@@ -17,7 +17,7 @@ description: Add a Vikunja (task management) MCP server to agent groups — list
 > Ce n'est pas une copie de confort : `/app/src` est le montage en lecture seule
 > de `container/agent-runner/src` (`container-runner.ts`, ~l.414), et **sept
 > groupes** exécutent littéralement
-> `bun run /app/src/mcp-servers/vikunja/server.ts` — dm, famille, work, agc,
+> `bun run /app/src/mcp-servers/vikunja/server.ts` — dm, famille, work, testor-agy,
 > testor, testor-claude, testor-codex. La supprimer ferait échouer le démarrage
 > du serveur MCP au prochain spawn de chacun : aucune erreur au build, aucun
 > test rouge, juste des outils `vikunja` qui n'apparaissent plus. Choix confirmé
