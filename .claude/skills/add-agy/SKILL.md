@@ -134,6 +134,16 @@ docker run --rm --entrypoint sh --user "$(id -u):$(id -g)" -e HOME=/home/node \
 
 ## Notes
 
+- **Scoped headless permissions (fork):** `AGY_PERMISSIONS_ALLOW` in the group's
+  container-config env is an opt-in JSON array of explicit `read_file(path)` and
+  `mcp(server/tool)` rules. Wildcards and command grants are rejected. Only
+  `testor-agy` currently opts in: group instructions, `/app/skills`, local MCP
+  metadata, and `vikunja/list_projects`. Other operations remain unapproved;
+  extend the policy only after operator review. Do not use a global permission
+  bypass. The provider creates a container-local `antigravity-cli/settings.json`
+  and MCP cache, preserving host deny/ask rules but not inheriting host grants.
+  Auth and history remain linked for continuation; host settings are unchanged.
+  Headless denials (even exit 0) and failed processes raise sanitized errors.
 - **No Dockerfile change**: the binary is mounted, so the agent image is
   unchanged. Only a host with the `agy` binary + OAuth login can run agy
   groups; other hosts keep using claude/opencode.
