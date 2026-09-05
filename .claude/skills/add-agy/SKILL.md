@@ -127,7 +127,7 @@ docker run --rm --entrypoint sh -v "$PWD/container/agent-runner:/ar" -w /ar \
 docker run --rm --entrypoint sh --user "$(id -u):$(id -g)" -e HOME=/home/node \
   -v ~/.local/bin/agy:/usr/local/bin/agy:ro -v ~/.gemini:/home/node/.gemini \
   <agent-image>:latest \
-  -c 'agy --print --dangerously-skip-permissions --prompt "Reply only: OK"'
+  -c 'agy --print="Reply only: OK. Do not use tools."'
 # → prints OK. If it prints a Google OAuth URL instead, the host login is
 #   missing or the uid can't read the token (see Host auth).
 ```

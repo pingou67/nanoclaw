@@ -129,7 +129,9 @@ mettent pas ce binaire à jour. Lire aussi `/add-agy` pour les montages et tests
 
 - Repérer le binaire réellement monté via `src/providers/agy.ts` et relever
   son chemin résolu, sa taille et son SHA-256 (`readlink -f`, `stat`, `sha256sum`).
-- Consulter `agy --help`, `agy update --help` et `agy changelog`. L'aide
+- Relever la version installée avec `agy --version` (fonctionne même si l'aide
+  ne l'affiche pas), puis consulter `agy --help`, `agy update --help` et
+  `agy changelog`. L'aide
   vérifiée le 2026-09-05 ne documente **ni `update --check` ni `--dry-run`**.
   Ne pas inventer ces options, ni lancer `agy update` pour « vérifier ».
 - Chercher la version disponible et sa date dans les releases officielles
