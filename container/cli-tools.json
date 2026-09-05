@@ -1,12 +1,12 @@
 [
   {
     "name": "agent-browser",
-    "version": "0.35.2",
+    "version": "0.36.0",
     "onlyBuilt": true
   },
   {
     "name": "@anthropic-ai/claude-code",
-    "version": "2.1.251",
+    "version": "2.1.258",
     "onlyBuilt": true
   },
   {
@@ -27,6 +27,6 @@
   },
   {
     "name": "@openai/codex",
-    "version": "0.151.0"
+    "version": "0.152.1"
   }
 ]

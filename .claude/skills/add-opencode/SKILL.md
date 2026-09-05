@@ -54,7 +54,7 @@ The agent-runner is a separate Bun package tree. Keep its SDK on the same exact
 version as the globally installed `opencode-ai` CLI:
 
 ```nc:dep manager:bun cwd:container/agent-runner
-@opencode-ai/sdk@1.18.25
+@opencode-ai/sdk@1.18.26
 ```
 
 The matching `opencode-ai` CLI pin is the exact `OPENCODE_VERSION` in
