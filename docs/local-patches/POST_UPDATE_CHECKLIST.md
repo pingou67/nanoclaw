@@ -118,6 +118,65 @@ taire.
 
 ---
 
+## §AGY. Client Antigravity — contrôle et mise à jour obligatoires
+
+Cette étape complète `supply-watch` à **chaque demande de vérification des
+mises à jour**, puis à chaque maintenance appliquée. Le client hôte agy est
+monté dans les containers : le refresh du skill et le rebuild de l'image ne
+mettent pas ce binaire à jour. Lire aussi `/add-agy` pour les montages et tests.
+
+### Vérification seule — aucune installation
+
+- Repérer le binaire réellement monté via `src/providers/agy.ts` et relever
+  son chemin résolu, sa taille et son SHA-256 (`readlink -f`, `stat`, `sha256sum`).
+- Consulter `agy --help`, `agy update --help` et `agy changelog`. L'aide
+  vérifiée le 2026-09-05 ne documente **ni `update --check` ni `--dry-run`**.
+  Ne pas inventer ces options, ni lancer `agy update` pour « vérifier ».
+- Chercher la version disponible et sa date dans les releases officielles
+  `https://github.com/google-antigravity/antigravity-cli/releases` (API GitHub
+  en lecture seule : `tag_name`, `published_at`, empreinte de l'asset). Une
+  archive officielle de version précise permet une installation ciblée sans
+  passer par `agy update` et son `latest` ; vérifier son SHA-256 avant extraction.
+  Un changelog, sa première entrée ou la date du fichier local
+  ne prouvent pas à eux seuls la version installée ou la date de publication.
+  Si les métadonnées manquent, annoncer explicitement **« agy : disponibilité
+  ou âge non vérifié »**, jamais « tout est à jour » en l'omettant.
+- Inclure agy dans le bilan même si `supply-watch` ne le couvre pas. La règle
+  des trois jours s'applique aussi à lui ; une version ou une date invérifiable
+  exige un accord humain explicite avant toute dérogation.
+
+### Application autorisée — sauvegarde, mise à jour, tests, rollback
+
+1. Identifier la cible et vérifier son âge avant l'installation. Si `agy update`
+   ne permet pas de garantir la cible examinée (installation de `latest`),
+   obtenir l'accord explicite pour ce risque ; ne pas contourner la retenue
+   des trois jours sous couvert d'une mise à jour générale.
+2. Arrêter le service et drainer les containers concernés **avant** de changer
+   le binaire monté. Sauvegarder hors du dépôt le binaire réel, ses permissions,
+   liens et SHA-256, ainsi que l'état/auth agy sous `~/.gemini` (sauvegarde
+   privée, répertoire 0700). Le snapshot Git ne couvre pas ces fichiers.
+   Noter les chemins exacts et la commande de restauration avant de poursuivre.
+3. Exécuter `agy update` seulement dans cette phase autorisée. Conserver la
+   sortie, le code retour et l'identité du binaire après mise à jour. Un échec
+   bloque la validation ; ne pas annoncer une mise à jour réussie sur la seule
+   présence d'un changelog. Aucun rebuild d'image requis pour le binaire seul.
+4. Exécuter les tests de registration agy côté hôte et les tests container
+   `agy-registration`, `agy.factory`, `agy.memory` décrits par `/add-agy`.
+   Pour une mise à jour combinée, conserver aussi build, typecheck et E2E de
+   la procédure générale, avec leur sortie complète.
+5. Après redémarrage contrôlé, lancer un **container neuf** pour `testor-agy` :
+   vérifier le chemin et le SHA-256 du binaire monté, l'authentification, une
+   réponse Gemini, une reprise de conversation et un appel MCP Vikunja en
+   lecture seule. Utiliser un test interne sans publier de message ni modifier
+   les données métier ; vérifier aussi l'absence d'erreur dans les logs.
+   Les tests mock seuls ne valident pas le nouveau client réel.
+6. Si un contrôle échoue, arrêter/drainer à nouveau, restaurer le binaire
+   sauvegardé et, si nécessaire, l'état agy affecté (ne pas écraser les données
+   d'autres utilisateurs du même compte). Relancer un container neuf et refaire
+   le smoke test. Ne jamais restaurer le binaire en place pendant son utilisation.
+7. Rapporter avant/après, sauvegarde, résultats réels et tests non exécutés.
+   Ne déclarer la maintenance terminée qu'après validation ou rollback vérifié.
+
 ## §0. Skills du fork — vérification automatique (2026-07-02)
 
 Les modules mattermost/opencode/agy + vikunja sont

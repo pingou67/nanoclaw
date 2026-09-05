@@ -28,8 +28,10 @@
  *     `@onecli-sh/sdk` figé en 2.2.1 face à une 3.1.0 publiée — deux majeures
  *     d'écart sur une dépendance qui intervient à CHAQUE spawn de container,
  *     et que personne ne surveillait. D'où l'origine `host-deps`.
- *   - binaire agy : pas de flux de version public interrogeable ; se met à
- *     jour via `agy update` lors des maintenances.
+ *   - binaire agy : releases officielles google-antigravity/antigravity-cli,
+ *     pas encore intégrées à cette veille. Contrôle manuel obligatoire
+ *     à chaque vérification : docs/local-patches/POST_UPDATE_CHECKLIST.md §AGY
+ *     (disponibilité inconnue à signaler, sauvegarde et tests réels à l'application).
  *
  * Modes : (défaut) check + post si changement ; --dry-run affiche le digest
  * sans poster ni toucher l'état ; --json sort le rapport brut.

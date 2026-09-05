@@ -222,6 +222,12 @@ de groupes exposés et redoubler de prudence dans les logs et le dashboard.
 
 ## Mises à jour, migrations et skills
 
+- Inclure le **client hôte agy** dans chaque vérification et application de mise
+  à jour : suivre `docs/local-patches/POST_UPDATE_CHECKLIST.md` §AGY. Vérification
+  seule = lecture seule et disponibilité inconnue signalée, jamais `agy update`.
+  Application = cible âgée de trois jours ou dérogation explicite, sauvegarde du
+  binaire et de l'état hors Git, containers arrêtés, mise à jour puis tests réels
+  sur `testor-agy` (Gemini, reprise, MCP), avec rollback vérifié en cas d'échec.
 - La copie installée des fichiers skill-owned est canonique. Après toute
   modification, lancer `scripts/skills-sync.ts sync <skill>`, puis
   `scripts/skills-sync.ts check`.

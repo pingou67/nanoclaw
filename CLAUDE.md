@@ -289,7 +289,9 @@ An agent group can override the install timezone (`ncl groups config update --ti
 pnpm exec tsx scripts/supply-watch.ts --dry-run   # print the digest without posting
 ```
 
-Applying stays deliberate: bump the pin, rebuild the image, run the E2E suite. Exclusions (documented in the script header): host pnpm deps (already governed by `minimumReleaseAge` at install) and the `agy` binary (no public version feed — update via `agy update` during maintenance).
+Applying stays deliberate: bump the pin, rebuild the image, run the E2E suite. Exclusions (documented in the script header): host pnpm deps (already governed by `minimumReleaseAge` at install) and the `agy` binary (official releases at `google-antigravity/antigravity-cli`, checked manually until integrated into the watcher).
+
+**The agy client must still be covered in every update check and applied maintenance.** Follow [the local checklist §AGY](docs/local-patches/POST_UPDATE_CHECKLIST.md#§agy-client-antigravity--contrôle-et-mise-à-jour-obligatoires): read-only discovery (report unknown availability explicitly), release-age gate, external binary/state backup, stopped containers before `agy update`, then real Gemini/resume/MCP tests on `testor-agy` and verified rollback on failure. Never run `agy update` during a check-only request; refreshing the provider skill or rebuilding the image does not update the host binary.
 
 **Rules — do not bypass without explicit human approval:**
 
